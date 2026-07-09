@@ -8,7 +8,6 @@ const { SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_REDIRECT_URI } = process.env
 
 // ─────────────────────────────────────────────
 // GET /api/slack/install
-// Redirects the user to Slack's OAuth consent page.
 // ─────────────────────────────────────────────
 export const installSlack = (req, res) => {
   const scopes = [
@@ -33,7 +32,6 @@ export const installSlack = (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/slack/oauth/callback
-// Slack sends the auth code here. Exchange it for an access token.
 // ─────────────────────────────────────────────
 export const slackOAuthCallback = async (req, res) => {
   const { code, error } = req.query;
@@ -43,7 +41,6 @@ export const slackOAuthCallback = async (req, res) => {
   }
 
   try {
-    // Exchange code for access token
     const client = new WebClient();
     const oauthResult = await client.oauth.v2.access({
       client_id: SLACK_CLIENT_ID,
@@ -58,7 +55,6 @@ export const slackOAuthCallback = async (req, res) => {
 
     const { access_token, team, bot_user_id, scope } = oauthResult;
 
-    // Upsert integration record (one per Slack workspace)
     await SlackIntegration.findOneAndUpdate(
       { teamId: team.id },
       {
@@ -85,7 +81,6 @@ export const slackOAuthCallback = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/slack/channels
-// Returns a list of public channels the bot can see.
 // ─────────────────────────────────────────────
 export const getChannels = async (req, res) => {
   try {
@@ -116,12 +111,12 @@ export const getChannels = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /api/slack/channels/:channelId/messages
-// Fetches real messages from a specific Slack channel.
 // ─────────────────────────────────────────────
 export const getChannelMessages = async (req, res) => {
   try {
     const { channelId } = req.params;
-    const limit = parseInt(req.query.limit) || 50;
+    const parsedLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 200) : 50;
 
     const messages = await fetchChannelMessages(channelId, limit);
 
@@ -138,7 +133,11 @@ export const getChannelMessages = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // POST /api/slack/channels/:channelId/join
-// Makes the bot join a channel so it can read messages.
+// Idempotent: if the bot is already a member, Slack returns
+// "method_not_supported_for_channel_type" or the join call itself is a
+// no-op depending on channel type — but for public channels re-joining an
+// already-joined channel returns ok: true anyway. We still guard against
+// the "already_in_channel"-style errors some workspace configs return.
 // ─────────────────────────────────────────────
 export const joinChannel = async (req, res) => {
   try {
@@ -148,6 +147,15 @@ export const joinChannel = async (req, res) => {
     const result = await client.conversations.join({ channel: channelId });
 
     if (!result.ok) {
+      if (result.error === 'already_in_channel' || result.error === 'is_archived') {
+        return res.status(200).json({
+          message:
+            result.error === 'already_in_channel'
+              ? 'Bot is already a member of this channel.'
+              : 'Channel is archived — no action needed.',
+          channelId,
+        });
+      }
       return res.status(400).json({ error: result.error });
     }
 
