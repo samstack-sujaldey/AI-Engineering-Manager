@@ -1,111 +1,291 @@
-<div class="page">
-  <header class="header">
-    <div class="header-title">
-      <h1>Standup Pulse</h1>
-      <p class="subtitle">Live task board synced from Slack stand-ups</p>
+<div class="dashboard-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">T</div>
+      <span>TaskStream AI</span>
     </div>
+
+    <nav class="sidebar-nav">
+      <button class="nav-item active" type="button">
+        <span class="nav-icon">▦</span>
+        <span>Dashboard</span>
+      </button>
+
+      <button class="nav-item" type="button">
+        <span class="nav-icon">✓</span>
+        <span>Tasks</span>
+      </button>
+
+      <button class="nav-item" type="button">
+        <span class="nav-icon">☷</span>
+        <span>Stand-up</span>
+      </button>
+
+      <button class="nav-item" type="button">
+        <span class="nav-icon">♙</span>
+        <span>Team</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="nav-item" type="button">
+        <span class="nav-icon">⚙</span>
+        <span>Settings</span>
+      </button>
+
+      <div class="sidebar-user">
+        <span class="sidebar-avatar">NK</span>
+
+        <div>
+          <strong>Nitesh Kumar</strong>
+          <span>Engineering Manager</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <header class="topbar">
+      <h1>Dashboard</h1>
+
+      <div class="topbar-actions">
+        <div class="topbar-search">
+          <span>⌕</span>
+
+          <input
+            type="text"
+            placeholder="Search tasks, team members..."
+            [(ngModel)]="searchTerm"
+          />
+        </div>
+
+        <button class="icon-btn" type="button">♢</button>
+        <button class="icon-btn" type="button">?</button>
+      </div>
+    </header>
+
+    <div class="dashboard-content">
+
+     <section class="welcome-section">
+  <div>
+    <h2>Good afternoon, Nitesh!</h2>
+    <p>Here's what's happening with your team today.</p>
+  </div>
+
+  <div class="welcome-actions">
+
+    <button
+      class="connect-slack-btn"
+      type="button"
+      (click)="connectToSlack()"
+    >
+      Connect to Slack
+    </button>
 
     <div class="live-badge" [class.is-error]="!!error()">
       <span class="dot" [class.dot-off]="!!error()"></span>
-      <span class="live-text">{{ error() ? 'Offline' : 'Live' }}</span>
+
+      <span class="live-text">
+        {{ error() ? 'Offline' : 'Live' }}
+      </span>
+
       <span class="sep">·</span>
-      <span class="synced-at">{{ error() ? 'retry needed' : 'synced ' + formatTime(lastSynced()) }}</span>
-      <button class="refresh-btn" (click)="fetchTasks()" [disabled]="loading()" aria-label="Refresh tasks">
+
+      <span class="synced-at">
+        {{ error() ? 'retry needed' : 'synced ' + formatTime(lastSynced()) }}
+      </span>
+
+      <button
+        class="refresh-btn"
+        type="button"
+        (click)="syncSlackTasks()"
+        [disabled]="loading()"
+        aria-label="Refresh tasks"
+      >
         <span [class.spin]="loading()">⟳</span>
       </button>
     </div>
-  </header>
 
-  <section class="summary-strip" *ngIf="!loading() && !error()">
-    <div class="stat">
-      <span class="stat-value">{{ counts().total }}</span>
-      <span class="stat-label">total</span>
-    </div>
-    <div class="stat stat-processing">
-      <span class="stat-value">{{ counts().processing }}</span>
-      <span class="stat-label">in progress</span>
-    </div>
-    <div class="stat stat-completed">
-      <span class="stat-value">{{ counts().completed }}</span>
-      <span class="stat-label">completed</span>
-    </div>
-    <div class="stat stat-blocked">
-      <span class="stat-value">{{ counts().blocked }}</span>
-      <span class="stat-label">blocked</span>
-    </div>
-  </section>
+  </div>
+</section>
 
-  <section class="controls" *ngIf="!loading() && !error()">
-    <input class="search" type="text" placeholder="Search member or task…" [(ngModel)]="searchTerm" />
-
-    <div class="chip-group">
-      <button
-        *ngFor="let s of statusOptions"
-        type="button"
-        class="chip"
-        [class.chip-active]="statusFilter === s"
-        (click)="statusFilter = s"
+      <section
+        class="stats-grid"
+        *ngIf="!loading() && !error()"
       >
-        {{ s === 'ALL' ? 'All statuses' : s }}
-      </button>
+        <article class="stat-card">
+          <div class="stat-content">
+            <span class="stat-label">Total Tasks</span>
+            <strong class="stat-value">{{ counts().total }}</strong>
+          </div>
+
+          <div class="stat-icon blue">✓</div>
+        </article>
+
+        <article class="stat-card">
+          <div class="stat-content">
+            <span class="stat-label">In Progress</span>
+            <strong class="stat-value">{{ counts().processing }}</strong>
+          </div>
+
+          <div class="stat-icon orange">◷</div>
+        </article>
+
+        <article class="stat-card">
+          <div class="stat-content">
+            <span class="stat-label">Completed</span>
+            <strong class="stat-value">{{ counts().completed }}</strong>
+          </div>
+
+          <div class="stat-icon green">✓</div>
+        </article>
+
+        <article class="stat-card">
+          <div class="stat-content">
+            <span class="stat-label">Blocked</span>
+            <strong class="stat-value">{{ counts().blocked }}</strong>
+          </div>
+
+          <div class="stat-icon red">!</div>
+        </article>
+      </section>
+
+      <section class="tasks-section">
+        <div class="section-heading">
+          <div>
+            <h2>Team Tasks</h2>
+            <p>Live tasks synced from Slack stand-ups</p>
+          </div>
+        </div>
+
+        <section
+          class="controls"
+          *ngIf="!loading() && !error()"
+        >
+          <input
+            class="search"
+            type="text"
+            placeholder="Search member or task…"
+            [(ngModel)]="searchTerm"
+          />
+
+          <div class="chip-group">
+            <button
+              *ngFor="let s of statusOptions"
+              type="button"
+              class="chip"
+              [class.chip-active]="statusFilter === s"
+              (click)="statusFilter = s"
+            >
+              {{ s === 'ALL' ? 'All statuses' : s }}
+            </button>
+          </div>
+
+          <div class="chip-group">
+            <button
+              *ngFor="let p of priorityOptions"
+              type="button"
+              class="chip"
+              [class.chip-active]="priorityFilter === p"
+              (click)="priorityFilter = p"
+            >
+              {{ p === 'ALL' ? 'All priorities' : p }}
+            </button>
+          </div>
+        </section>
+
+        <section class="board">
+          <div class="loading-state" *ngIf="loading()">
+            Pulling the latest stand-ups…
+          </div>
+
+          <div class="error-state" *ngIf="error() as e">
+            <p>{{ e }}</p>
+
+            <button
+              class="retry-btn"
+              type="button"
+              (click)="fetchTasks()"
+            >
+              Try again
+            </button>
+          </div>
+
+          <div
+            class="empty-state"
+            *ngIf="!loading() && !error() && filteredTasks().length === 0"
+          >
+            <p>No tasks match here yet.</p>
+
+            <p class="empty-hint">
+              Trigger
+              <code>POST /api/slack/channels/:channelId/process</code>
+              to pull fresh stand-ups from Slack.
+            </p>
+          </div>
+
+          <div
+            class="table-container"
+            *ngIf="!loading() && !error() && filteredTasks().length > 0"
+          >
+            <table class="task-table">
+              <thead>
+                <tr>
+                  <th>Member</th>
+                  <th>Status</th>
+                  <th>Priority</th>
+                  <th>Task</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr
+                  *ngFor="let task of filteredTasks()"
+                  class="task-row"
+                  [attr.data-priority]="task.priority"
+                >
+                  <td class="cell-member" data-label="Member">
+                    <span
+                      class="avatar"
+                      [style.background]="avatarColor(task.member?.name)"
+                    >
+                      {{ initials(task.member?.name) }}
+                    </span>
+
+                    <span class="member-name">
+                      {{ task.member?.name || 'Unknown' }}
+                    </span>
+                  </td>
+
+                  <td data-label="Status">
+                    <span
+                      class="pill pill-status"
+                      [attr.data-status]="task.status"
+                    >
+                      {{ task.status }}
+                    </span>
+                  </td>
+
+                  <td data-label="Priority">
+                    <span
+                      class="pill pill-priority"
+                      [attr.data-priority]="task.priority"
+                    >
+                      {{ task.priority }}
+                    </span>
+                  </td>
+
+                  <td class="cell-task" data-label="Task">
+                    <span class="task-title">
+                      {{ task.title }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
     </div>
-
-    <div class="chip-group">
-      <button
-        *ngFor="let p of priorityOptions"
-        type="button"
-        class="chip"
-        [class.chip-active]="priorityFilter === p"
-        (click)="priorityFilter = p"
-      >
-        {{ p === 'ALL' ? 'All priorities' : p }}
-      </button>
-    </div>
-  </section>
-
-  <section class="board">
-    <div class="loading-state" *ngIf="loading()">Pulling the latest stand-ups…</div>
-
-    <div class="error-state" *ngIf="error() as e">
-      <p>{{ e }}</p>
-      <button class="retry-btn" type="button" (click)="fetchTasks()">Try again</button>
-    </div>
-
-    <div class="empty-state" *ngIf="!loading() && !error() && filteredTasks().length === 0">
-      <p>No tasks match here yet.</p>
-      <p class="empty-hint">
-        Trigger <code>POST /api/slack/channels/:channelId/process</code> to pull fresh stand-ups from Slack.
-      </p>
-    </div>
-
-    <table class="task-table" *ngIf="!loading() && !error() && filteredTasks().length > 0">
-      <thead>
-        <tr>
-          <th>Member</th>
-          <th>Status</th>
-          <th>Priority</th>
-          <th>Task</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr *ngFor="let task of filteredTasks()" class="task-row" [attr.data-priority]="task.priority">
-          <td class="cell-member" data-label="Member">
-            <span class="avatar" [style.background]="avatarColor(task.member?.name)">
-              {{ initials(task.member?.name) }}
-            </span>
-            <span class="member-name">{{ task.member?.name || 'Unknown' }}</span>
-          </td>
-          <td data-label="Status">
-            <span class="pill pill-status" [attr.data-status]="task.status">{{ task.status }}</span>
-          </td>
-          <td data-label="Priority">
-            <span class="pill pill-priority" [attr.data-priority]="task.priority">{{ task.priority }}</span>
-          </td>
-          <td class="cell-task" data-label="Task">
-            <span class="task-title">{{ task.title }}</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </section>
+  </main>
 </div>

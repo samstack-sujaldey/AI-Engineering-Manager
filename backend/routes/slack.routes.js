@@ -46,8 +46,16 @@ router.post('/channels/:channelId/process', async (req, res) => {
 
     res.status(200).json(result);
   } catch (error) {
-    console.error('❌ Pipeline error:', error.message);
-    res.status(500).json({ error: error.message });
+     console.error('❌ FULL PIPELINE ERROR:', error);
+    console.error('❌ ERROR MESSAGE:', error.message);
+    console.error('❌ ERROR STACK:', error.stack);
+    console.error('❌ ERROR DATA:', error.data);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.data?.error || null,
+    });
   }
 });
 

@@ -69,10 +69,11 @@ export const slackOAuthCallback = async (req, res) => {
     );
 
     console.log(`✅ Slack connected for workspace: ${team.name}`);
-    res.status(200).json({
-      message: `Slack connected successfully for workspace: ${team.name}`,
-      workspace: team.name,
-    });
+
+    
+    return res.redirect(
+  `http://localhost:4200/?slack=connected&workspace=${encodeURIComponent(team.name)}`
+);
   } catch (err) {
     console.error('❌ Slack OAuth error:', err.message);
     res.status(500).json({ error: 'Failed to complete Slack OAuth.' });

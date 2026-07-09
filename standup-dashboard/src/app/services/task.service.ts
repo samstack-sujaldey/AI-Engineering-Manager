@@ -8,9 +8,16 @@ import { environment } from '../../environments/environment';
 export class TaskService {
   private readonly baseUrl = `${environment.apiUrl}/tasks`;
 
+  private readonly slackProcessUrl =
+    `${environment.apiUrl}/slack/channels/C0BFP88C535/process?limit=50`;
+
   constructor(private http: HttpClient) {}
 
   getTasks(): Observable<TasksResponse> {
     return this.http.get<TasksResponse>(this.baseUrl);
+  }
+
+  processSlackChannel(): Observable<any> {
+    return this.http.post<any>(this.slackProcessUrl, {});
   }
 }
