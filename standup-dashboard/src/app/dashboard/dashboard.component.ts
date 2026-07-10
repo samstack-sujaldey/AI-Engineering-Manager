@@ -210,7 +210,7 @@ export class DashboardComponent implements OnInit {
    */
   connectToSlack(): void {
     window.location.href =
-      'http://localhost:5000/api/slack/install';
+      'https://ai-engineering-manager-x4kg.onrender.com/api/slack/install';
   }
 
   /**
