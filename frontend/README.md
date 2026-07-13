@@ -7,7 +7,7 @@ placeholders.
 ## 1. Run the frontend
 
 ```bash
-cd taskstream-frontend
+cd frontend
 npm install
 npm start
 ```
