@@ -38,16 +38,17 @@ const PRIORITY = {
 const STATUS = {
 	COMPLETED: [
 		/\bdone\b/i,
-		/\bcompleted?\b/i,
+		/\bcomplet(e|ed)\b/i,
 		/\bresolved\b/i,
 		/\bmerged\b/i,
-		/\bresolved\b/i,
+		/\bresolv(e|ed)\b/i,
 		/\bfixed\b/i,
 		/\bfinished\b/i,
 		/\bshipped\b/i,
 		/\bclosed\b/i,
 	],
 	PROCESSING: [
+		/\bprocessing\b/i,
 		/\bworking\s+on\b/i,
 		/\bimplementing\b/i,
 		/\bcoding\b/i,
@@ -57,7 +58,7 @@ const STATUS = {
 		/\bstarting\b/i,
 	],
 	BLOCKED: [
-		/\bblocked\b/i,
+		/\bblock(e|ed)\b/i,
 		/\bwaiting\s+(for|on)\b/i,
 		/\bpending\b/i,
 		/\bcannot\s+continue\b/i,
@@ -924,15 +925,7 @@ function parseMessage(input) {
 				: null,
 			flagged_for_review: needs_human_review,
 		},
-		notifications: needs_human_review
-			? [
-					{
-						type: "HUMAN_REVIEW",
-						message: `Low-confidence message flagged for review: "${text.slice(0, 120)}"`,
-						target_user_id: senderUser.id,
-					},
-				]
-			: [],
+		notifications: [],
 		meta: { is_edit, needs_human_review, watchers, reviewers, entities },
 	});
 }

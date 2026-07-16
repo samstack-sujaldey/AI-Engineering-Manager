@@ -230,6 +230,21 @@ class MessageProcessor {
 			task_id: taskId,
 		});
 
+		if (
+			doc.assigned_to &&
+			doc.assigned_to.id &&
+			doc.assigned_to.name !== "Unassigned"
+		) {
+			await this.notifications.createAndSend({
+				type: "GENERAL",
+				target_user_id: doc.assigned_to.id,
+				target_user_name: doc.assigned_to.name,
+				message: `🎯 *New Task Assigned:* '${doc.title}'\n_Reply to this thread with "processing", "blocked", or "done" to update its status on the dashboard._`,
+				task_id: taskId,
+				scheduleReminder: false,
+			});
+		}
+
 		if (doc.due_date_pending) {
 			doc.due_date_notification_at = new Date();
 			await doc.save();

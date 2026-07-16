@@ -10,13 +10,18 @@
     "test:parser": "node src/agent/parser.test.js",
     "seed": "node src/scripts/seed.js"
   },
-  "keywords": ["slack", "task-intelligence", "project-management"],
+  "keywords": [
+    "slack",
+    "task-intelligence",
+    "project-management"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "@slack/bolt": "^4.7.3",
     "@slack/web-api": "^7.19.0",
+    "axios": "^1.18.1",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.80.2",
     "cors": "^2.8.6",
@@ -30,6 +35,7 @@
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "node-cron": "^4.6.0",
+    "pdf-parse": "^2.4.5",
     "socket.io": "^4.8.3"
   }
 }
