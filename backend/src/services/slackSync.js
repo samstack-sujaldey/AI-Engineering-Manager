@@ -107,7 +107,6 @@ async function fetchChannelHistory(client, channelId, limit) {
     cursor = result.has_more ? result.response_metadata?.next_cursor || '' : '';
   } while (cursor && remaining > 0);
 
-  // Oldest first so thread continuity works
   return messages.reverse();
 }
 
@@ -138,6 +137,14 @@ async function syncFromSlack(messageProcessor, options = {}) {
     error.status = 401;
     error.code = slackErr;
     throw error;
+  }
+
+  // Uses the existing token resolution logic already declared at the bottom of your file[cite: 5]
+  let downloadToken;
+  try {
+    downloadToken = await module.exports.getSlackAccessToken(); 
+  } catch (tokenErr) {
+    downloadToken = config.slack.botToken;
   }
 
   const channels = await listChannels(client, { channelIds });
@@ -177,14 +184,29 @@ async function syncFromSlack(messageProcessor, options = {}) {
         continue;
       }
 
+      let downloadedFiles = [];
       try {
         if (await alreadyProcessed(msg.ts)) {
           summary.messages_skipped += 1;
           continue;
         }
 
+        // Uses the existing download function already defined in this file[cite: 5]
+        if (msg.files && msg.files.length > 0) {
+          const rawAttachments = msg.files.map(f => ({
+            slackFileId: f.id,
+            fileName: f.name,
+            mimeType: f.mimetype,
+            fileType: f.filetype,
+            urlPrivateDownload: f.url_private_download,
+            urlPrivate: f.url_private
+          }));
+          downloadedFiles = await module.exports.downloadSlackAttachments(rawAttachments, downloadToken);
+        }
+
         const sender = await resolveUser(client, msg.user, userCache);
         const user_directory = await buildDirectory(client, msg.text, userCache);
+        
         const result = await messageProcessor.process(
           {
             text: msg.text,
@@ -196,6 +218,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
             message_ts: msg.ts,
             is_edit: false,
             user_directory,
+            local_attachments: downloadedFiles
           },
           { quiet: true }
         );
@@ -215,6 +238,11 @@ async function syncFromSlack(messageProcessor, options = {}) {
           ts: msg.ts,
           error: err.message,
         });
+      } finally {
+        // Uses the existing cleanup utility already defined in this file[cite: 5]
+        if (downloadedFiles.length > 0) {
+          await module.exports.cleanupTemporaryFiles(downloadedFiles);
+        }
       }
     }
   }
