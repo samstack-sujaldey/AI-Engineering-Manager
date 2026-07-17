@@ -77,15 +77,18 @@ function createSlackApp({ messageProcessor, notificationService }) {
 		}
 	}
 
-	async function buildDirectory(client, text) {
-		const ids = [...text.matchAll(/<@([A-Z0-9]+)>/g)].map((m) => m[1]);
-		const directory = {};
-		await Promise.all(
-			ids.map(async (id) => {
-				try {
-					const info = await client.users.info({ user: id });
-					const u = info.user || {};
-					directory[id] = {
+	// NEW: Cache all workspace users for plain-text name matching
+	let workspaceUsersCache = null;
+	async function getWorkspaceUsers(client) {
+		if (workspaceUsersCache) return workspaceUsersCache;
+		workspaceUsersCache = {};
+		try {
+			let cursor;
+			do {
+				const res = await client.users.list({ cursor, limit: 200 });
+				for (const u of res.members || []) {
+					if (u.deleted || u.is_bot) continue;
+					workspaceUsersCache[u.id] = {
 						id: u.id,
 						name: u.name,
 						display_name:
@@ -93,12 +96,16 @@ function createSlackApp({ messageProcessor, notificationService }) {
 						email: u.profile?.email || "",
 						real_name: u.real_name,
 					};
-				} catch {
-					directory[id] = { id, name: id };
 				}
-			}),
-		);
-		return directory;
+				cursor = res.response_metadata?.next_cursor;
+			} while (cursor);
+		} catch (err) {
+			console.error(
+				"[slack] Failed to fetch workspace users",
+				err.message,
+			);
+		}
+		return workspaceUsersCache;
 	}
 
 	// UPDATED FOR PDF-PARSE v2.x API
@@ -145,41 +152,62 @@ function createSlackApp({ messageProcessor, notificationService }) {
 
 		const text = event.text || "";
 		const sender = await resolveSender(client, event.user);
-		const user_directory = await buildDirectory(client, text);
+		const user_directory = await getWorkspaceUsers(client);
 
 		// 1. DECLARE RESULT OUTSIDE THE IF BLOCK
 		let result = null;
 
 		// 2. Process the normal chat message text
 		if (text.trim()) {
-			result = await messageProcessor.process({
-				text,
-				sender,
-				channel: event.channel,
-				thread_id: event.thread_ts || event.ts,
-				workspace_id: event.team || "",
-				team: event.team || "",
-				message_ts: is_edit ? event.ts : event.ts,
-				is_edit,
-				user_directory,
-			});
-
-			console.log(
-				`[slack] ${result.action} classification=${result.classification} confidence=${result.confidence}`,
+			// Split multi-line messages if they contain multiple distinct task assignments
+			const lines = text
+				.split("\n")
+				.map((l) => l.trim())
+				.filter(Boolean);
+			const explicitLines = lines.filter(
+				(l) => /task\s*-/i.test(l) || /issue\s*-/i.test(l),
 			);
+			const textsToProcess =
+				explicitLines.length > 1 ? explicitLines : [text];
 
-			if (result.task_created || result.issue_created) {
-				const label = result.task_created
-					? `Task *${result.task.title}*   ${result.task.assigned_to?.name || "Unassigned"} [${result.task.priority}/${result.task.status}]`
-					: `Issue *${result.issue.title}*   ${result.issue.assigned_to?.name || "Unassigned"} [${result.issue.priority}/${result.issue.status}]`;
-				try {
-					await client.chat.postMessage({
-						channel: event.channel,
-						thread_ts: event.thread_ts || event.ts,
-						text: `Tracked: ${label}`,
-					});
-				} catch (err) {
-					console.error("[slack] confirmation failed:", err.message);
+			for (let i = 0; i < textsToProcess.length; i++) {
+				const chunk = textsToProcess[i];
+				const chunkTs =
+					explicitLines.length > 1 ? `${event.ts}_${i}` : event.ts;
+
+				const result = await messageProcessor.process({
+					text: chunk,
+					sender,
+					channel: event.channel,
+					thread_id: event.thread_ts || event.ts,
+					workspace_id: event.team || "",
+					team: event.team || "",
+					message_ts: is_edit ? chunkTs : chunkTs,
+					is_edit,
+					user_directory,
+				});
+
+				console.log(
+					`[slack] ${result.action} classification=${result.classification} confidence=${result.confidence}`,
+				);
+
+				if (result.task_created || result.issue_created) {
+					const label = result.task_created
+						? `Task *${result.task.title}* assigned to ${result.task.assigned_to?.name || "Unassigned"}`
+						: `Issue *${result.issue.title}* assigned to ${result.issue.assigned_to?.name || "Unassigned"}`;
+					try {
+						// NEW: Post an ephemeral (invisible) confirmation that ONLY the sender sees!
+						await client.chat.postEphemeral({
+							channel: event.channel,
+							user: event.user, // The person who sent the message
+							text: `✅ Tracked Privately: ${label}`,
+						});
+					} catch (err) {
+						console.error(
+							"[slack] ephemeral confirmation failed:",
+							err.message,
+						);
+					}
 				}
 			}
 		}

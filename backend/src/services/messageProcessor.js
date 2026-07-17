@@ -37,9 +37,12 @@ class MessageProcessor {
 		} = raw;
 		const { quiet = false } = options;
 
-		// Resolve existing records for edit / thread continuity
 		let existing_task = null;
 		let existing_issue = null;
+
+		// NEW: Detect if this is an explicit command so we don't accidentally merge it!
+		const isExplicitCommand =
+			/task\s*-/i.test(text) || /issue\s*-/i.test(text);
 
 		if (is_edit && message_ts) {
 			const byMsg = await findWorkByMessageTs(message_ts);
@@ -48,7 +51,14 @@ class MessageProcessor {
 		}
 
 		const threadRoot = thread_id || message_ts;
-		if (!existing_task && !existing_issue && threadRoot) {
+
+		// FIXED: Do not merge into an existing thread if the user explicitly types "task -"
+		if (
+			!existing_task &&
+			!existing_issue &&
+			threadRoot &&
+			!isExplicitCommand
+		) {
 			const byThread = await findWorkByThread(threadRoot, channel);
 			existing_task = byThread.task;
 			existing_issue = byThread.issue;
@@ -69,11 +79,12 @@ class MessageProcessor {
 			now: new Date(),
 		});
 
-		// Dedup before create
+		// FIXED: Skip deduplication if the user explicitly types "task -"
 		if (
 			parsed.classification === "TASK" &&
 			parsed.action === "CREATE_TASK" &&
-			parsed.task
+			parsed.task &&
+			!isExplicitCommand
 		) {
 			const sim = await findSimilarTask(
 				parsed.task.title,
@@ -87,11 +98,6 @@ class MessageProcessor {
 				parsed.task_updated = true;
 				parsed.task.id = sim.task.task_id;
 				existing_task = sim.task;
-				parsed.meta = {
-					...parsed.meta,
-					similarity_score: sim.score,
-					deduped: true,
-				};
 			}
 		}
 
@@ -233,7 +239,8 @@ class MessageProcessor {
 		if (
 			doc.assigned_to &&
 			doc.assigned_to.id &&
-			doc.assigned_to.name !== "Unassigned"
+			doc.assigned_to.name !== "Unassigned" &&
+			doc.assigned_to.id !== senderRef.id
 		) {
 			await this.notifications.createAndSend({
 				type: "GENERAL",
@@ -310,7 +317,13 @@ class MessageProcessor {
 		const nextDue = updates.due_date || t.due_date;
 		const nextBlock = updates.blocked_reason || t.blocked_reason;
 
-		if (nextStatus) doc.status = nextStatus;
+		if (nextStatus) {
+			doc.status = nextStatus;
+			if (nextStatus === "COMPLETED") {
+				doc.due_date_pending = false;
+				doc.block_reason_pending = false;
+			}
+		}
 		if (nextPriority) doc.priority = nextPriority;
 		if (nextDue) {
 			doc.due_date = new Date(nextDue);
