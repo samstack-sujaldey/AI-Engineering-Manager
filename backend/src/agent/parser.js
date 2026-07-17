@@ -561,12 +561,18 @@ function classifyMessage(text) {
 }
 
 function generateTitle(text, classification) {
-	const cleaned = text
+	let cleaned = text
 		.replace(/<@([A-Z0-9]+)>/g, "")
 		.replace(/@[A-Za-z][\w.-]*/g, "")
 		.replace(/https?:\/\/\S+/g, "")
+		// Strip command prefixes
+		.replace(/^\[?(task|issue)\s*-\s*/i, "")
 		.replace(/\s+/g, " ")
 		.trim();
+
+	if (cleaned.endsWith("]")) {
+		cleaned = cleaned.slice(0, -1).trim();
+	}
 
 	const sentence = cleaned.split(/[.!?\n]/)[0].trim();
 	if (!sentence)
@@ -944,7 +950,13 @@ function buildNotificationHints({
 	const notifications = [];
 
 	// 1. DUE DATES: STRICTLY FOR TASKS ONLY
-	if (classification === "TASK" && !dueDate && owner && owner.id) {
+	if (
+		classification === "TASK" &&
+		!dueDate &&
+		owner &&
+		owner.id &&
+		status !== "COMPLETED"
+	) {
 		notifications.push({
 			type: "MISSING_DUE_DATE",
 			target_user_id: owner.id,
