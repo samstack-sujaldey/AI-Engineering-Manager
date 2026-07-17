@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const { Task, Issue } = require("../models");
+const { Task, Issue, Notification } = require("../models");
 const config = require("../config");
 
 /**
@@ -15,32 +15,9 @@ function startReminderScheduler(notificationService) {
 	}
 
 	// Every 5 minutes check; interval between reminder resends controlled by next_reminder_at
-	const job = cron.schedule("*/5 * * * *", async () => {
+	const job = cron.schedule("*/60 * * * *", async () => {
 		try {
 			// Re-assert pending flags from tasks/issues that still need data
-			const tasksMissingDue = await Task.find({
-				due_date_pending: true,
-				status: { $ne: "COMPLETED" },
-				"owner.id": { $ne: "" },
-			}).limit(50);
-
-			for (const t of tasksMissingDue) {
-				const last = t.due_date_notification_at
-					? new Date(t.due_date_notification_at).getTime()
-					: 0;
-				if (Date.now() - last < config.reminderIntervalMs) continue;
-				await notificationService.createAndSend({
-					type: "DUE_DATE_REMINDER",
-					target_user_id: t.owner.id,
-					target_user_name: t.owner.name,
-					message: `I couldn't determine the due date for your task '${t.title}'. Please reply with the due date or update your original message.`,
-					task_id: t.task_id,
-					scheduleReminder: true,
-				});
-				t.due_date_notification_at = new Date();
-				await t.save();
-			}
-
 			const tasksMissingBlock = await Task.find({
 				block_reason_pending: true,
 				status: "BLOCKED",
@@ -70,6 +47,35 @@ function startReminderScheduler(notificationService) {
 				"awaiting_acknowledgement.user.id": { $exists: true, $ne: "" },
 			}).limit(50);
 
+			const overdueTasks = await Task.find({
+				status: { $ne: "COMPLETED" },
+				due_date: { $lt: new Date(), $ne: null },
+				"owner.id": { $exists: true, $ne: "" },
+			}).limit(50);
+
+			for (const t of overdueTasks) {
+				// Prevent spam: Check if we already sent an overdue notice in the last 24 hours
+				const recentNotice = await Notification.findOne({
+					task_id: t.task_id,
+					type: "GENERAL",
+					message: { $regex: /Overdue/i },
+					createdAt: {
+						$gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+					},
+				});
+
+				if (!recentNotice) {
+					await notificationService.createAndSend({
+						type: "GENERAL",
+						target_user_id: t.owner.id,
+						target_user_name: t.owner.name,
+						message: `🚨 *Overdue Task:* Your task '${t.title}' was due on ${new Date(t.due_date).toLocaleDateString()}. Please update the status to "done" or reply with a new due date!`,
+						task_id: t.task_id,
+						scheduleReminder: false,
+					});
+				}
+			}
+
 			for (const t of waitingAck) {
 				const last = t.awaiting_acknowledgement.notification_at
 					? new Date(
@@ -89,8 +95,6 @@ function startReminderScheduler(notificationService) {
 				t.awaiting_acknowledgement.notification_at = new Date();
 				await t.save();
 			}
-
-			await notificationService.processDueReminders();
 		} catch (err) {
 			console.error("[reminders] scheduler error:", err);
 		}

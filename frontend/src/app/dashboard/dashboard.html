@@ -1,0 +1,256 @@
+<div class="shell">
+  <header class="top">
+    <div class="brand-block">
+      <p class="brand">Forgeboard</p>
+      <h1>Task Intelligence</h1>
+      <p class="tagline">Live work extracted from Slack — owners, blockers, and due dates in one place.</p>
+    </div>
+    <div class="top-actions">
+      <span class="pulse" [class.on]="live()">{{ live() ? 'Live' : 'Offline' }}</span>
+      <button type="button" class="btn" (click)="refresh()" [disabled]="loading()">
+        {{ loading() ? 'Refreshing…' : 'Refresh' }}
+      </button>
+    </div>
+  </header>
+
+  @if (error()) {
+    <div class="banner error">{{ error() }}</div>
+  }
+
+  @if (syncInfo()) {
+    <div class="banner ok">{{ syncInfo() }}</div>
+  }
+
+  @if (data(); as d) {
+    <section class="metrics" aria-label="Summary">
+      <button type="button" class="metric" [class.active]="focus() === 'all'" (click)="setFocus('all')">
+        <span class="n">{{ d.tasks.length }}</span>
+        <span class="l">Tasks</span>
+      </button>
+      <button type="button" class="metric" [class.active]="focus() === 'urgent'" (click)="setFocus('urgent')">
+        <span class="n">{{ d.urgent_tasks.length }}</span>
+        <span class="l">Urgent</span>
+      </button>
+      <button type="button" class="metric" [class.active]="focus() === 'overdue'" (click)="setFocus('overdue')">
+        <span class="n">{{ d.overdue_tasks.length }}</span>
+        <span class="l">Overdue</span>
+      </button>
+      <button type="button" class="metric" [class.active]="focus() === 'blocked'" (click)="setFocus('blocked')">
+        <span class="n">{{ d.blocked_tasks.length }}</span>
+        <span class="l">Blocked</span>
+      </button>
+      <button type="button" class="metric" [class.active]="focus() === 'waiting_due'" (click)="setFocus('waiting_due')">
+        <span class="n">{{ d.waiting_due_date.length }}</span>
+        <span class="l">Need due date</span>
+      </button>
+      <button type="button" class="metric" [class.active]="focus() === 'waiting_ack'" (click)="setFocus('waiting_ack')">
+        <span class="n">{{ d.waiting_acknowledgement.length }}</span>
+        <span class="l">Awaiting ack</span>
+      </button>
+      <div class="metric static">
+        <span class="n">{{ d.issues.length }}</span>
+        <span class="l">Issues</span>
+      </div>
+    </section>
+
+    <div class="layout">
+      <main class="main">
+        <div class="toolbar">
+          <input
+            type="search"
+            placeholder="Filter by title, owner, assignee…"
+            [ngModel]="query()"
+            (ngModelChange)="onSearch($event)"
+          />
+        </div>
+
+        <div class="progress-strip" aria-label="Task progress">
+          @for (bar of progressBars(); track bar.status) {
+            <div class="bar-row">
+              <span class="bar-label">{{ bar.status }}</span>
+              <div class="bar-track">
+                <div class="bar-fill" [style.width.%]="bar.pct" [ngClass]="statusClass(bar.status)"></div>
+              </div>
+              <span class="bar-count">{{ bar.count }}</span>
+            </div>
+          }
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Assigned To</th>
+                <th>Assigned By</th>
+                <th>Reporter</th>
+                <th>Owner</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th>Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (t of focusedTasks(); track t.id) {
+                <tr (click)="openTask(t)" [class.overdue-row]="t.overdue">
+                  <td>
+                    <div class="title-cell">
+                      <strong>{{ t.title }}</strong>
+                      @if (t.needs_assignment) {
+                        <span class="chip warn">Needs assignment</span>
+                      }
+                      @if (t.due_date_pending) {
+                        <span class="chip warn">Due pending</span>
+                      }
+                      @if (t.block_reason_pending) {
+                        <span class="chip warn">Block reason?</span>
+                      }
+                    </div>
+                  </td>
+                  <td>{{ displayName(t.assigned_to) }}</td>
+                  <td>{{ displayName(t.assigned_by) }}</td>
+                  <td>{{ displayName(t.reporter) }}</td>
+                  <td>{{ displayName(t.owner) }}</td>
+                  <td><span class="pill" [ngClass]="priorityClass(t.priority)">{{ t.priority }}</span></td>
+                  <td><span class="pill" [ngClass]="statusClass(t.status)">{{ t.status }}</span></td>
+                  <td>
+                    @if (t.due_date) {
+                      {{ t.due_date | date: 'MMM d, HH:mm' }}
+                    } @else {
+                      <em class="muted">—</em>
+                    }
+                  </td>
+                </tr>
+              } @empty {
+                <tr>
+                  <td colspan="8" class="empty">No tasks in this view.</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <section class="issues-block">
+          <h2>Issues</h2>
+          <div class="issue-list">
+            @for (i of d.issues; track i.id) {
+              <article class="issue-row">
+                <div>
+                  <strong>{{ i.title }}</strong>
+                  <p class="muted">Reporter {{ displayName(i.reporter) }} · Owner {{ displayName(i.owner) }}</p>
+                </div>
+                <div class="issue-meta">
+                  <span class="pill" [ngClass]="priorityClass(i.priority)">{{ i.priority }}</span>
+                  <span class="pill" [ngClass]="statusClass(i.status)">{{ i.status }}</span>
+                </div>
+              </article>
+            } @empty {
+              <p class="muted">No issues yet.</p>
+            }
+          </div>
+        </section>
+      </main>
+
+      <aside class="side">
+        <section>
+          <h2>Owner workload</h2>
+          @for (w of d.owner_workload; track w.id) {
+            <div class="workload">
+              <div class="workload-head">
+                <strong>{{ w.name }}</strong>
+                <span>{{ w.tasks + w.issues }} open</span>
+              </div>
+              <div class="workload-bars">
+                <span>Tasks {{ w.tasks }}</span>
+                <span>Issues {{ w.issues }}</span>
+                @if (w.blocked) {
+                  <span class="warn-text">Blocked {{ w.blocked }}</span>
+                }
+                @if (w.overdue) {
+                  <span class="warn-text">Overdue {{ w.overdue }}</span>
+                }
+              </div>
+            </div>
+          } @empty {
+            <p class="muted">No owners yet.</p>
+          }
+        </section>
+
+        <section>
+          <h2>Dependencies</h2>
+          @for (dep of d.dependencies; track dep.task_id) {
+            <div class="dep">
+              <strong>{{ dep.title }}</strong>
+              <p class="muted">{{ dep.dependencies.join(' · ') }}</p>
+            </div>
+          } @empty {
+            <p class="muted">No open dependencies.</p>
+          }
+        </section>
+
+        <section>
+          <h2>Discussion timeline</h2>
+          <ul class="timeline">
+            @for (disc of d.discussion_timeline; track disc.id) {
+              <li>
+                <p>{{ disc.content }}</p>
+                <span class="muted">
+                  {{ displayName(disc.author) }}
+                  · {{ disc.timestamp | date: 'MMM d, HH:mm' }}
+                  @if (disc.flagged_for_review) {
+                    · review
+                  }
+                </span>
+              </li>
+            } @empty {
+              <li class="muted">No discussions yet.</li>
+            }
+          </ul>
+        </section>
+
+        <section>
+          <h2>Recent activity</h2>
+          <ul class="timeline">
+            @for (a of d.recent_activity; track a.activity_id) {
+              <li>
+                <p>{{ a.summary }}</p>
+                <span class="muted">{{ a.type }} · {{ a.created_at | date: 'MMM d, HH:mm' }}</span>
+              </li>
+            }
+          </ul>
+        </section>
+      </aside>
+    </div>
+  } @else if (loading()) {
+    <p class="loading">Loading dashboard…</p>
+  }
+
+  @if (detail(); as t) {
+    <div class="drawer-backdrop" (click)="closeDetail()"></div>
+    <aside class="drawer" role="dialog" aria-label="Task detail">
+      <button type="button" class="close" (click)="closeDetail()">Close</button>
+      <h2>{{ t.title }}</h2>
+      <p>{{ t.description }}</p>
+      <dl class="detail-grid">
+        <div><dt>Assigned To</dt><dd>{{ displayName(t.assigned_to) }}</dd></div>
+        <div><dt>Assigned By</dt><dd>{{ displayName(t.assigned_by) }}</dd></div>
+        <div><dt>Reporter</dt><dd>{{ displayName(t.reporter) }}</dd></div>
+        <div><dt>Created By</dt><dd>{{ displayName(t.created_by) }}</dd></div>
+        <div><dt>Owner</dt><dd>{{ displayName(t.owner) }}</dd></div>
+        <div><dt>Last Updated By</dt><dd>{{ displayName(t.last_updated_by) }}</dd></div>
+        <div><dt>Priority</dt><dd>{{ t.priority }}</dd></div>
+        <div><dt>Status</dt><dd>{{ t.status }}</dd></div>
+        <div><dt>Due</dt><dd>{{ t.due_date ? (t.due_date | date: 'medium') : 'Pending' }}</dd></div>
+        <div><dt>Blocked reason</dt><dd>{{ t.blocked_reason || '—' }}</dd></div>
+      </dl>
+      @if (t.dependencies?.length) {
+        <h3>Dependencies</h3>
+        <p>{{ t.dependencies?.join(', ') }}</p>
+      }
+      @if (t.mentioned_users?.length) {
+        <h3>Mentioned</h3>
+        <p>{{ mentionList(t) }}</p>
+      }
+    </aside>
+  }
+</div>

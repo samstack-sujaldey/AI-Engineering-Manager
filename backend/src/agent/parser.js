@@ -38,16 +38,17 @@ const PRIORITY = {
 const STATUS = {
 	COMPLETED: [
 		/\bdone\b/i,
-		/\bcompleted?\b/i,
+		/\bcomplet(e|ed)\b/i,
 		/\bresolved\b/i,
 		/\bmerged\b/i,
-		/\bresolved\b/i,
+		/\bresolv(e|ed)\b/i,
 		/\bfixed\b/i,
 		/\bfinished\b/i,
 		/\bshipped\b/i,
 		/\bclosed\b/i,
 	],
 	PROCESSING: [
+		/\bprocessing\b/i,
 		/\bworking\s+on\b/i,
 		/\bimplementing\b/i,
 		/\bcoding\b/i,
@@ -57,7 +58,7 @@ const STATUS = {
 		/\bstarting\b/i,
 	],
 	BLOCKED: [
-		/\bblocked\b/i,
+		/\bblock(e|ed)\b/i,
 		/\bwaiting\s+(for|on)\b/i,
 		/\bpending\b/i,
 		/\bcannot\s+continue\b/i,
@@ -105,6 +106,7 @@ const ISSUE_PATTERNS = [
 ];
 
 const TASK_PATTERNS = [
+	/\btask\s*-/i,
 	/\b(please\s+)?(deploy|create|build|implement|add|fix|update|prepare|finish|complete|write|review|merge|ship|release|migrate|refactor|handle|take\s+care)\b/i,
 	/\b(need(s)?\s+to|should|must|have\s+to)\b/i,
 	/\bi'?ll\s+(finish|do|deploy|create|fix|update|handle|work)\b/i,
@@ -148,6 +150,7 @@ const DEPENDENCY_PATTERNS = [
 ];
 
 const ASSIGNEE_PATTERNS = [
+	/(?:^|\s)(?:<@([A-Z0-9]+)>|@([A-Za-z0-9_.-]+))\s+(?:task|issue)\s*-/i,
 	/(?:^|\s)<@([A-Z0-9]+)>\s*(?:please\s+)?(?:handle|finish|fix|update|deploy|create|take|do|review|look\s+at)\b/i,
 	/(?:^|\s)@([A-Za-z][\w.-]*)\s+(?:please\s+)?(?:handle|finish|fix|update|deploy|create|take|do|review)\b/i,
 	/\bassign(?:ed)?\s+(?:this\s+)?to\s+(?:<@([A-Z0-9]+)>|@?([A-Za-z][\w.-]*))/i,
@@ -239,22 +242,21 @@ function extractMentionedUsers(text, userDirectory = {}) {
 	}
 
 	// NEW: Catch plain text names without the @ symbol
+	const cleanWords = lowerText.replace(/[^a-z0-9\s]/g, "").split(/\s+/);
 	Object.values(userDirectory).forEach((u) => {
-		const displayName = (
-			u.display_name ||
-			u.real_name ||
-			u.name ||
-			""
-		).toLowerCase();
-		if (
-			displayName &&
-			displayName.length > 2 &&
-			lowerText.includes(displayName)
-		) {
-			if (!seen.has(u.id)) {
-				seen.add(u.id);
-				users.push(toUser(u));
-			}
+		const dName = (u.display_name || "").toLowerCase();
+		const rName = (u.real_name || "").toLowerCase();
+		const uName = (u.name || "").toLowerCase();
+
+		const matched = cleanWords.some(
+			(w) =>
+				w.length > 2 &&
+				(dName.includes(w) || rName.includes(w) || uName.includes(w)),
+		);
+
+		if (matched && !seen.has(u.id)) {
+			seen.add(u.id);
+			users.push(toUser(u));
 		}
 	});
 
@@ -277,11 +279,14 @@ function detectAssignee(text, sender, mentionedUsers) {
 		const token = m[1] || m[2] || m[3];
 		if (!token) continue;
 
+		// UPDATED: Allow partial name matching for the extracted token
 		const mentioned =
 			mentionedUsers.find(
 				(u) =>
 					u.id === token ||
-					u.name.toLowerCase() === token.toLowerCase(),
+					(u.name || "").toLowerCase() === token.toLowerCase() ||
+					(u.display_name || "").toLowerCase() ===
+						token.toLowerCase(),
 			) || null;
 
 		const assignee =
@@ -299,7 +304,6 @@ function detectAssignee(text, sender, mentionedUsers) {
 			needs_assignment: false,
 		};
 	}
-
 	if (matchAny(text, SELF_ASSIGN_PATTERNS) || mentionedUsers.length === 0) {
 		const self = toUser(sender);
 		return {
@@ -351,7 +355,9 @@ function nextWeekday(from, dayIndex) {
 }
 
 function parseTimeOfDay(text, base) {
-	const m = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+	// NEW: Allows a colon or a space between hours and minutes (e.g., "5:45 pm" or "5 45 pm")
+	const m = text.match(/\b(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm)\b/i);
+
 	if (!m) return null;
 	let hours = parseInt(m[1], 10);
 	const minutes = parseInt(m[2] || "0", 10);
@@ -460,7 +466,7 @@ function extractDueDate(text, now = new Date()) {
 
 	const timeOnly = parseTimeOfDay(text, now);
 	if (timeOnly) {
-		if (timeOnly < now) timeOnly.setDate(timeOnly.getDate() + 1);
+		// FIXED: If they type a time (e.g., "by 5 PM"), strictly set it for today!
 		return timeOnly.toISOString();
 	}
 
@@ -514,6 +520,30 @@ function extractEntities(text) {
 }
 
 function classifyMessage(text) {
+	const lowerText = text.toLowerCase().trim();
+	if (
+		lowerText.startsWith("task -") ||
+		lowerText.includes(" task -") ||
+		lowerText.includes("> task -")
+	) {
+		return {
+			classification: "TASK",
+			confidence: 0.99,
+			needs_human_review: false,
+		};
+	}
+	if (
+		lowerText.startsWith("issue -") ||
+		lowerText.includes(" issue -") ||
+		lowerText.includes("> issue -")
+	) {
+		return {
+			classification: "ISSUE",
+			confidence: 0.99,
+			needs_human_review: false,
+		};
+	}
+
 	const issueScore = scoreMatches(text, ISSUE_PATTERNS);
 	const taskScore = scoreMatches(text, TASK_PATTERNS);
 	const discussionScore = scoreMatches(text, DISCUSSION_PATTERNS);
@@ -560,12 +590,19 @@ function classifyMessage(text) {
 }
 
 function generateTitle(text, classification) {
-	const cleaned = text
+	let cleaned = text
 		.replace(/<@([A-Z0-9]+)>/g, "")
 		.replace(/@[A-Za-z][\w.-]*/g, "")
 		.replace(/https?:\/\/\S+/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
+
+	// NEW: Aggressively removes names and the command prefix (e.g., "nandani task - ")
+	cleaned = cleaned.replace(/^.*?(task|issue)\s*-\s*/i, "");
+
+	if (cleaned.endsWith("]")) {
+		cleaned = cleaned.slice(0, -1).trim();
+	}
 
 	const sentence = cleaned.split(/[.!?\n]/)[0].trim();
 	if (!sentence)
@@ -924,15 +961,7 @@ function parseMessage(input) {
 				: null,
 			flagged_for_review: needs_human_review,
 		},
-		notifications: needs_human_review
-			? [
-					{
-						type: "HUMAN_REVIEW",
-						message: `Low-confidence message flagged for review: "${text.slice(0, 120)}"`,
-						target_user_id: senderUser.id,
-					},
-				]
-			: [],
+		notifications: [],
 		meta: { is_edit, needs_human_review, watchers, reviewers, entities },
 	});
 }
@@ -951,7 +980,13 @@ function buildNotificationHints({
 	const notifications = [];
 
 	// 1. DUE DATES: STRICTLY FOR TASKS ONLY
-	if (classification === "TASK" && !dueDate && owner && owner.id) {
+	if (
+		classification === "TASK" &&
+		!dueDate &&
+		owner &&
+		owner.id &&
+		status !== "COMPLETED"
+	) {
 		notifications.push({
 			type: "MISSING_DUE_DATE",
 			target_user_id: owner.id,
