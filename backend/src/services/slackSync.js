@@ -68,9 +68,34 @@ async function alreadyProcessed(messageTs) {
   return !!discussion;
 }
 
-async function listChannels(client, { channelIds = [] } = {}) {
+async function resolveChannelIdsByName(client, names) {
+  const wanted = new Set(names.map((n) => n.replace(/^#/, '').toLowerCase()));
+  const resolved = [];
+  let cursor;
+  do {
+    const result = await client.conversations.list({
+      types: 'public_channel,private_channel',
+      exclude_archived: true,
+      limit: 200,
+      cursor,
+    });
+    for (const ch of result.channels || []) {
+      if (wanted.has((ch.name || '').toLowerCase())) {
+        resolved.push({ id: ch.id, name: ch.name });
+      }
+    }
+    cursor = result.response_metadata?.next_cursor || '';
+  } while (cursor && resolved.length < wanted.size);
+  return resolved;
+}
+
+async function listChannels(client, { channelIds = [], channelNames = [] } = {}) {
   if (channelIds.length) {
     return channelIds.map((id) => ({ id }));
+  }
+
+  if (channelNames.length) {
+    return resolveChannelIdsByName(client, channelNames);
   }
 
   const channels = [];
@@ -121,6 +146,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    channelNames = [],
   } = options;
 
   const client = createSlackClient();
@@ -140,7 +166,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
     throw error;
   }
 
-  const channels = await listChannels(client, { channelIds });
+  const channels = await listChannels(client, { channelIds, channelNames });
   const userCache = new Map();
   const summary = {
     workspace: auth.team || '',

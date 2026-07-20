@@ -13,7 +13,9 @@ async function getDashboard() {
     taskStats,
     issueStats,
   ] = await Promise.all([
-    Task.find().sort({ updated_time: -1 }).limit(200).lean(),
+    // Completed tasks are kept in MongoDB for 1 week (auto-deleted by a job)
+    // but are intentionally hidden from the dashboard and all pages.
+    Task.find({ status: { $ne: 'COMPLETED' } }).sort({ updated_time: -1 }).limit(200).lean(),
     Issue.find().sort({ updated_time: -1 }).limit(200).lean(),
     Discussion.find().sort({ timestamp: -1 }).limit(100).lean(),
     Activity.find().sort({ created_at: -1 }).limit(50).lean(),
@@ -33,7 +35,10 @@ async function getDashboard() {
       .sort({ createdAt: -1 })
       .limit(100)
       .lean(),
-    Task.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    Task.aggregate([
+      { $match: { status: { $ne: 'COMPLETED' } } },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
     Issue.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
   ]);
 
@@ -51,8 +56,9 @@ async function getDashboard() {
     if (t.status === 'COMPLETED') continue;
     const key = t.assigned_to?.id || t.assigned_to?.name || 'Unassigned';
     const label = t.assigned_to?.name || t.assigned_to?.display_name || 'Unassigned';
+    const display = t.assigned_to?.display_name || t.assigned_to?.real_name || t.assigned_to?.name || 'Unassigned';
     if (!ownerWorkload[key]) {
-      ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
+      ownerWorkload[key] = { id: key, name: label, display_name: display, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
     ownerWorkload[key].tasks += 1;
     if (t.status === 'BLOCKED') ownerWorkload[key].blocked += 1;
@@ -62,8 +68,9 @@ async function getDashboard() {
     if (i.status === 'COMPLETED') continue;
     const key = i.assigned_to?.id || i.assigned_to?.name || 'Unassigned';
     const label = i.assigned_to?.name || i.assigned_to?.display_name || 'Unassigned';
+    const display = i.assigned_to?.display_name || i.assigned_to?.real_name || i.assigned_to?.name || 'Unassigned';
     if (!ownerWorkload[key]) {
-      ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
+      ownerWorkload[key] = { id: key, name: label, display_name: display, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
     ownerWorkload[key].issues += 1;
   }

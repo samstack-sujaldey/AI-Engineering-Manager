@@ -322,6 +322,9 @@ class MessageProcessor {
 			if (nextStatus === "COMPLETED") {
 				doc.due_date_pending = false;
 				doc.block_reason_pending = false;
+				doc.completed_at = new Date();
+			} else {
+				doc.completed_at = null;
 			}
 		}
 		if (nextPriority) doc.priority = nextPriority;

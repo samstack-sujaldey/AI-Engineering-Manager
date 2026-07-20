@@ -1,7 +1,8 @@
-import { Component } from '@angular/core';
+import { Component, OnInit, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
+import { DashboardService } from '../services/dashboard.service';
 
 interface TeamMember {
   name: string;
@@ -34,7 +35,7 @@ interface TeamMember {
       </div>
 
       <div class="members-grid">
-        <div class="member-card" *ngFor="let member of members">
+        <div class="member-card" *ngFor="let member of members()">
           <div class="member-card-header">
             <div class="avatar-lg" [style.background]="member.color">{{ member.initials }}</div>
             <div class="member-info">
@@ -65,6 +66,9 @@ interface TeamMember {
           <div class="workload-bar-bg">
             <div class="workload-bar-fill" [style.width.%]="member.workload"></div>
           </div>
+        </div>
+        <div *ngIf="members().length === 0" class="empty-text" style="padding: 30px;">
+          No team members with active work yet.
         </div>
       </div>
     </div>
@@ -213,12 +217,53 @@ interface TeamMember {
     }
   `]
 })
-export class TeamComponent {
+export class TeamComponent implements OnInit {
+  dashService = inject(DashboardService);
   teamFilter = 'all';
 
-  members: TeamMember[] = [
-    { name: 'Nitesh Kumar Vishwakarma', role: 'Developer', initials: 'NV', color: '#e07b39', current: 3, blocked: 0, doneToday: 0, workload: 50 },
-    { name: 'nandanimangal7', role: 'Developer', initials: 'NA', color: '#e05050', current: 2, blocked: 2, doneToday: 0, workload: 33 },
-    { name: 'sujal dey', role: 'Developer', initials: 'SD', color: '#1abaab', current: 1, blocked: 0, doneToday: 0, workload: 17 },
-  ];
+  private readonly colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60', '#e67e22'];
+
+  constructor() {
+    this.dashService.disableLive = true;
+  }
+
+  ngOnInit() {
+    this.dashService.load();
+  }
+
+  // Derive team members from the MongoDB-backed owner workload.
+  readonly members = computed<TeamMember[]>(() => {
+    const workload = this.dashService.data()?.owner_workload || [];
+    return workload.map((w: any) => {
+      const name = w.display_name || w.name || 'Unassigned';
+      const open = (w.tasks || 0) + (w.issues || 0);
+      const total = open + (w.blocked || 0) + (w.overdue || 0);
+      const workloadPct = total > 0 ? Math.min(100, Math.round((open / total) * 100)) : 0;
+      return {
+        name,
+        role: 'Developer',
+        initials: this.getInitials(name),
+        color: this.getAvatarColor(name),
+        current: open,
+        blocked: w.blocked || 0,
+        doneToday: 0,
+        workload: workloadPct,
+      };
+    });
+  });
+
+  getInitials(name: string): string {
+    if (!name) return '??';
+    const parts = name.trim().split(' ');
+    return parts.length > 1
+      ? (parts[0][0] + parts[1][0]).toUpperCase()
+      : name.substring(0, 2).toUpperCase();
+  }
+
+  getAvatarColor(name: string): string {
+    if (!name) return '#888';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return this.colors[Math.abs(hash) % this.colors.length];
+  }
 }

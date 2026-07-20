@@ -33,9 +33,13 @@ function createApiRouter({ messageProcessor }) {
         ? parseInt(req.body.limit_per_channel, 10)
         : undefined;
       const channelIds = Array.isArray(req.body?.channels) ? req.body.channels : undefined;
+      const channelNames = Array.isArray(req.body?.channelNames)
+        ? req.body.channelNames
+        : undefined;
       const result = await syncFromSlack(messageProcessor, {
         ...(limit ? { limitPerChannel: limit } : {}),
         ...(channelIds ? { channelIds } : {}),
+        ...(channelNames ? { channelNames } : {}),
       });
       res.json(result);
     } catch (err) {
@@ -198,6 +202,8 @@ function createApiRouter({ messageProcessor }) {
         $set.due_date_pending = false;
       }
       if ($set.blocked_reason) $set.block_reason_pending = false;
+      if ($set.status === 'COMPLETED') $set.completed_at = new Date();
+      if ($set.status && $set.status !== 'COMPLETED') $set.completed_at = null;
 
       const task = await Task.findOneAndUpdate(
         { task_id: req.params.id },

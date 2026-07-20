@@ -157,7 +157,7 @@
           @for (w of d.owner_workload; track w.id) {
             <div class="workload">
               <div class="workload-head">
-                <strong>{{ w.name }}</strong>
+                <strong>{{ w.display_name || w.name }}</strong>
                 <span>{{ w.tasks + w.issues }} open</span>
               </div>
               <div class="workload-bars">

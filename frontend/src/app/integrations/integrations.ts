@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { DashboardService } from '../services/dashboard.service';
@@ -12,6 +12,7 @@ interface Channel {
 @Component({
   selector: 'app-integrations',
   imports: [CommonModule, PageHeaderComponent],
+  providers: [DashboardService],
   template: `
     <app-page-header
       title="Integrations"
@@ -51,13 +52,13 @@ interface Channel {
                 <td>{{ channel.members }}</td>
                 <td class="channel-status">{{ channel.status }}</td>
                 <td class="action-cell">
-                  <!-- UPDATED: Hooked up the Run Pipeline button to sync Slack -->
+                  <!-- Each Run button syncs ONLY its own channel pipeline -->
                   <button
                     class="run-pipeline-btn"
-                    (click)="dashService.refresh()"
-                    [disabled]="dashService.loading()"
+                    (click)="runChannel(channel)"
+                    [disabled]="syncingChannel() === channel.name"
                   >
-                    {{ dashService.loading() ? 'Syncing...' : 'Run Pipeline' }}
+                    {{ syncingChannel() === channel.name ? 'Syncing...' : 'Run Pipeline' }}
                   </button>
                 </td>
               </tr>
@@ -191,10 +192,30 @@ interface Channel {
 })
 export class IntegrationsComponent {
   dashService = inject(DashboardService);
+  // Tracks which channel is currently syncing so only that row's button shows "Syncing...".
+  readonly syncingChannel = signal<string | null>(null);
+  // This component owns its own isolated instance — don't open a duplicate live socket.
+  constructor() {
+    this.dashService.disableLive = true;
+  }
+
+  ngOnInit() {
+    this.dashService.load();
+  }
   channels: Channel[] = [
     { name: '#drafters', members: 4, status: 'Bot in channel' },
     { name: '#social', members: 3, status: 'Bot in channel' },
     { name: '#all-drafters', members: 4, status: 'Bot in channel' },
     { name: '#test', members: 4, status: 'Bot in channel' },
   ];
+
+  // Sync ONLY the clicked channel's pipeline.
+  async runChannel(channel: Channel): Promise<void> {
+    this.syncingChannel.set(channel.name);
+    try {
+      await this.dashService.syncChannel(channel.name);
+    } finally {
+      this.syncingChannel.set(null);
+    }
+  }
 }

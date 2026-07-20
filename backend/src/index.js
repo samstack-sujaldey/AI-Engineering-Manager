@@ -11,7 +11,7 @@ const { createApiRouter } = require('./routes/api');
 const { NotificationService } = require('./services/notifications');
 const { MessageProcessor } = require('./services/messageProcessor');
 const { createSlackApp } = require('./slack/app');
-const { startReminderScheduler } = require('./jobs/reminders');
+const { startReminderScheduler, purgeOldCompletedTasks } = require('./jobs/reminders');
 
 async function main() {
   await mongoose.connect(config.mongodbUri);
@@ -71,6 +71,8 @@ async function main() {
   }
 
   startReminderScheduler(notificationService);
+  // Remove completed tasks that have aged out of the retention window on startup.
+  purgeOldCompletedTasks();
 
   server.listen(config.port, () => {
     console.log(`[api] AI Engineering Manager listening on http://localhost:${config.port}`);

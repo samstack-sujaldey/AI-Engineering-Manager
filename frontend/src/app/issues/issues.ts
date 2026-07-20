@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -7,7 +7,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 @Component({
   selector: 'app-issues',
   imports: [CommonModule, PageHeaderComponent, FormsModule],
-  providers: [DatePipe],
+  providers: [DatePipe, DashboardService],
   template: `
     <app-page-header title="Issues" searchPlaceholder="Search issues..."></app-page-header>
 
@@ -73,14 +73,14 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                   </div>
                 </td>
                 <td class="assignee-cell">
-                  <div class="avatar-sm" [style.background]="getAvatarColor(issue.owner?.name)">
-                    {{ getInitials(issue.owner?.name) }}
+                  <div class="avatar-sm" [style.background]="getAvatarColor(displayName(issue.owner))">
+                    {{ getInitials(displayName(issue.owner)) }}
                   </div>
-                  <span>{{ issue.owner?.name || 'Unassigned' }}</span>
+                  <span>{{ displayName(issue.owner) || 'Unassigned' }}</span>
                 </td>
                 <td>
                   <span style="font-size: 13px; color: #555; text-transform: capitalize;">{{
-                    issue.reporter?.name || 'System'
+                    displayName(issue.reporter) || 'System'
                   }}</span>
                 </td>
                 <td>
@@ -312,8 +312,16 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class IssuesComponent {
+export class IssuesComponent implements OnInit {
   dashService = inject(DashboardService);
+
+  constructor() {
+    this.dashService.disableLive = true;
+  }
+
+  ngOnInit() {
+    this.dashService.load();
+  }
 
   statusFilter = 'all';
   priorityFilter = 'all';
@@ -339,6 +347,12 @@ export class IssuesComponent {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : '';
+  }
+
+  displayName(user?: { name?: string; display_name?: string; real_name?: string; email?: string } | null): string {
+    if (!user) return '';
+    const raw = user.display_name || user.real_name || user.name || (user.email ? user.email.split('@')[0] : '');
+    return raw || 'Unassigned';
   }
 
   getInitials(name?: string): string {

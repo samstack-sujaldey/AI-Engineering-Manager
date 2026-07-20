@@ -61,6 +61,31 @@ function createSlackApp({ messageProcessor, notificationService }) {
 		notificationService.setSlackClient(app.client);
 	}
 
+	// Build a user-directory keyed by Slack id from the @mentions in a message
+	async function buildDirectory(client, text) {
+		const ids = [...(text || "").matchAll(/<@([A-Z0-9]+)>/g)].map((m) => m[1]);
+		const directory = {};
+		await Promise.all(
+			ids.map(async (id) => {
+				try {
+					const info = await client.users.info({ user: id });
+					const u = info.user || {};
+					directory[id] = {
+						id: u.id,
+						name: u.name,
+						display_name:
+							u.profile?.display_name || u.real_name || u.name,
+						email: u.profile?.email || "",
+						real_name: u.real_name,
+					};
+				} catch {
+					directory[id] = { id, name: id, display_name: id };
+				}
+			})
+		);
+		return directory;
+	}
+
 	async function resolveSender(client, userId) {
 		try {
 			const info = await client.users.info({ user: userId });
@@ -175,7 +200,7 @@ function createSlackApp({ messageProcessor, notificationService }) {
 				const chunkTs =
 					explicitLines.length > 1 ? `${event.ts}_${i}` : event.ts;
 
-				const result = await messageProcessor.process({
+				result = await messageProcessor.process({
 					text: chunk,
 					sender,
 					channel: event.channel,

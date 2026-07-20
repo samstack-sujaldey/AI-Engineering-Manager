@@ -1,6 +1,29 @@
 const cron = require("node-cron");
 const { Task, Issue, Notification } = require("../models");
 const config = require("../config");
+const { Activity } = require("../models");
+
+// Completed tasks stay in MongoDB for this long, then are auto-deleted.
+const COMPLETED_RETENTION_DAYS = 7;
+
+/**
+ * Deletes completed tasks that have been completed for longer than the
+ * retention window. They remain queryable in the DB (e.g. for audits) until then.
+ */
+async function purgeOldCompletedTasks() {
+	try {
+		const cutoff = new Date(Date.now() - COMPLETED_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+		const result = await Task.deleteMany({
+			status: "COMPLETED",
+			completed_at: { $lte: cutoff },
+		});
+		if (result.deletedCount > 0) {
+			console.log(`[cleanup] Deleted ${result.deletedCount} completed task(s) older than ${COMPLETED_RETENTION_DAYS} days`);
+		}
+	} catch (err) {
+		console.error("[cleanup] failed to purge completed tasks:", err);
+	}
+}
 
 /**
  * Hourly reminder loop for:
@@ -103,7 +126,14 @@ function startReminderScheduler(notificationService) {
 	console.log(
 		"[reminders] Hourly reminder scheduler started (checks every 5 min)",
 	);
+
+	// Daily cleanup of completed tasks past the retention window (runs at 03:17).
+	const cleanupJob = cron.schedule("17 3 * * *", () => {
+		purgeOldCompletedTasks();
+	});
+	console.log("[cleanup] Completed-task purge scheduled (daily)");
+
 	return job;
 }
 
-module.exports = { startReminderScheduler };
+module.exports = { startReminderScheduler, purgeOldCompletedTasks };

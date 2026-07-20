@@ -23,10 +23,12 @@ export interface DashboardData {
   generated_at: string;
 }
 
-@Injectable({ providedIn: 'root' })
+@Injectable()
 export class DashboardService {
   private readonly http = inject(HttpClient);
   private socket: Socket | null = null;
+  // When true, this instance won't open its own live socket (used by per-page instances).
+  disableLive = false;
 
   readonly data = signal<DashboardData | null>(null);
   readonly loading = signal(false);
@@ -49,37 +51,56 @@ export class DashboardService {
     }
   }
 
-  async refresh(): Promise<void> {
+  /**
+   * Trigger a Slack sync. If `channelName` is provided, only that channel's
+   * pipeline is synced; otherwise all channels the bot is in are synced.
+   * Always reloads the MongoDB-backed dashboard afterwards.
+   */
+  async refresh(channelName?: string): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     this.syncInfo.set(null);
     try {
+      const body: Record<string, unknown> = {};
+      if (channelName) body['channelNames'] = [channelName];
+
       const result = await firstValueFrom(
-        this.http.post<any>(`${environment.apiUrl}/slack/sync`, {}),
+        this.http.post<any>(`${environment.apiUrl}/slack/sync`, body),
       );
-      this.data.set(result.dashboard);
       const s = result.sync;
       const created =
         (s.created?.tasks || 0) + (s.created?.issues || 0) + (s.created?.discussions || 0);
 
+      const scope = channelName ? `channel #${channelName}` : `${s.channels_scanned} channel(s)`;
       this.syncInfo.set(
-        `Synced ${s.channels_scanned} channel(s): ${s.messages_processed} new, ${s.messages_skipped} skipped, ${created} items created.`,
+        `Synced ${scope}: ${s.messages_processed} new, ${s.messages_skipped} skipped, ${created} items created.`,
       );
     } catch (err: any) {
       this.error.set(err.error?.error || 'Failed to trigger Slack sync pipeline.');
+    } finally {
+      // Always pull the latest data straight from MongoDB afterwards
       try {
         const data = await firstValueFrom(
           this.http.get<DashboardData>(`${environment.apiUrl}/dashboard`),
         );
         this.data.set(data);
-      } catch {}
-    } finally {
+      } catch (loadErr: any) {
+        if (!this.error()) {
+          this.error.set(loadErr?.message || 'Failed to load dashboard data from backend.');
+        }
+      }
       this.loading.set(false);
     }
   }
 
+  /** Sync a single channel pipeline. */
+  async syncChannel(channelName: string): Promise<void> {
+    return this.refresh(channelName);
+  }
+
   connectLive(): void {
-    if (this.socket) return;
+    // Only the app shell should own the live socket connection.
+    if (this.socket || this.disableLive) return;
     this.socket = io(environment.socketUrl, { transports: ['websocket', 'polling'] });
 
     this.socket.on('connect', () => this.live.set(true));

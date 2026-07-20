@@ -34,6 +34,7 @@ const TaskSchema = new mongoose.Schema(
       enum: ['TODO', 'PROCESSING', 'COMPLETED', 'BLOCKED'],
       default: 'TODO',
     },
+    completed_at: { type: Date, default: null },
     due_date: { type: Date, default: null },
     due_date_pending: { type: Boolean, default: false },
     due_date_notification_at: { type: Date, default: null },

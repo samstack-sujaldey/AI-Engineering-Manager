@@ -6,6 +6,7 @@ import { DashboardService } from './services/dashboard.service';
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterLink, RouterLinkActive, CommonModule],
+  providers: [DashboardService],
   template: `
     <div class="app-container">
       <!-- Sidebar -->

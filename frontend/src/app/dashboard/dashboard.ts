@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { PageHeaderComponent } from '../shared/page-header';
@@ -7,7 +7,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 @Component({
   selector: 'app-dashboard',
   imports: [CommonModule, RouterLink, PageHeaderComponent],
-  providers: [DatePipe],
+  providers: [DatePipe, DashboardService],
   template: `
     <app-page-header title="Dashboard" searchPlaceholder="Search tasks, teams, or summaries...">
       <button
@@ -36,10 +36,6 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             <div class="stat-value">{{ countStatus(data.tasks, 'PROCESSING') }}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Completed</div>
-            <div class="stat-value">{{ countStatus(data.tasks, 'COMPLETED') }}</div>
-          </div>
-          <div class="stat-card">
             <div class="stat-label">Blocked</div>
             <div class="stat-value critical">{{ countStatus(data.tasks, 'BLOCKED') }}</div>
             <div class="stat-badge critical" *ngIf="countStatus(data.tasks, 'BLOCKED') > 0">
@@ -64,7 +60,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             <div class="standup-entry" *ngFor="let disc of data.discussion_timeline.slice(0, 3)">
               <div class="standup-text">{{ disc.content }}</div>
               <div class="standup-meta">
-                <span class="slack-badge">{{ disc.author?.name || 'User' }}</span>
+                <span class="slack-badge">{{ displayName(disc.author) }}</span>
                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
               </div>
             </div>
@@ -118,11 +114,11 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             <tbody>
               <tr *ngFor="let w of data.owner_workload">
                 <td class="member-cell">
-                  <div class="avatar" [style.background]="getAvatarColor(w.name)">
-                    {{ getInitials(w.name) }}
-                  </div>
-                  <div>
-                    <div class="member-name">{{ w.name || 'Unassigned' }}</div>
+              <div class="avatar" [style.background]="getAvatarColor(w.display_name || w.name)">
+                {{ getInitials(w.display_name || w.name) }}
+              </div>
+              <div>
+                <div class="member-name">{{ w.display_name || w.name || 'Unassigned' }}</div>
                     <div class="member-role">Developer</div>
                   </div>
                 </td>
@@ -406,8 +402,24 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class DashboardComponent {
+export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
+
+  constructor() {
+    // The app shell owns the shared live socket; this isolated instance only reads data.
+    this.dashService.disableLive = true;
+  }
+
+  ngOnInit() {
+    // Load this page's own MongoDB-backed dashboard data on visit.
+    this.dashService.load();
+  }
+
+  displayName(user?: { name?: string; display_name?: string; real_name?: string; email?: string } | null): string {
+    if (!user) return 'Unassigned';
+    const raw = user.display_name || user.real_name || user.name || (user.email ? user.email.split('@')[0] : '');
+    return raw || 'Unassigned';
+  }
 
   countStatus(tasks: any[], status: string): number {
     if (!tasks) return 0;
@@ -427,9 +439,44 @@ export class DashboardComponent {
     if (!name) return '#888';
     const colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60', '#e67e22'];
     let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    }
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
   }
+
+  progressBars() {
+    const progress = this.dashService.data()?.task_progress || {};
+    return Object.entries(progress).map(([status, count]) => ({
+      status,
+      count: count as number,
+      pct: Math.max(2, Math.min(100, count as number)),
+    }));
+  }
+
+  focusedTasks() {
+    const tasks = this.dashService.data()?.tasks || [];
+    const q = (this.query() || '').toLowerCase();
+    const focus = this.focus();
+    let filtered = tasks;
+    if (focus !== 'all') {
+      const map: Record<string, (t: any) => boolean> = {
+        urgent: (t) => t.priority === 'URGENT' && t.status !== 'COMPLETED',
+        overdue: (t) => t.overdue,
+        blocked: (t) => t.status === 'BLOCKED',
+        waiting_due: (t) => t.due_date_pending,
+        waiting_ack: (t) => t.awaiting_acknowledgement && !t.awaiting_acknowledgement.acknowledged,
+      };
+      filtered = (map[focus] || ((t: any) => true))(tasks) ? tasks.filter(map[focus]) : tasks;
+    }
+    if (q) filtered = filtered.filter((t: any) => (t.title || '').toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
+    return filtered;
+  }
+
+  query = signal('');
+  focus = signal<'all' | 'urgent' | 'overdue' | 'blocked' | 'waiting_due' | 'waiting_ack'>('all');
+  detail = signal<any>(null);
+
+  onSearch(q: string) { this.query.set(q); }
+  setFocus(f: 'all' | 'urgent' | 'overdue' | 'blocked' | 'waiting_due' | 'waiting_ack') { this.focus.set(f); }
+  openTask(t: any) { this.detail.set(t); }
+  closeDetail() { this.detail.set(null); }
 }

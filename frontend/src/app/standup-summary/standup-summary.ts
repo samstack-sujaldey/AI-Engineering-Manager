@@ -1,6 +1,7 @@
-import { Component } from '@angular/core';
+import { Component, OnInit, inject, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
+import { DashboardService } from '../services/dashboard.service';
 
 interface StandupEntry {
   id: number;
@@ -8,6 +9,7 @@ interface StandupEntry {
   date: string;
   time: string;
   status: 'Completed' | 'Failed';
+  content: string;
   isSelected?: boolean;
 }
 
@@ -21,21 +23,21 @@ interface ExtractedTask {
 @Component({
   selector: 'app-standup-summary',
   imports: [CommonModule, PageHeaderComponent],
+  providers: [DashboardService],
   template: `
     <app-page-header title="Stand-up Summary" searchPlaceholder="Search summaries..."></app-page-header>
 
     <div class="standup-body">
       <div class="standup-layout">
-        <!-- Left Panel: Recent Stand-ups -->
         <div class="recent-panel">
           <div class="panel-header">
             <span class="panel-title">Recent Stand-ups</span>
-            <button class="paste-new-btn">+ Paste New</button>
+            <button class="paste-new-btn" (click)="dashService.load()">Refresh</button>
           </div>
           <div class="standup-list">
             <div
               class="standup-item"
-              *ngFor="let entry of standupEntries"
+              *ngFor="let entry of entries()"
               [class.selected]="entry.isSelected"
               (click)="selectEntry(entry)"
             >
@@ -43,14 +45,16 @@ interface ExtractedTask {
               <div class="entry-datetime">{{ entry.date }} · {{ entry.time }}</div>
               <div class="entry-status" [ngClass]="entry.status.toLowerCase()">{{ entry.status }}</div>
             </div>
+            <div *ngIf="entries().length === 0" class="empty-text" style="padding: 20px;">
+              No stand-up messages synced yet.
+            </div>
           </div>
         </div>
 
-        <!-- Right Panel: Extracted Tasks -->
         <div class="detail-panel" *ngIf="selectedEntry">
           <div class="extracted-header">
             <span class="section-title">Extracted Tasks</span>
-            <span class="task-count">{{ extractedTasks.length }} task(s)</span>
+            <span class="task-count">{{ extractedTasks().length }} task(s)</span>
           </div>
           <table class="extracted-table">
             <thead>
@@ -62,11 +66,14 @@ interface ExtractedTask {
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let task of extractedTasks">
+              <tr *ngFor="let task of extractedTasks()">
                 <td>{{ task.name }}</td>
                 <td>{{ task.assignedTo }}</td>
                 <td><span class="priority-badge low">{{ task.priority }}</span></td>
                 <td><span class="processing-badge">{{ task.status }}</span></td>
+              </tr>
+              <tr *ngIf="extractedTasks().length === 0">
+                <td colspan="4" class="empty-text">No tasks extracted.</td>
               </tr>
             </tbody>
           </table>
@@ -74,10 +81,9 @@ interface ExtractedTask {
           <div class="original-message-section">
             <div class="om-header">
               <span class="section-title">Original Message</span>
-              <span class="submitted-by">Submitted by sujal dey</span>
             </div>
             <div class="original-message-box">
-              working on categorization parser service
+              {{ selectedEntry.content }}
             </div>
           </div>
         </div>
@@ -265,29 +271,57 @@ interface ExtractedTask {
     }
   `]
 })
-export class StandupSummaryComponent {
+export class StandupSummaryComponent implements OnInit {
+  dashService = inject(DashboardService);
   selectedEntry: StandupEntry | null = null;
 
-  standupEntries: StandupEntry[] = [
-    { id: 1, source: 'Slack', date: 'Jul 15, 2026', time: '1:02 PM', status: 'Completed', isSelected: true },
-    { id: 2, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 3, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 4, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 5, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 6, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 7, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Completed' },
-  ];
-
-  extractedTasks: ExtractedTask[] = [
-    { name: 'Work on categorization parser service', assignedTo: 'sujal dey', priority: 'Low', status: 'PROCESSING' }
-  ];
-
   constructor() {
-    this.selectedEntry = this.standupEntries[0];
+    this.dashService.disableLive = true;
   }
 
+  ngOnInit() {
+    this.dashService.load();
+  }
+
+  // Recent stand-ups derived from the MongoDB-backed discussion timeline.
+  readonly entries = computed<StandupEntry[]>(() => {
+    const discs = this.dashService.data()?.discussion_timeline || [];
+    const list = discs.slice(0, 20).map((d: any, idx: number) => {
+      const ts = d.timestamp ? new Date(d.timestamp) : new Date();
+      return {
+        id: idx + 1,
+        source: 'Slack',
+        date: ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        time: ts.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        status: 'Completed' as const,
+        content: d.content || '',
+        isSelected: false,
+      };
+    });
+    if (list.length) list[0].isSelected = true;
+    if (!this.selectedEntry && list.length) this.selectedEntry = list[0];
+    return list;
+  });
+
+  // Extracted tasks derived from the MongoDB-backed tasks list.
+  readonly extractedTasks = computed<ExtractedTask[]>(() => {
+    const tasks = this.dashService.data()?.tasks || [];
+    return tasks
+      .filter((t: any) => this.selectedEntry && t.title)
+      .map((t: any) => ({
+        name: t.title,
+        assignedTo:
+          t.assigned_to?.display_name ||
+          t.assigned_to?.real_name ||
+          t.assigned_to?.name ||
+          (t.assigned_to?.email ? t.assigned_to.email.split('@')[0] : 'Unassigned'),
+        priority: (t.priority || 'MEDIUM').toLowerCase(),
+        status: (t.status || 'TODO').toUpperCase(),
+      }));
+  });
+
   selectEntry(entry: StandupEntry) {
-    this.standupEntries.forEach(e => e.isSelected = false);
+    this.entries().forEach(e => (e.isSelected = false));
     entry.isSelected = true;
     this.selectedEntry = entry;
   }

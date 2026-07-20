@@ -101,20 +101,6 @@ async function findWorkByMessageTs(messageTs) {
 		Issue.findOne({ slack_message_ts: messageTs }).lean(),
 	]);
 
-	if (!task && !issue) {
-		const notif = await Notification.findOne({
-			slack_dm_ts: thread,
-		}).lean();
-		if (notif) {
-			if (notif.task_id)
-				task = await Task.findOne({ task_id: notif.task_id }).lean();
-			if (notif.issue_id)
-				issue = await Issue.findOne({
-					issue_id: notif.issue_id,
-				}).lean();
-		}
-	}
-
 	return { task, issue };
 }
 
