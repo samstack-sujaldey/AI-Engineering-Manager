@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const { Task, Issue, Discussion, Activity } = require("../models");
 const { parseMessage } = require("../agent/parser");
 const { analyzeSlackMessage } = require("../ai/gemini");
@@ -12,6 +13,29 @@ const {
 } = require("./similarity");
 const { newId } = require("../utils/helpers");
 const config = require("../config");
+
+/**
+ * Fingerprint of the raw message text. Stamped onto a Task/Issue's history
+ * whenever we run it through the AI layer, so a re-delivered/edited message
+ * with byte-identical content can skip Gemini entirely instead of re-spending
+ * tokens on a result we already have.
+ */
+function hashText(text = "") {
+  return crypto.createHash("sha1").update(text || "").digest("hex");
+}
+
+/**
+ * Has this exact message (same ts, same text) already been run through the
+ * AI layer for this doc? Only meaningful for the "same message re-delivered"
+ * case (is_edit / duplicate webhook) — NOT for thread or similarity matches,
+ * which are different messages and always need fresh analysis.
+ */
+function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
+  if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
+  return doc.history.some(
+    (h) => h?.details?.message_ts === message_ts && h?.details?.text_hash === hash,
+  );
+}
 
 class MessageProcessor {
   constructor({ notificationService, io } = {}) {
@@ -48,10 +72,22 @@ class MessageProcessor {
     // NEW: Detect if this is an explicit command so we don't accidentally merge it!
     const isExplicitCommand = /task\s*-/i.test(text) || /issue\s*-/i.test(text);
 
+    const textHash = hashText(text);
+    // True only when THIS exact message (same ts, same text) was already run
+    // through the AI layer before — e.g. a duplicate edit event with no real
+    // content change. Deliberately computed before thread/similarity lookups
+    // below can reassign existing_task/existing_issue to a DIFFERENT message's
+    // task/issue, which always still needs fresh analysis.
+    let alreadyAnalyzed = false;
+
     if (is_edit && message_ts) {
       const byMsg = await findWorkByMessageTs(message_ts);
       existing_task = byMsg.task;
       existing_issue = byMsg.issue;
+
+      alreadyAnalyzed =
+        wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
+        wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
     }
 
     const threadRoot = thread_id || message_ts;
@@ -125,34 +161,47 @@ class MessageProcessor {
       }
     }
 
-    // Extract structured content (text / OCR / summary / metadata) from any
-    // locally downloaded Slack attachments via attachments/extractor.js.
-    // Gated on shouldAnalyze() so we don't burn time extracting PDFs, images,
-    // etc. for a message that the AI layer is going to skip anyway.
-    let attachments = [];
-    if (
-      local_attachments.length &&
-      shouldAnalyze({ rawMessage: text, parserResult: parsed })
-    ) {
-      attachments = await extractAttachments(local_attachments);
+    // AI Enhancement — skipped entirely when this exact message was already
+    // analyzed (see alreadyAnalyzed above), so identical edit/retry deliveries
+    // don't cost Gemini tokens for a result we already have.
+    let enhanced = parsed;
+
+    if (!alreadyAnalyzed) {
+      // Extract structured content (text / OCR / summary / metadata) from any
+      // locally downloaded Slack attachments via attachments/extractor.js.
+      // Gated on shouldAnalyze() so we don't burn time extracting PDFs, images,
+      // etc. for a message that the AI layer is going to skip anyway.
+      let attachments = [];
+      if (
+        local_attachments.length &&
+        shouldAnalyze({ rawMessage: text, parserResult: parsed })
+      ) {
+        attachments = await extractAttachments(local_attachments);
+      }
+
+      enhanced = await analyzeSlackMessage({
+        rawMessage: text,
+
+        parserResult: parsed,
+
+        // Trimmed snapshots instead of the full raw doc (history, tags,
+        // entities, local_file_logs, etc.) — the AI only needs the fields it
+        // actually reasons over, and this meaningfully shrinks every prompt.
+        existingTask: existing_task ? this.taskSnapshot(existing_task) : null,
+
+        existingIssue: existing_issue ? this.issueSnapshot(existing_issue) : null,
+
+        threadContext: [], // we'll improve this later
+
+        attachments,
+      });
+    } else if (!quiet) {
+      console.log(
+        `[messageProcessor] Skipping AI re-analysis for ts=${message_ts}: identical content already processed.`,
+      );
     }
 
-    // AI Enhancement
-    const enhanced = await analyzeSlackMessage({
-      rawMessage: text,
-
-      parserResult: parsed,
-
-      existingTask: existing_task,
-
-      existingIssue: existing_issue,
-
-      threadContext: [], // we'll improve this later
-
-      attachments,
-    });
-
-    // Persist AI-enhanced result
+    // Persist result
     const result = await this.persist(
       {
         ...enhanced,
@@ -166,6 +215,7 @@ class MessageProcessor {
         workspace_id,
         team,
         message_ts,
+        text_hash: textHash,
         existing_task,
         existing_issue,
       },
@@ -251,7 +301,7 @@ class MessageProcessor {
         {
           event: "CREATED",
           by: senderRef,
-          details: { action: "CREATE_TASK" },
+          details: { action: "CREATE_TASK", message_ts: ctx.message_ts, text_hash: ctx.text_hash },
         },
       ],
     });
@@ -401,7 +451,7 @@ class MessageProcessor {
     doc.history.push({
       event: "UPDATED",
       by: senderRef,
-      details: { action: parsed.action, updates },
+      details: { action: parsed.action, updates, message_ts: ctx.message_ts, text_hash: ctx.text_hash },
     });
 
     // Link discussion if present
@@ -479,7 +529,7 @@ class MessageProcessor {
         {
           event: "CREATED",
           by: senderRef,
-          details: { action: "CREATE_ISSUE" },
+          details: { action: "CREATE_ISSUE", message_ts: ctx.message_ts, text_hash: ctx.text_hash },
         },
       ],
     });
@@ -567,7 +617,7 @@ class MessageProcessor {
     doc.history.push({
       event: "UPDATED",
       by: senderRef,
-      details: { action: parsed.action, updates },
+      details: { action: parsed.action, updates, message_ts: ctx.message_ts, text_hash: ctx.text_hash },
     });
     await doc.save();
 

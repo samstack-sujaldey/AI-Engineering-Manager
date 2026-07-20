@@ -69,6 +69,10 @@ const TaskSchema = new mongoose.Schema(
       urls: { type: [String], default: [] },
       files: { type: [String], default: [] },
     },
+    // Snapshot of Slack attachment descriptors (fileName, mimeType, extracted
+    // content, etc.) captured at create/update time, since the underlying
+    // temp files get deleted by slackSync's cleanup step shortly after.
+    local_file_logs: { type: [mongoose.Schema.Types.Mixed], default: [] },
     history: [
       {
         event: String,
