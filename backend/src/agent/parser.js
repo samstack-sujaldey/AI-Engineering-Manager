@@ -653,7 +653,7 @@ function isAcknowledgement(text) {
  * @param {Array} [input.thread_context]
  * @param {Date} [input.now]
  */
-function parseMessage(input) {
+async function parseMessage(input) {
 	const {
 		text = "",
 		sender = {},
