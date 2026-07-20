@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const fs = require("fs/promises");
 const { Task, Issue, Discussion, Activity } = require("../models");
 const { parseMessage } = require("../agent/parser");
 const { analyzeSlackMessage } = require("../ai/gemini");
@@ -14,22 +15,10 @@ const {
 const { newId } = require("../utils/helpers");
 const config = require("../config");
 
-/**
- * Fingerprint of the raw message text. Stamped onto a Task/Issue's history
- * whenever we run it through the AI layer, so a re-delivered/edited message
- * with byte-identical content can skip Gemini entirely instead of re-spending
- * tokens on a result we already have.
- */
 function hashText(text = "") {
   return crypto.createHash("sha1").update(text || "").digest("hex");
 }
 
-/**
- * Has this exact message (same ts, same text) already been run through the
- * AI layer for this doc? Only meaningful for the "same message re-delivered"
- * case (is_edit / duplicate webhook) — NOT for thread or similarity matches,
- * which are different messages and always need fresh analysis.
- */
 function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
   if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
   return doc.history.some(
@@ -47,10 +36,6 @@ class MessageProcessor {
     this.io = io;
   }
 
-  /**
-   * Process one Slack message end-to-end.
-   * Returns the structured parser result enriched with persisted IDs.
-   */
   async process(raw, options = {}) {
     const {
       text,
@@ -62,22 +47,21 @@ class MessageProcessor {
       message_ts = "",
       is_edit = false,
       user_directory = {},
-      local_attachments = [], // Received from slackSync.js tracking loop
+      local_attachments = [],
     } = raw;
     const { quiet = false } = options;
+
+    console.log(`\n--- [Processor Trace Start: ${message_ts}] ---`);
+    console.log(`[Trace] Text snippet: "${(text || "").slice(0, 60)}..."`);
+    console.log(`[Trace] Local attachments count: ${local_attachments.length}`);
 
     let existing_task = null;
     let existing_issue = null;
 
-    // NEW: Detect if this is an explicit command so we don't accidentally merge it!
     const isExplicitCommand = /task\s*-/i.test(text) || /issue\s*-/i.test(text);
+    console.log(`[Trace] Is Explicit Command ('task -' / 'issue -'): ${isExplicitCommand}`);
 
     const textHash = hashText(text);
-    // True only when THIS exact message (same ts, same text) was already run
-    // through the AI layer before — e.g. a duplicate edit event with no real
-    // content change. Deliberately computed before thread/similarity lookups
-    // below can reassign existing_task/existing_issue to a DIFFERENT message's
-    // task/issue, which always still needs fresh analysis.
     let alreadyAnalyzed = false;
 
     if (is_edit && message_ts) {
@@ -88,17 +72,19 @@ class MessageProcessor {
       alreadyAnalyzed =
         wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
         wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
+      console.log(`[Trace] Is Edit. Already Analyzed by AI previously: ${alreadyAnalyzed}`);
     }
 
     const threadRoot = thread_id || message_ts;
 
-    // FIXED: Do not merge into an existing thread if the user explicitly types "task -"
     if (!existing_task && !existing_issue && threadRoot && !isExplicitCommand) {
       const byThread = await findWorkByThread(threadRoot, channel);
       existing_task = byThread.task;
       existing_issue = byThread.issue;
+      console.log(`[Trace] Thread matching root=${threadRoot}. Found Task: ${!!existing_task}, Found Issue: ${!!existing_issue}`);
     }
 
+    // Step 1: Core Regex Parser Execution
     const parsed = parseMessage({
       text,
       sender,
@@ -114,20 +100,18 @@ class MessageProcessor {
       now: new Date(),
     });
 
-    // FIXED: Skip deduplication if the user explicitly types "task -"
+    console.log(`[Trace] Regex Parser Output -> Classification: ${parsed.classification}, Action: ${parsed.action}, Confidence: ${parsed.confidence}`);
+
+    // Deduplication evaluation
     if (
       parsed.classification === "TASK" &&
       parsed.action === "CREATE_TASK" &&
       parsed.task &&
       !isExplicitCommand
     ) {
-      const sim = await findSimilarTask(
-        parsed.task.title,
-        parsed.task.description,
-        workspace_id,
-        channel,
-      );
+      const sim = await findSimilarTask(parsed.task.title, parsed.task.description, workspace_id, channel);
       if (sim) {
+        console.log(`[Trace] Deduplicated Task match found via similarity. Merging into task_id: ${sim.task.task_id}`);
         parsed.action = "UPDATE_TASK";
         parsed.task_created = false;
         parsed.task_updated = true;
@@ -141,98 +125,99 @@ class MessageProcessor {
       parsed.action === "CREATE_ISSUE" &&
       parsed.issue
     ) {
-      const sim = await findSimilarIssue(
-        parsed.issue.title,
-        parsed.issue.description,
-        workspace_id,
-        channel,
-      );
+      const sim = await findSimilarIssue(parsed.issue.title, parsed.issue.description, workspace_id, channel);
       if (sim) {
+        console.log(`[Trace] Deduplicated Issue match found via similarity. Merging into issue_id: ${sim.issue.issue_id}`);
         parsed.action = "UPDATE_ISSUE";
         parsed.issue_created = false;
         parsed.issue_updated = true;
         parsed.issue.id = sim.issue.issue_id;
         existing_issue = sim.issue;
-        parsed.meta = {
-          ...parsed.meta,
-          similarity_score: sim.score,
-          deduped: true,
-        };
       }
     }
 
-    // AI Enhancement — skipped entirely when this exact message was already
-    // analyzed (see alreadyAnalyzed above), so identical edit/retry deliveries
-    // don't cost Gemini tokens for a result we already have.
+    // Step 2: Gemini Optimization Gates
     let enhanced = parsed;
 
     if (!alreadyAnalyzed) {
-      // Extract structured content (text / OCR / summary / metadata) from any
-      // locally downloaded Slack attachments via attachments/extractor.js.
-      // Gated on shouldAnalyze() so we don't burn time extracting PDFs, images,
-      // etc. for a message that the AI layer is going to skip anyway.
       let attachments = [];
-      if (
-        local_attachments.length &&
-        shouldAnalyze({ rawMessage: text, parserResult: parsed })
-      ) {
+      const analysisAllowed = shouldAnalyze({ rawMessage: text, parserResult: parsed, attachments: local_attachments });
+      console.log(`[Trace] shouldAnalyze() decision: ${analysisAllowed}`);
+
+      if (local_attachments.length && analysisAllowed) {
+        console.log(`[Trace] Triggering extraction via extractor.js for ${local_attachments.length} files...`);
         attachments = await extractAttachments(local_attachments);
+        console.log(`[Trace] Extraction complete. Formatted metadata profiles built: ${attachments.length}`);
       }
 
-      enhanced = await analyzeSlackMessage({
-        rawMessage: text,
+      if (analysisAllowed) {
+        console.log(`[Trace] Dispatching request payload to Gemini API...`);
+        enhanced = await analyzeSlackMessage({
+          rawMessage: text,
+          parserResult: parsed,
+          existingTask: existing_task ? this.taskSnapshot(existing_task) : null,
+          existingIssue: existing_issue ? this.issueSnapshot(existing_issue) : null,
+          threadContext: [], 
+          attachments,
+        });
+        console.log(`[Trace] Gemini API Response received -> New Classification: ${enhanced.classification}, Action: ${enhanced.action}`);
+      }
+    }
 
-        parserResult: parsed,
-
-        // Trimmed snapshots instead of the full raw doc (history, tags,
-        // entities, local_file_logs, etc.) — the AI only needs the fields it
-        // actually reasons over, and this meaningfully shrinks every prompt.
-        existingTask: existing_task ? this.taskSnapshot(existing_task) : null,
-
-        existingIssue: existing_issue ? this.issueSnapshot(existing_issue) : null,
-
-        threadContext: [], // we'll improve this later
-
-        attachments,
-      });
-    } else if (!quiet) {
-      console.log(
-        `[messageProcessor] Skipping AI re-analysis for ts=${message_ts}: identical content already processed.`,
+    // Step 3: Persistence and Local File System Eviction
+    try {
+      console.log(`[Trace] Committing final record payload to Database via action: ${enhanced.action}`);
+      const result = await this.persist(
+        {
+          ...enhanced,
+          local_attachments,
+        },
+        {
+          text,
+          sender,
+          channel,
+          thread_id: threadRoot,
+          workspace_id,
+          team,
+          message_ts,
+          text_hash: textHash,
+          existing_task,
+          existing_issue,
+        }
       );
+
+      console.log(`[Trace Result Summary] task_created: ${!!result.task_created}, issue_created: ${!!result.issue_created}, discussion: ${!!result.discussion}`);
+      
+      if (this.io && !quiet) {
+        this.io.emit("dashboard:update", {
+          action: result.action,
+          classification: result.classification,
+          task_id: result.task?.id || null,
+          issue_id: result.issue?.id || null,
+          at: new Date().toISOString(),
+        });
+      }
+
+      return result;
+    } finally {
+      console.log(`[Trace] Entering cleanup loop. Clearing localstorage attachments...`);
+      if (local_attachments.length > 0) {
+        for (const file of local_attachments) {
+          try {
+            if (file.localPath) {
+              await fs.unlink(file.localPath);
+              console.log(`[Trace Cleanup Success] Deleted file at: ${file.localPath}`);
+            }
+          } catch (err) {
+            console.warn(`[Trace Cleanup Warning] Failed to delete file ${file.localPath}:`, err.message);
+          }
+        }
+      }
+      console.log(`--- [Processor Trace End: ${message_ts}] ---\n`);
     }
-
-    // Persist result
-    const result = await this.persist(
-      {
-        ...enhanced,
-        local_attachments,
-      },
-      {
-        text,
-        sender,
-        channel,
-        thread_id: threadRoot,
-        workspace_id,
-        team,
-        message_ts,
-        text_hash: textHash,
-        existing_task,
-        existing_issue,
-      },
-    );
-
-    if (this.io && !quiet) {
-      this.io.emit("dashboard:update", {
-        action: result.action,
-        classification: result.classification,
-        task_id: result.task?.id || null,
-        issue_id: result.issue?.id || null,
-        at: new Date().toISOString(),
-      });
-    }
-
-    return result;
   }
+
+
 
   async persist(parsed, ctx) {
     const senderRef = parsed.sender;
@@ -296,7 +281,7 @@ class MessageProcessor {
       team: ctx.team,
       slack_message_ts: ctx.message_ts,
       entities: parsed.meta?.entities || {},
-      local_file_logs: parsed.local_attachments || [], // Save file descriptors before cleanup unlinks them
+      local_file_logs: parsed.local_attachments || [], // Save file descriptors metadata before disk unlinking
       history: [
         {
           event: "CREATED",
@@ -372,7 +357,6 @@ class MessageProcessor {
     const taskId = parsed.task?.id || ctx.existing_task?.task_id;
     const doc = await Task.findOne({ task_id: taskId });
     if (!doc) {
-      // Fall back to create if missing
       return this.createTask(
         { ...parsed, action: "CREATE_TASK", task_created: true },
         ctx,
@@ -484,7 +468,6 @@ class MessageProcessor {
       thread: ctx.thread_id,
     });
 
-    // Fire missing-info notifications on newly blocked / missing due
     await this.dispatchNotifications(parsed.notifications, {
       task_id: doc.task_id,
     });
@@ -513,7 +496,7 @@ class MessageProcessor {
       last_updated_by: senderRef,
       mentioned_users: parsed.mentioned_users || [],
       priority: i.priority || "HIGH",
-      status: i.status || "HOLD", // Map to HOLD
+      status: i.status || "HOLD",
       blocked_reason: i.blocked_reason || "",
       block_reason_pending: i.status === "HOLD" && !i.blocked_reason,
       dependencies: i.dependencies || [],
@@ -524,7 +507,7 @@ class MessageProcessor {
       team: ctx.team,
       slack_message_ts: ctx.message_ts,
       entities: parsed.meta?.entities || {},
-      local_file_logs: parsed.local_attachments || [], // Save file descriptors before cleanup unlinks them
+      local_file_logs: parsed.local_attachments || [],
       history: [
         {
           event: "CREATED",
@@ -670,21 +653,13 @@ class MessageProcessor {
     if (discussion.task_id) {
       await Task.updateOne(
         { task_id: discussion.task_id },
-        {
-          $addToSet: {
-            related_discussions: discussion.discussion_id,
-          },
-        },
+        { $addToSet: { related_discussions: discussion.discussion_id } },
       );
     }
     if (discussion.issue_id) {
       await Issue.updateOne(
         { issue_id: discussion.issue_id },
-        {
-          $addToSet: {
-            related_discussions: discussion.discussion_id,
-          },
-        },
+        { $addToSet: { related_discussions: discussion.discussion_id } },
       );
     }
 

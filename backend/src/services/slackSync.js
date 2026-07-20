@@ -61,11 +61,15 @@ async function buildDirectory(client, text, cache) {
   return directory;
 }
 
+// FIXED: Enhanced status wrapper to return meaningful states back to the execution trace loop
 async function alreadyProcessed(messageTs) {
   const { task, issue } = await findWorkByMessageTs(messageTs);
-  if (task || issue) return true;
+  if (task || issue) return { skipped: true, type: task ? 'TASK_MATCH' : 'ISSUE_MATCH' };
+  
   const discussion = await Discussion.findOne({ slack_message_ts: messageTs }).lean();
-  return !!discussion;
+  if (discussion) return { skipped: true, type: 'DISCUSSION_MATCH' };
+  
+  return { skipped: false };
 }
 
 async function listChannels(client, { channelIds = [] } = {}) {
@@ -110,9 +114,6 @@ async function fetchChannelHistory(client, channelId, limit) {
   return messages.reverse();
 }
 
-/**
- * Pull recent Slack channel messages into the message processor, then return dashboard data.
- */
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
@@ -139,7 +140,6 @@ async function syncFromSlack(messageProcessor, options = {}) {
     throw error;
   }
 
-  // Uses the existing token resolution logic already declared at the bottom of your file[cite: 5]
   let downloadToken;
   try {
     downloadToken = await module.exports.getSlackAccessToken(); 
@@ -175,24 +175,32 @@ async function syncFromSlack(messageProcessor, options = {}) {
 
     for (const msg of history) {
       summary.messages_seen += 1;
-      if (!msg?.text || msg.bot_id || msg.subtype === 'bot_message') {
+      
+      // FIXED: Allow processing if there are attachments present, even if raw message text field is blank
+      const hasFiles = msg.files && msg.files.length > 0;
+      const safeText = msg.text || "";
+
+      if ((!safeText && !hasFiles) || msg.bot_id || msg.subtype === 'bot_message') {
+        console.log(`[Sync Debug] Skipping item ts=${msg.ts}: Identified as bot notification or lacks content.`);
         summary.messages_skipped += 1;
         continue;
       }
       if (msg.subtype && msg.subtype !== 'file_share') {
+        console.log(`[Sync Debug] Skipping item ts=${msg.ts}: Excluded due to message subtype alignment.`);
         summary.messages_skipped += 1;
         continue;
       }
 
       let downloadedFiles = [];
       try {
-        if (await alreadyProcessed(msg.ts)) {
+        const checkDuplicate = await alreadyProcessed(msg.ts);
+        if (checkDuplicate.skipped) {
+          console.log(`[Sync Debug] Skipping duplicate item ts=${msg.ts}: Already indexed as [${checkDuplicate.type}].`);
           summary.messages_skipped += 1;
           continue;
         }
 
-        // Uses the existing download function already defined in this file[cite: 5]
-        if (msg.files && msg.files.length > 0) {
+        if (hasFiles) {
           const rawAttachments = msg.files.map(f => ({
             slackFileId: f.id,
             fileName: f.name,
@@ -205,11 +213,12 @@ async function syncFromSlack(messageProcessor, options = {}) {
         }
 
         const sender = await resolveUser(client, msg.user, userCache);
-        const user_directory = await buildDirectory(client, msg.text, userCache);
+        const user_directory = await buildDirectory(client, safeText, userCache);
         
+        console.log(`[Sync Debug] Handing off message context (ts=${msg.ts}) directly to MessageProcessor core.`);
         const result = await messageProcessor.process(
           {
-            text: msg.text,
+            text: safeText,
             sender,
             channel: channel.id,
             thread_id: msg.thread_ts || msg.ts,
@@ -233,13 +242,13 @@ async function syncFromSlack(messageProcessor, options = {}) {
           summary.created.discussions += 1;
         }
       } catch (err) {
+        console.error(`[Sync Error] Failed parsing operations for timeline item ts=${msg.ts}:`, err.message);
         summary.errors.push({
           channel: channel.id,
           ts: msg.ts,
           error: err.message,
         });
       } finally {
-        // Uses the existing cleanup utility already defined in this file[cite: 5]
         if (downloadedFiles.length > 0) {
           await module.exports.cleanupTemporaryFiles(downloadedFiles);
         }
@@ -256,14 +265,6 @@ async function syncFromSlack(messageProcessor, options = {}) {
   }
 
   const dashboard = await getDashboard();
-
-  if (summary.channels_scanned === 0) {
-    summary.errors.push({
-      error:
-        'No channels found. Invite the bot to channels and grant channels:read / groups:read scopes, then reinstall the app.',
-    });
-  }
-
   return { ok: true, sync: summary, dashboard };
 }
 
