@@ -10,7 +10,7 @@ const {
   extractPresentation,
   analyzeImage,
   extractUnknown,
-} = require("../helpers/attachment.helper");
+} = require("../../helpers/attachment.helper.js");
 
 /**
  * Extract a single attachment.

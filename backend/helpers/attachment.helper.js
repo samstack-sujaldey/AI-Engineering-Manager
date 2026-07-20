@@ -5,11 +5,11 @@ const mammoth = require("mammoth");
 const XLSX = require("xlsx");
 const { parse } = require("csv-parse/sync");
 
-const { analyzeImage: analyzeImageWithGemini } = require("../ai/gemini");
+const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/gemini.js");
 const {
   MAX_ATTACHMENT_SIZE,
   EXTRACTION_TIMEOUT,
-} = require("../constants/attachment.constants");
+} = require("../constants/attachment.constant.js");
 
 /**
  * Read plain text, log, xml, html files

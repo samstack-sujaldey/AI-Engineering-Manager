@@ -19,6 +19,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@slack/bolt": "^4.7.3",
     "@slack/web-api": "^7.19.0",
     "axios": "^1.18.1",
