@@ -1,6 +1,8 @@
 const { Task, Issue, Discussion, Activity } = require("../models");
 const { parseMessage } = require("../agent/parser");
 const { analyzeSlackMessage } = require("../ai/gemini");
+const { shouldAnalyze } = require("../ai/shouldAnalyze");
+const { extractAttachments } = require("../attachments/extractor");
 
 const {
   findSimilarTask,
@@ -123,7 +125,18 @@ class MessageProcessor {
       }
     }
 
-    // Attach local temporary attachment descriptors cleanly into database persistence execution
+    // Extract structured content (text / OCR / summary / metadata) from any
+    // locally downloaded Slack attachments via attachments/extractor.js.
+    // Gated on shouldAnalyze() so we don't burn time extracting PDFs, images,
+    // etc. for a message that the AI layer is going to skip anyway.
+    let attachments = [];
+    if (
+      local_attachments.length &&
+      shouldAnalyze({ rawMessage: text, parserResult: parsed })
+    ) {
+      attachments = await extractAttachments(local_attachments);
+    }
+
     // AI Enhancement
     const enhanced = await analyzeSlackMessage({
       rawMessage: text,
@@ -136,7 +149,7 @@ class MessageProcessor {
 
       threadContext: [], // we'll improve this later
 
-      attachments: local_attachments,
+      attachments,
     });
 
     // Persist AI-enhanced result
