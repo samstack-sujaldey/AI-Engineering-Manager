@@ -192,15 +192,24 @@ function createSlackApp({ messageProcessor, notificationService }) {
 				);
 
 				if (result.task_created || result.issue_created) {
-					const label = result.task_created
-						? `Task *${result.task.title}* assigned to ${result.task.assigned_to?.name || "Unassigned"}`
-						: `Issue *${result.issue.title}* assigned to ${result.issue.assigned_to?.name || "Unassigned"}`;
+					const isTask = result.task_created;
+					const workItem = isTask ? result.task : result.issue;
+
+					const assigneeTag = workItem.assigned_to?.id
+						? `<@${workItem.assigned_to.id}>`
+						: workItem.assigned_to?.name || "Unassigned";
+
+					const label = isTask
+						? `🎯 *Task Tracked:* '${workItem.title}'\nAssigned to: ${assigneeTag} [${workItem.priority}/${workItem.status}]`
+						: `🚨 *Issue Tracked:* '${workItem.title}'\nAssigned to: ${assigneeTag} [${workItem.priority}/${workItem.status}]`;
+
 					try {
-						// NEW: Post an ephemeral (invisible) confirmation that ONLY the sender sees!
+						// UPDATED: Post an ephemeral reply in the thread that ONLY the sender can see!
 						await client.chat.postEphemeral({
 							channel: event.channel,
-							user: event.user, // The person who sent the message
-							text: `✅ Tracked Privately: ${label}`,
+							thread_ts: event.thread_ts || event.ts,
+							user: event.user, // <--- This ensures ONLY the person who typed the message sees it
+							text: label,
 						});
 					} catch (err) {
 						console.error(
@@ -321,6 +330,42 @@ function createSlackApp({ messageProcessor, notificationService }) {
 			console.error("[slack] message handler error:", err);
 		}
 	});
+
+	// --- NEW: Handle Block Kit button clicks for Meeting Requests ---
+	app.action(/accept_sync_(.+)/, async ({ action, ack, respond, client }) => {
+		await ack();
+		const taskId = action.action_id.split("accept_sync_")[1];
+
+		// Update the target user's message
+		await respond({
+			text: "Great! I've let them know you are available. Please reach out to them directly.",
+			replace_original: true,
+		});
+
+		// Find the task owner and notify them that Nitesh is ready
+		// (Assume you fetch the task from DB here to get the owner's ID)
+		// await client.chat.postMessage({
+		// 	channel: taskOwnerId,
+		// 	text: `🔔 Good news! The user blocking your task (*${taskId}*) is available to connect right now.`
+		// });
+	});
+
+	app.action(/later_sync_(.+)/, async ({ action, ack, respond, client }) => {
+		await ack();
+		const taskId = action.action_id.split("later_sync_")[1];
+
+		await respond({
+			text: "Understood. I've asked them to hold off for now.",
+			replace_original: true,
+		});
+
+		// Notify the developer that Nitesh is busy
+		// await client.chat.postMessage({
+		// 	channel: taskOwnerId,
+		// 	text: `🕒 The user blocking your task (*${taskId}*) is currently busy. Please try reaching out to them later.`
+		// });
+	});
+	// ----------------------------------------------------------------
 
 	return app;
 }

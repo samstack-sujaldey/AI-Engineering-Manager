@@ -15,7 +15,7 @@ function startReminderScheduler(notificationService) {
 	}
 
 	// Every 5 minutes check; interval between reminder resends controlled by next_reminder_at
-	const job = cron.schedule("*/60 * * * *", async () => {
+	const job = cron.schedule("*/1 * * * *", async () => {
 		try {
 			// Re-assert pending flags from tasks/issues that still need data
 			const tasksMissingBlock = await Task.find({

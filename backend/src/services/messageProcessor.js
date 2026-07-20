@@ -1,5 +1,6 @@
+const { analyzeBlockReason } = require("../agent/blockAnalyzer");
 const { Task, Issue, Discussion, Activity } = require("../models");
-const { parseMessage } = require("../agent/parser");
+const { parseMessage, detectStatus } = require("../agent/parser");
 const {
 	findSimilarTask,
 	findSimilarIssue,
@@ -64,6 +65,26 @@ class MessageProcessor {
 			existing_issue = byThread.issue;
 		}
 
+		// NEW: If the bot is waiting for a block reason from this task, intercept the reply!
+		// NEW: If the bot is waiting for a block reason from this task, intercept the reply!
+		if (existing_task && existing_task.block_reason_pending) {
+			return this.updateTask({
+				text,
+				sender,
+				channel,
+				thread_id: threadRoot,
+				workspace_id,
+				message_ts,
+				task: existing_task, // ✅ FIXED: Explicitly maps the task data so updateTask doesn't crash!
+				user_directory,
+				updates: {
+					block_reason: text, // Save their reply as the reason!
+					block_reason_pending: false,
+					status: "BLOCKED",
+				},
+			});
+		}
+
 		const parsed = parseMessage({
 			text,
 			sender,
@@ -79,18 +100,20 @@ class MessageProcessor {
 			now: new Date(),
 		});
 
-		// FIXED: Skip deduplication if the user explicitly types "task -"
+		// 1. DEDUPLICATION & TASK UPDATES
+		// We removed the "!isExplicitCommand" restriction so this runs even if you type "task -"
 		if (
 			parsed.classification === "TASK" &&
 			parsed.action === "CREATE_TASK" &&
-			parsed.task &&
-			!isExplicitCommand
+			parsed.task
 		) {
+			// Use a slightly lower threshold (0.75) so "fix code" matches "fix code is done"
 			const sim = await findSimilarTask(
 				parsed.task.title,
 				parsed.task.description,
 				workspace_id,
 				channel,
+				0.6,
 			);
 			if (sim) {
 				parsed.action = "UPDATE_TASK";
@@ -98,31 +121,45 @@ class MessageProcessor {
 				parsed.task_updated = true;
 				parsed.task.id = sim.task.task_id;
 				existing_task = sim.task;
+
+				// Preserve the new status if you typed "completed" or "blocked"
+				if (parsed.task.status && parsed.task.status !== "TODO") {
+					parsed.updates = {
+						...parsed.updates,
+						status: parsed.task.status,
+					};
+				}
 			}
 		}
 
+		// 2. STANDALONE STATUS CATCHER
+		// Catches messages like "fix code of backend is done" that might have missed the TASK classification
 		if (
-			parsed.classification === "ISSUE" &&
-			parsed.action === "CREATE_ISSUE" &&
-			parsed.issue
+			parsed.classification === "GENERAL_DISCUSSION" &&
+			parsed.action === "STORE_DISCUSSION"
 		) {
-			const sim = await findSimilarIssue(
-				parsed.issue.title,
-				parsed.issue.description,
-				workspace_id,
-				channel,
-			);
-			if (sim) {
-				parsed.action = "UPDATE_ISSUE";
-				parsed.issue_created = false;
-				parsed.issue_updated = true;
-				parsed.issue.id = sim.issue.issue_id;
-				existing_issue = sim.issue;
-				parsed.meta = {
-					...parsed.meta,
-					similarity_score: sim.score,
-					deduped: true,
-				};
+			const statusMatch = detectStatus(text);
+			if (statusMatch !== "TODO") {
+				const sim = await findSimilarTask(
+					text,
+					"",
+					workspace_id,
+					channel,
+					0.75,
+				);
+				if (sim) {
+					parsed.classification = "TASK";
+					parsed.action = "UPDATE_TASK";
+					parsed.task_created = false;
+					parsed.task_updated = true;
+					parsed.task = {
+						...sim.task,
+						id: sim.task.task_id,
+						status: statusMatch,
+					};
+					parsed.updates = { status: statusMatch };
+					existing_task = sim.task;
+				}
 			}
 		}
 
@@ -277,6 +314,21 @@ class MessageProcessor {
 			await doc.save();
 		}
 
+		// NEW: If task is created as BLOCKED, ask for the reason!
+		if (doc.status === "BLOCKED" && !doc.block_reason) {
+			doc.block_reason_pending = true;
+			await doc.save();
+			try {
+				await this.notifications.slack.chat.postMessage({
+					channel: ctx.channel,
+					thread_ts: ctx.thread_id || ctx.message_ts,
+					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason (e.g., "waiting on Nitesh to send keys").`,
+				});
+			} catch (err) {
+				console.error("Failed to ask for block reason:", err.message);
+			}
+		}
+
 		return {
 			...parsed,
 			task_created: true,
@@ -411,6 +463,123 @@ class MessageProcessor {
 
 		return {
 			...parsed,
+			task_created: false,
+			task_updated: true,
+			task: this.taskSnapshot(doc),
+		};
+
+		if (ctx.updates && ctx.updates.block_reason) {
+			// 1. Run the AI analyzer on the newly submitted reason
+			const blockAnalysis = await analyzeBlockReason(
+				ctx.updates.block_reason,
+				ctx.user_directory,
+				/*, yourAiClient */
+			);
+
+			if (blockAnalysis) {
+				const ownerName =
+					doc.assigned_to?.name ||
+					ctx.sender?.name ||
+					"A team member";
+				let blocks = [];
+
+				if (blockAnalysis.intent === "MEETING_REQUEST") {
+					// Professional Interactive Meeting Request
+					blocks = [
+						{
+							type: "header",
+							text: {
+								type: "plain_text",
+								text: "🗓️ Connection Request",
+							},
+						},
+						{
+							type: "section",
+							text: {
+								type: "mrkdwn",
+								text: `Hi ${blockAnalysis.user.display_name},\n\n*${ownerName}* has requested to connect with you regarding a blocked task: *${doc.title}*.\n\nAre you available for a quick sync now?`,
+							},
+						},
+						{
+							type: "actions",
+							elements: [
+								{
+									type: "button",
+									text: {
+										type: "plain_text",
+										text: "✅ Yes, I'm Free",
+									},
+									style: "primary",
+									action_id: `accept_sync_${doc.task_id}`,
+								},
+								{
+									type: "button",
+									text: {
+										type: "plain_text",
+										text: "🕒 Ping Me Later",
+									},
+									action_id: `later_sync_${doc.task_id}`,
+								},
+							],
+						},
+					];
+				} else {
+					// Professional Action Item Notification
+					blocks = [
+						{
+							type: "header",
+							text: {
+								type: "plain_text",
+								text: "🚨 Action Required: Task Blocked",
+							},
+						},
+						{
+							type: "section",
+							text: {
+								type: "mrkdwn",
+								text: `Hi ${blockAnalysis.user.display_name},\n\nThe task *${doc.title}* has been marked as blocked by *${ownerName}*.\n\n*Reason:* ${blockAnalysis.summary}\n\nPlease review this at your earliest convenience so development can continue.`,
+							},
+						},
+					];
+				}
+
+				// 2. Send the formatted Block Kit message directly to the target user
+				try {
+					await this.notifications.slack.chat.postMessage({
+						channel: blockAnalysis.user.id, // Sends as a direct DM to the user
+						text: `Blocked Task Notification: ${doc.title}`, // Fallback text for mobile notifications
+						blocks: blocks,
+					});
+				} catch (err) {
+					console.error(
+						"[Slack] Failed to notify blocking user:",
+						err.message,
+					);
+				}
+			}
+		}
+
+		// NEW: If task is updated to BLOCKED, ask for the reason!
+		if (
+			doc.status === "BLOCKED" &&
+			!doc.block_reason &&
+			!doc.block_reason_pending
+		) {
+			doc.block_reason_pending = true;
+			await doc.save();
+			try {
+				await this.notifications.slack.chat.postMessage({
+					channel: ctx.channel,
+					thread_ts: ctx.thread_id || ctx.message_ts,
+					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason (e.g., "waiting on Nitesh to send keys").`,
+				});
+			} catch (err) {
+				console.error("Failed to ask for block reason:", err.message);
+			}
+		}
+
+		return {
+			...ctx,
 			task_created: false,
 			task_updated: true,
 			task: this.taskSnapshot(doc),

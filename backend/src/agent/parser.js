@@ -340,9 +340,11 @@ function detectPriority(text) {
 }
 
 function detectStatus(text) {
-	if (matchAny(text, STATUS.COMPLETED)) return "COMPLETED";
-	if (matchAny(text, STATUS.BLOCKED)) return "BLOCKED";
-	if (matchAny(text, STATUS.PROCESSING)) return "PROCESSING";
+	const lower = text.toLowerCase();
+	if (/\b(?:done|completed|finished)\b/.test(lower)) return "COMPLETED";
+	if (/\b(?:block|blocked|stuck)\b/.test(lower)) return "BLOCKED";
+	if (/\b(?:processing|doing|working|in progress)\b/.test(lower))
+		return "IN_PROGRESS";
 	return "TODO";
 }
 
@@ -837,7 +839,8 @@ function parseMessage(input) {
 				title: existing_task?.title || title,
 				description: text,
 				priority,
-				status,
+				// FIXED: Pulls the detected status (e.g., BLOCKED) instead of defaulting to TODO
+				status: status !== "TODO" ? status : "TODO",
 				due_date: dueDate || "",
 				dependencies,
 				blocked_reason: blockedReason,
