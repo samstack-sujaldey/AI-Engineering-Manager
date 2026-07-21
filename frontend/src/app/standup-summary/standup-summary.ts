@@ -14,22 +14,37 @@ import { PageHeaderComponent } from '../shared/page-header';
     <div class="standup-body">
       <div class="summary-container">
         
-        <!-- Top Control Bar with Calendar Picker -->
+        <!-- Top Control Bar with Calendar Picker and Sync Button -->
         <div class="control-header">
           <div class="header-left">
             <h2 class="summary-title">🗓 Daily Stand-up Digest</h2>
             <span class="selected-date-label">{{ formattedDateDisplay }}</span>
+            <span class="last-sync-badge" *ngIf="lastSyncTime">
+              Last synced: {{ lastSyncTime | date:'shortTime' }}
+            </span>
           </div>
 
-          <div class="calendar-picker-wrapper">
-            <label for="summaryDate">Select Date:</label>
-            <input
-              type="date"
-              id="summaryDate"
-              [(ngModel)]="selectedDate"
-              (change)="onDateChange()"
-              class="calendar-input"
-            />
+          <div class="header-right">
+            <!-- Sync / Refresh AI Summary Button -->
+            <button 
+              class="refresh-btn" 
+              [disabled]="isLoading || isRefreshing" 
+              (click)="onRefreshClick()">
+              <span *ngIf="!isRefreshing">🔄 Refresh AI Summary</span>
+              <span *ngIf="isRefreshing">⏳ Summarizing...</span>
+            </button>
+
+            <!-- Calendar Picker -->
+            <div class="calendar-picker-wrapper">
+              <label for="summaryDate">Select Date:</label>
+              <input
+                type="date"
+                id="summaryDate"
+                [(ngModel)]="selectedDate"
+                (change)="onDateChange()"
+                class="calendar-input"
+              />
+            </div>
           </div>
         </div>
 
@@ -50,7 +65,7 @@ import { PageHeaderComponent } from '../shared/page-header';
         <ng-template #loadingState>
           <div class="loading-box">
             <div class="spinner"></div>
-            <span>Generating summary points for {{ formattedDateDisplay }}...</span>
+            <span>{{ loadingMessage }}</span>
           </div>
         </ng-template>
 
@@ -84,8 +99,14 @@ import { PageHeaderComponent } from '../shared/page-header';
 
     .header-left {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 12px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
 
     .summary-title {
@@ -99,6 +120,39 @@ import { PageHeaderComponent } from '../shared/page-header';
       font-size: 14px;
       color: #666;
       font-weight: 500;
+    }
+
+    .last-sync-badge {
+      font-size: 12px;
+      color: #888;
+      background: #f4f4f6;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    /* Sync Button Styling */
+    .refresh-btn {
+      background: #5b4fcf;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s ease, opacity 0.2s ease;
+    }
+
+    .refresh-btn:hover:not(:disabled) {
+      background: #4a3ebd;
+    }
+
+    .refresh-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
 
     .calendar-picker-wrapper {
@@ -208,8 +262,11 @@ export class StandupSummaryComponent implements OnInit {
   taskCount: number = 0;
   issueCount: number = 0;
   discussionCount: number = 0;
+  lastSyncTime: Date | null = null;
 
   isLoading: boolean = false;
+  isRefreshing: boolean = false;
+  loadingMessage: string = '';
 
   constructor(private http: HttpClient) {}
 
@@ -218,7 +275,7 @@ export class StandupSummaryComponent implements OnInit {
   }
 
   /**
-   * Converts markdown returned by OpenRouter into clean HTML for rendering
+   * Converts markdown returned by backend/LLM into clean HTML for rendering
    */
   get formattedSummaryHtml(): string {
     if (!this.currentSummary) return '<em>No activity logged for this date.</em>';
@@ -249,7 +306,8 @@ export class StandupSummaryComponent implements OnInit {
     this.selectedDate = `${year}-${month}-${day}`;
     this.updateFormattedDateDisplay(monday);
     
-    this.fetchSummaryForDate(this.selectedDate);
+    // Initial fetch loads directly from cache
+    this.fetchSummaryForDate(this.selectedDate, false);
   }
 
   onDateChange(): void {
@@ -259,7 +317,16 @@ export class StandupSummaryComponent implements OnInit {
     const dateObj = new Date(year, month - 1, day);
 
     this.updateFormattedDateDisplay(dateObj);
-    this.fetchSummaryForDate(this.selectedDate);
+    // Fetch cached summary when date changes
+    this.fetchSummaryForDate(this.selectedDate, false);
+  }
+
+  /**
+   * User manually clicks "Refresh AI Summary" button
+   */
+  onRefreshClick(): void {
+    if (!this.selectedDate) return;
+    this.fetchSummaryForDate(this.selectedDate, true);
   }
 
   updateFormattedDateDisplay(dateObj: Date): void {
@@ -268,20 +335,38 @@ export class StandupSummaryComponent implements OnInit {
     this.formattedDateDisplay = `${dayName}, ${monthDay}`;
   }
 
-  fetchSummaryForDate(dateStr: string): void {
-    this.isLoading = true;
-    this.http.get<any>(`${this.apiUrl}/discussions/daily-summary?date=${dateStr}`).subscribe({
+  fetchSummaryForDate(dateStr: string, forceRefresh: boolean = false): void {
+    if (forceRefresh) {
+      this.isRefreshing = true;
+      this.loadingMessage = `Re-analyzing new tasks & issues with AI for ${this.formattedDateDisplay}...`;
+    } else {
+      this.isLoading = true;
+      this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
+    }
+
+    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}&forceRefresh=${forceRefresh}`;
+
+    this.http.get<any>(url).subscribe({
       next: (res) => {
         this.currentSummary = res.summary;
-        this.taskCount = res.tasks?.length || 0;
-        this.issueCount = res.issues?.length || 0;
-        this.discussionCount = res.discussions?.length || 0;
+        this.taskCount = res.tasks?.length || res.tasks_count || 0;
+        this.issueCount = res.issues?.length || res.issues_count || 0;
+        this.discussionCount = res.discussions?.length || res.discussions_count || 0;
+        
+        if (res.last_updated_at) {
+          this.lastSyncTime = new Date(res.last_updated_at);
+        } else {
+          this.lastSyncTime = new Date();
+        }
+
         this.isLoading = false;
+        this.isRefreshing = false;
       },
       error: (err) => {
         console.error('Failed to fetch summary:', err);
         this.currentSummary = 'Unable to generate summary for this date.';
         this.isLoading = false;
+        this.isRefreshing = false;
       }
     });
   }

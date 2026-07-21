@@ -5,6 +5,7 @@ const { parseMessage } = require("../agent/parser");
 const { analyzeSlackMessage } = require("../ai/gemini");
 const { shouldAnalyze } = require("../ai/shouldAnalyze");
 const { extractAttachments } = require("../attachments/extractor");
+const { invalidateDailySummary } = require("../utils/cacheHelper");
 
 const {
   findSimilarTask,
@@ -176,7 +177,6 @@ class MessageProcessor {
         },
       );
     } finally {
-      // Unlink local temporary attachment files immediately after processing
       await this.cleanupAttachments(local_attachments);
     }
 
@@ -288,6 +288,9 @@ class MessageProcessor {
       issue_id: discussion.issue_id,
     });
 
+    // ⚡ Invalidate daily summary cache for today
+    await invalidateDailySummary();
+
     return {
       ...parsed,
       discussion: {
@@ -351,6 +354,9 @@ class MessageProcessor {
 
     await this.dispatchNotifications(parsed.notifications, { task_id: taskId });
 
+    // ⚡ Invalidate daily summary cache for today
+    await invalidateDailySummary();
+
     return {
       ...parsed,
       task_created: true,
@@ -379,6 +385,9 @@ class MessageProcessor {
 
     doc.last_updated_by = senderRef;
     await doc.save();
+
+    // ⚡ Invalidate daily summary cache for today
+    await invalidateDailySummary();
 
     return {
       ...parsed,
@@ -423,6 +432,9 @@ class MessageProcessor {
       thread: ctx.thread_id,
     });
 
+    // ⚡ Invalidate daily summary cache for today
+    await invalidateDailySummary();
+
     return {
       ...parsed,
       issue_created: true,
@@ -447,6 +459,9 @@ class MessageProcessor {
 
     doc.last_updated_by = senderRef;
     await doc.save();
+
+    // ⚡ Invalidate daily summary cache for today
+    await invalidateDailySummary();
 
     return {
       ...parsed,

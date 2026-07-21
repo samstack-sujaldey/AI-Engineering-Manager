@@ -7,7 +7,6 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /**
@@ -23,18 +22,43 @@ function cleanJsonResponse(text) {
 }
 
 /**
- * Calls OpenRouter's chat completions endpoint.
+ * Strips reasoning / chain-of-thought analysis preambles from LLM outputs.
+ */
+function sanitizeLlmOutput(text) {
+  if (!text) return "";
+
+  let cleaned = text.trim();
+
+  // 1. Remove explicit <thought>...</thought> blocks if present
+  cleaned = cleaned.replace(/<thought>[\s\S]*?<\/thought>/gi, "").trim();
+
+  // 2. If response includes a daily summary heading, slice off any reasoning preamble before it
+  const headingIndex = cleaned.search(/1\.\s*📌|📌\s*\*\*Tasks/i);
+  if (headingIndex !== -1) {
+    cleaned = cleaned.substring(headingIndex).trim();
+  }
+
+  return cleaned;
+}
+
+/**
+ * Calls OpenRouter's chat completions endpoint with timeout and output cleaning.
  */
 async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2 } = {}) {
   if (!OPENROUTER_API_KEY) {
     throw new Error("OPENROUTER_API_KEY is not configured in backend/.env");
   }
 
-  const modelToUse = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
+  const modelToUse = process.env.OPENROUTER_MODEL || "openrouter/free";
+
+  // Strict 5-second timeout controller to prevent dashboard freezing
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
 
   try {
     const res = await fetch(OPENROUTER_URL, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
@@ -49,25 +73,33 @@ async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2 } =
       }),
     });
 
+    clearTimeout(timeoutId);
+
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.error(`[OpenRouter HTTP ${res.status} Error]:`, errText);
-      return "📌 **Summary Status**\n- OpenRouter API request failed or rate limited. Please try again shortly.";
+      return null;
     }
 
     const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content;
+    const rawText = data?.choices?.[0]?.message?.content;
 
-    // Handle empty message response without throwing a 500 error
-    if (!text) {
+    // Handle empty message response
+    if (!rawText) {
       console.warn("[OpenRouter Empty Content]:", JSON.stringify(data, null, 2));
-      return "📌 **Summary Status**\n- The AI model returned an empty response. Click another date or re-select this date to retry.";
+      return null;
     }
 
-    return text;
+    // Sanitize response to strip chain-of-thought / internal analysis
+    return sanitizeLlmOutput(rawText);
   } catch (err) {
-    console.error("[callOpenRouter Failure]:", err.message);
-    return "📌 **Summary Status**\n- An unexpected error occurred while communicating with the AI service.";
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      console.warn("[callOpenRouter]: Request timed out after 5s.");
+    } else {
+      console.error("[callOpenRouter Failure]:", err.message);
+    }
+    return null;
   }
 }
 
@@ -154,6 +186,8 @@ async function analyzeSlackMessage({
       { maxTokens: 500, temperature: 0.1 },
     );
 
+    if (!text) return parserResult;
+
     const aiResult = parseGeminiResponse(text, parserResult);
     return mergeParserResult(parserResult, aiResult);
   } catch (error) {
@@ -165,5 +199,5 @@ async function analyzeSlackMessage({
 module.exports = {
   analyzeSlackMessage,
   analyzeImage,
-  callOpenRouter
+  callOpenRouter,
 };
