@@ -1,86 +1,59 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { HttpClient, HttpClientModule } from '@angular/common/http';
+import { FormsModule } from '@angular/forms';
 import { PageHeaderComponent } from '../shared/page-header';
-
-interface StandupEntry {
-  id: number;
-  source: string;
-  date: string;
-  time: string;
-  status: 'Completed' | 'Failed';
-  isSelected?: boolean;
-}
-
-interface ExtractedTask {
-  name: string;
-  assignedTo: string;
-  priority: string;
-  status: string;
-}
 
 @Component({
   selector: 'app-standup-summary',
-  imports: [CommonModule, PageHeaderComponent],
+  standalone: true,
+  imports: [CommonModule, HttpClientModule, FormsModule, PageHeaderComponent],
   template: `
     <app-page-header title="Stand-up Summary" searchPlaceholder="Search summaries..."></app-page-header>
 
     <div class="standup-body">
-      <div class="standup-layout">
-        <!-- Left Panel: Recent Stand-ups -->
-        <div class="recent-panel">
-          <div class="panel-header">
-            <span class="panel-title">Recent Stand-ups</span>
-            <button class="paste-new-btn">+ Paste New</button>
+      <div class="summary-container">
+        
+        <!-- Top Control Bar with Calendar Picker -->
+        <div class="control-header">
+          <div class="header-left">
+            <h2 class="summary-title">🗓 Daily Stand-up Digest</h2>
+            <span class="selected-date-label">{{ formattedDateDisplay }}</span>
           </div>
-          <div class="standup-list">
-            <div
-              class="standup-item"
-              *ngFor="let entry of standupEntries"
-              [class.selected]="entry.isSelected"
-              (click)="selectEntry(entry)"
-            >
-              <div class="source-badge">{{ entry.source }}</div>
-              <div class="entry-datetime">{{ entry.date }} · {{ entry.time }}</div>
-              <div class="entry-status" [ngClass]="entry.status.toLowerCase()">{{ entry.status }}</div>
-            </div>
+
+          <div class="calendar-picker-wrapper">
+            <label for="summaryDate">Select Date:</label>
+            <input
+              type="date"
+              id="summaryDate"
+              [(ngModel)]="selectedDate"
+              (change)="onDateChange()"
+              class="calendar-input"
+            />
           </div>
         </div>
 
-        <!-- Right Panel: Extracted Tasks -->
-        <div class="detail-panel" *ngIf="selectedEntry">
-          <div class="extracted-header">
-            <span class="section-title">Extracted Tasks</span>
-            <span class="task-count">{{ extractedTasks.length }} task(s)</span>
+        <!-- Summary Display Panel -->
+        <div class="summary-card" *ngIf="!isLoading; else loadingState">
+          <div class="summary-text-box">
+            <div class="formatted-points" [innerHTML]="formattedSummaryHtml"></div>
           </div>
-          <table class="extracted-table">
-            <thead>
-              <tr>
-                <th>TASK NAME</th>
-                <th>ASSIGNED</th>
-                <th>PRIORITY</th>
-                <th>STATUS</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let task of extractedTasks">
-                <td>{{ task.name }}</td>
-                <td>{{ task.assignedTo }}</td>
-                <td><span class="priority-badge low">{{ task.priority }}</span></td>
-                <td><span class="processing-badge">{{ task.status }}</span></td>
-              </tr>
-            </tbody>
-          </table>
 
-          <div class="original-message-section">
-            <div class="om-header">
-              <span class="section-title">Original Message</span>
-              <span class="submitted-by">Submitted by sujal dey</span>
-            </div>
-            <div class="original-message-box">
-              working on categorization parser service
-            </div>
+          <!-- Items Counter Badge Bar -->
+          <div class="stats-footer">
+            <span class="stat-tag">Tasks: {{ taskCount }}</span>
+            <span class="stat-tag">Issues: {{ issueCount }}</span>
+            <span class="stat-tag">Discussions: {{ discussionCount }}</span>
           </div>
         </div>
+
+        <ng-template #loadingState>
+          <div class="loading-box">
+            <div class="spinner"></div>
+            <span>Generating summary points for {{ formattedDateDisplay }}...</span>
+          </div>
+        </ng-template>
+
       </div>
     </div>
   `,
@@ -89,206 +62,227 @@ interface ExtractedTask {
       padding: 24px 32px;
     }
 
-    .standup-layout {
-      display: flex;
-      gap: 0;
-      background: white;
+    .summary-container {
+      background: #ffffff;
       border: 1px solid #e9ecef;
       border-radius: 8px;
-      overflow: hidden;
-      min-height: 600px;
-    }
-
-    /* Left panel */
-    .recent-panel {
-      width: 280px;
-      min-width: 280px;
-      border-right: 1px solid #e9ecef;
+      padding: 24px;
+      min-height: 550px;
       display: flex;
       flex-direction: column;
     }
 
-    .panel-header {
+    /* Top Control Header */
+    .control-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 18px 20px;
+      padding-bottom: 16px;
       border-bottom: 1px solid #f0f0f0;
+      margin-bottom: 20px;
     }
 
-    .panel-title {
-      font-size: 14px;
-      font-weight: 600;
+    .header-left {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    .summary-title {
+      font-size: 18px;
+      font-weight: 700;
       color: #1a1a2e;
+      margin: 0;
     }
 
-    .paste-new-btn {
-      background: transparent;
-      border: none;
-      color: #5b4fcf;
-      font-size: 13px;
+    .selected-date-label {
+      font-size: 14px;
+      color: #666;
       font-weight: 500;
-      cursor: pointer;
-      padding: 0;
     }
 
-    .standup-list {
+    .calendar-picker-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13.5px;
+      color: #333;
+      font-weight: 500;
+    }
+
+    .calendar-input {
+      border: 1px solid #5b4fcf;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13.5px;
+      color: #1a1a2e;
+      outline: none;
+      background: #fafafd;
+      cursor: pointer;
+    }
+
+    /* Main Summary Card */
+    .summary-card {
+      display: flex;
+      flex-direction: column;
       flex: 1;
+    }
+
+    .summary-text-box {
+      flex: 1;
+      background: #fafafd;
+      border: 1px solid #eae6fb;
+      border-radius: 8px;
+      padding: 20px;
       overflow-y: auto;
     }
 
-    .standup-item {
-      padding: 14px 20px;
-      border-bottom: 1px solid #f5f5f5;
-      cursor: pointer;
-      transition: background 0.1s;
+    .formatted-points {
+      font-size: 14.5px;
+      line-height: 1.8;
+      color: #2c2c3e;
     }
 
-    .standup-item:hover { background: #fafafa; }
-
-    .standup-item.selected {
-      background: #f5f3ff;
-      border-left: 3px solid #5b4fcf;
-      padding-left: 17px;
-    }
-
-    .source-badge {
+    /* Markdown Heading and List Styling */
+    .formatted-points ::ng-deep strong {
+      color: #1a1a2e;
+      font-size: 15px;
       display: inline-block;
-      font-size: 11px;
-      font-weight: 600;
+      margin-top: 14px;
+      margin-bottom: 4px;
+    }
+
+    .formatted-points ::ng-deep strong:first-child {
+      margin-top: 0;
+    }
+
+    .stats-footer {
+      display: flex;
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .stat-tag {
+      background: #f0edff;
       color: #5b4fcf;
-      margin-bottom: 4px;
-    }
-
-    .entry-datetime {
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 4px;
-    }
-
-    .entry-status {
       font-size: 12px;
       font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 20px;
     }
 
-    .entry-status.completed { color: #27ae60; }
-    .entry-status.failed { color: #e53e3e; }
-
-    /* Right panel */
-    .detail-panel {
-      flex: 1;
-      padding: 24px;
+    /* Loading Spinner */
+    .loading-box {
       display: flex;
       flex-direction: column;
-      gap: 24px;
-    }
-
-    .extracted-header {
-      display: flex;
       align-items: center;
-      justify-content: space-between;
-    }
-
-    .section-title {
-      font-size: 15px;
-      font-weight: 600;
-      color: #1a1a2e;
-    }
-
-    .task-count {
-      font-size: 12.5px;
-      color: #888;
-    }
-
-    .extracted-table {
-      width: 100%;
-      border-collapse: collapse;
-      border: 1px solid #f0f0f0;
-      border-radius: 6px;
-      overflow: hidden;
-    }
-
-    .extracted-table th {
-      text-align: left;
-      font-size: 11px;
-      color: #888;
-      font-weight: 600;
-      letter-spacing: 0.4px;
-      padding: 12px 16px;
-      background: #fafafa;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
-    .extracted-table td {
-      padding: 14px 16px;
-      font-size: 13.5px;
-      color: #333;
-    }
-
-    .priority-badge {
-      background: #f5f5f5;
+      justify-content: center;
+      height: 350px;
+      gap: 16px;
       color: #666;
-      font-size: 12px;
-      padding: 3px 10px;
-      border-radius: 4px;
+      font-size: 14px;
     }
 
-    .processing-badge {
-      background: #e8f4fd;
-      color: #2980b9;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 4px 12px;
-      border-radius: 4px;
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #5b4fcf;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
     }
 
-    /* Original Message */
-    .om-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-    }
-
-    .submitted-by {
-      font-size: 12px;
-      color: #888;
-    }
-
-    .original-message-box {
-      border: 1px solid #f0f0f0;
-      border-radius: 6px;
-      padding: 16px;
-      font-size: 13.5px;
-      color: #333;
-      background: #fafafa;
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
   `]
 })
-export class StandupSummaryComponent {
-  selectedEntry: StandupEntry | null = null;
+export class StandupSummaryComponent implements OnInit {
+  private apiUrl = 'http://localhost:4000/api';
 
-  standupEntries: StandupEntry[] = [
-    { id: 1, source: 'Slack', date: 'Jul 15, 2026', time: '1:02 PM', status: 'Completed', isSelected: true },
-    { id: 2, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 3, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 4, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 5, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 6, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Failed' },
-    { id: 7, source: 'Slack', date: 'Jul 15, 2026', time: '10:27 AM', status: 'Completed' },
-  ];
+  selectedDate: string = ''; // YYYY-MM-DD
+  formattedDateDisplay: string = '';
 
-  extractedTasks: ExtractedTask[] = [
-    { name: 'Work on categorization parser service', assignedTo: 'sujal dey', priority: 'Low', status: 'PROCESSING' }
-  ];
+  currentSummary: string = '';
+  taskCount: number = 0;
+  issueCount: number = 0;
+  discussionCount: number = 0;
 
-  constructor() {
-    this.selectedEntry = this.standupEntries[0];
+  isLoading: boolean = false;
+
+  constructor(private http: HttpClient) {}
+
+  ngOnInit(): void {
+    this.setDefaultToMonday();
   }
 
-  selectEntry(entry: StandupEntry) {
-    this.standupEntries.forEach(e => e.isSelected = false);
-    entry.isSelected = true;
-    this.selectedEntry = entry;
+  /**
+   * Converts markdown returned by OpenRouter into clean HTML for rendering
+   */
+  get formattedSummaryHtml(): string {
+    if (!this.currentSummary) return '<em>No activity logged for this date.</em>';
+
+    return this.currentSummary
+      // Convert Markdown headers (**Heading**) to styled strong tags
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      // Convert bullet list dashes to bullet indicators
+      .replace(/^- /gm, '• ')
+      // Convert newlines into HTML line breaks
+      .replace(/\n/g, '<br/>');
+  }
+
+  setDefaultToMonday(): void {
+    const today = new Date();
+    const currentDay = today.getDay(); // 0 is Sunday, 1 is Monday
+
+    // Calculate distance to Monday of current week
+    const distanceToMonday = currentDay === 0 ? -6 : 1 - currentDay;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + distanceToMonday);
+
+    // Format YYYY-MM-DD for <input type="date">
+    const year = monday.getFullYear();
+    const month = String(monday.getMonth() + 1).padStart(2, '0');
+    const day = String(monday.getDate()).padStart(2, '0');
+
+    this.selectedDate = `${year}-${month}-${day}`;
+    this.updateFormattedDateDisplay(monday);
+    
+    this.fetchSummaryForDate(this.selectedDate);
+  }
+
+  onDateChange(): void {
+    if (!this.selectedDate) return;
+
+    const [year, month, day] = this.selectedDate.split('-').map(Number);
+    const dateObj = new Date(year, month - 1, day);
+
+    this.updateFormattedDateDisplay(dateObj);
+    this.fetchSummaryForDate(this.selectedDate);
+  }
+
+  updateFormattedDateDisplay(dateObj: Date): void {
+    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    const monthDay = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    this.formattedDateDisplay = `${dayName}, ${monthDay}`;
+  }
+
+  fetchSummaryForDate(dateStr: string): void {
+    this.isLoading = true;
+    this.http.get<any>(`${this.apiUrl}/discussions/daily-summary?date=${dateStr}`).subscribe({
+      next: (res) => {
+        this.currentSummary = res.summary;
+        this.taskCount = res.tasks?.length || 0;
+        this.issueCount = res.issues?.length || 0;
+        this.discussionCount = res.discussions?.length || 0;
+        this.isLoading = false;
+      },
+      error: (err) => {
+        console.error('Failed to fetch summary:', err);
+        this.currentSummary = 'Unable to generate summary for this date.';
+        this.isLoading = false;
+      }
+    });
   }
 }

@@ -4,6 +4,8 @@ const { Task, Issue, Discussion } = require('../models');
 const { getDashboard } = require('../services/dashboard');
 const { syncFromSlack } = require('../services/slackSync');
 const { parseMessage } = require('../agent/parser');
+const { callOpenRouter } = require('../ai/gemini');
+const { newId } = require('../utils/helpers');
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
@@ -95,6 +97,82 @@ function createApiRouter({ messageProcessor }) {
       if (!issue) return res.status(404).json({ error: 'Issue not found' });
       res.json(issue);
     } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /api/discussions/daily-summary
+  router.get('/discussions/daily-summary', async (req, res, next) => {
+    try {
+      const targetDateStr = req.query.date || new Date().toISOString().split('T')[0];
+      
+      const [year, month, day] = targetDateStr.split('-').map(Number);
+      if (!year || !month || !day) {
+        return res.status(400).json({ error: 'Invalid date format. Expected YYYY-MM-DD' });
+      }
+
+      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+      const [tasks, issues, discussions] = await Promise.all([
+        Task.find({
+          $or: [
+            { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+            { updatedAt: { $gte: startOfDay, $lte: endOfDay } },
+          ],
+        }).lean(),
+        Issue.find({
+          $or: [
+            { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+            { updatedAt: { $gte: startOfDay, $lte: endOfDay } },
+          ],
+        }).lean(),
+        Discussion.find({
+          timestamp: { $gte: startOfDay, $lte: endOfDay },
+          channel: { $ne: 'daily-wrapup' },
+        }).lean(),
+      ]);
+
+      if (!tasks.length && !issues.length && !discussions.length) {
+        return res.json({
+          date: targetDateStr,
+          summary: `No activity recorded for ${targetDateStr}.`,
+          tasks: [],
+          issues: [],
+          discussions: [],
+        });
+      }
+
+      const prompt = `
+You are an AI Engineering Lead summarizing work for ${targetDateStr}.
+Synthesize the provided tasks, issues, and general discussions into clear, concise bullet points under 3 headings:
+
+1. 📌 **Tasks Activity**
+2. 🐞 **Issues & Bugs**
+3. 💬 **General Discussions**
+
+Data for ${targetDateStr}:
+- Tasks (${tasks.length}): ${JSON.stringify(tasks.map(t => ({ title: t.title, status: t.status, assignee: t.assigned_to?.name })))}
+- Issues (${issues.length}): ${JSON.stringify(issues.map(i => ({ title: i.title, priority: i.priority, status: i.status })))}
+- Discussions (${discussions.length}): ${JSON.stringify(discussions.map(d => ({ author: d.author?.name, text: d.content })))}
+
+Return clean plain text with emojis and bullet points only.
+`;
+
+      const summaryText = await callOpenRouter(
+        [{ role: 'user', content: prompt }],
+        { maxTokens: 700, temperature: 0.2 }
+      );
+
+      res.json({
+        date: targetDateStr,
+        summary: summaryText,
+        tasks,
+        issues,
+        discussions,
+      });
+    } catch (err) {
+      console.error('[daily-summary error]:', err);
       next(err);
     }
   });

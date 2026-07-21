@@ -7,7 +7,7 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /**
@@ -25,42 +25,50 @@ function cleanJsonResponse(text) {
 /**
  * Calls OpenRouter's chat completions endpoint.
  */
-async function callOpenRouter(messages, { maxTokens = 1000, temperature = 0.2 } = {}) {
+async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2 } = {}) {
   if (!OPENROUTER_API_KEY) {
-    throw new Error(
-      "OPENROUTER_API_KEY is not set. Add it to backend/.env (get a key at [https://openrouter.ai/keys](https://openrouter.ai/keys)).",
-    );
+    throw new Error("OPENROUTER_API_KEY is not configured in backend/.env");
   }
 
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost",
-      "X-Title": process.env.OPENROUTER_APP_NAME || "AI Engineering Manager",
-    },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages,
-      max_tokens: maxTokens,
-      temperature,
-    }),
-  });
+  const modelToUse = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`OpenRouter request failed (${res.status}): ${errText}`);
+  try {
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost",
+        "X-Title": process.env.OPENROUTER_APP_NAME || "AI Engineering Manager",
+      },
+      body: JSON.stringify({
+        model: modelToUse,
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error(`[OpenRouter HTTP ${res.status} Error]:`, errText);
+      return "📌 **Summary Status**\n- OpenRouter API request failed or rate limited. Please try again shortly.";
+    }
+
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+
+    // Handle empty message response without throwing a 500 error
+    if (!text) {
+      console.warn("[OpenRouter Empty Content]:", JSON.stringify(data, null, 2));
+      return "📌 **Summary Status**\n- The AI model returned an empty response. Click another date or re-select this date to retry.";
+    }
+
+    return text;
+  } catch (err) {
+    console.error("[callOpenRouter Failure]:", err.message);
+    return "📌 **Summary Status**\n- An unexpected error occurred while communicating with the AI service.";
   }
-
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content;
-
-  if (!text) {
-    throw new Error("OpenRouter response had no message content.");
-  }
-
-  return text;
 }
 
 /**
@@ -157,4 +165,5 @@ async function analyzeSlackMessage({
 module.exports = {
   analyzeSlackMessage,
   analyzeImage,
+  callOpenRouter
 };
