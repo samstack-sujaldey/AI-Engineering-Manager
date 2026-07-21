@@ -1035,36 +1035,6 @@ function buildNotificationHints({
 			});
 		}
 	}
-	// 4. NOTIFY BLOCKERS ON TASKS
-	else if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		/(waiting\s+(for|on)|blocked\s+by)\s+<?@?/i.test(text)
-	) {
-		const dependent =
-			mentionedUsers.find(
-				(u) =>
-					new RegExp(
-						u.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-						"i",
-					).test(text) ||
-					text
-						.toLowerCase()
-						.includes((u.display_name || "").toLowerCase()),
-			) || mentionedUsers[0];
-
-		if (dependent && dependent.id) {
-			notifications.push({
-				type: "DEPENDENT_USER",
-				target_user_id: dependent.id,
-				target_user_name:
-					dependent.name || dependent.display_name || "",
-				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"}'s task '${title}' is currently blocked waiting on you. Please reply 'OK' once you've acknowledged it.`,
-				immediate: true,
-				expects_acknowledgement: true,
-			});
-		}
-	}
 
 	return notifications;
 }

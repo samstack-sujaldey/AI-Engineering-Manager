@@ -1,6 +1,11 @@
 const { analyzeBlockReason } = require("../agent/blockAnalyzer");
 const { Task, Issue, Discussion, Activity } = require("../models");
-const { parseMessage, detectStatus } = require("../agent/parser");
+const {
+	parseMessage,
+	detectStatus,
+	extractDueDate,
+	extractMentionedUsers,
+} = require("../agent/parser");
 const {
 	findSimilarTask,
 	findSimilarIssue,
@@ -35,6 +40,7 @@ class MessageProcessor {
 			message_ts = "",
 			is_edit = false,
 			user_directory = {},
+			slack_client = null,
 		} = raw;
 		const { quiet = false } = options;
 
@@ -66,23 +72,225 @@ class MessageProcessor {
 		}
 
 		// NEW: If the bot is waiting for a block reason from this task, intercept the reply!
-		// NEW: If the bot is waiting for a block reason from this task, intercept the reply!
 		if (existing_task && existing_task.block_reason_pending) {
-			return this.updateTask({
+			const newDueDate =
+				extractDueDate(text, new Date()) || existing_task.due_date;
+
+			// Build proper (parsed, ctx, senderRef) shape that updateTask expects
+			const blockParsed = {
+				classification: "TASK",
+				action: "UPDATE_TASK",
+				task: { id: existing_task.task_id },
+				updates: {
+					block_reason: text,
+					block_reason_pending: false,
+					status: "BLOCKED",
+					due_date: newDueDate,
+				},
+				notifications: [],
+				mentioned_users: [],
+			};
+			const blockCtx = {
 				text,
 				sender,
 				channel,
 				thread_id: threadRoot,
 				workspace_id,
 				message_ts,
-				task: existing_task, // ✅ FIXED: Explicitly maps the task data so updateTask doesn't crash!
+				existing_task,
 				user_directory,
-				updates: {
-					block_reason: text, // Save their reply as the reason!
-					block_reason_pending: false,
-					status: "BLOCKED",
-				},
-			});
+				slack_client,
+				updates: { block_reason: text },
+			};
+			return this.updateTask(blockParsed, blockCtx, sender);
+		}
+
+		// 1. Intercept "accept @user" or "accept" with a tag
+		if (text.trim().toLowerCase().startsWith("accept")) {
+			const mentioned = extractMentionedUsers(text, user_directory || {});
+			const targetToTag = mentioned.find(
+				(u) => u.id && u.id !== sender?.id,
+			);
+
+			if (targetToTag && raw.slack_client) {
+				const originalSenderId = targetToTag.id;
+				// DM the original sender
+				await raw.slack_client.chat.postMessage({
+					channel: originalSenderId,
+					text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
+				});
+				// Confirm in the current thread
+				await raw.slack_client.chat.postMessage({
+					channel: channel,
+					thread_ts: threadRoot || raw.message_ts,
+					text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
+				});
+				return {
+					classification: "GENERAL_DISCUSSION",
+					action: "CONNECT_ACCEPTED",
+					dashboard_update: false,
+				};
+			}
+		}
+
+		// 2. Intercept "delay [time] @user" (Handles "20 min", "1 hour", "4:45 pm", "tomorrow")
+		if (text.trim().toLowerCase().startsWith("delay")) {
+			const mentioned = extractMentionedUsers(text, user_directory || {});
+			const targetToTag = mentioned.find(
+				(u) => u.id && u.id !== sender?.id,
+			);
+
+			if (targetToTag && raw.slack_client) {
+				const originalSenderId = targetToTag.id;
+
+				// Clean the text: remove "delay", remove the tag, and trim spaces
+				const timeInput = text
+					.replace(/^delay/i, "")
+					.replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
+					.replace(/@[A-Za-z0-9_.-]+/g, "")
+					.trim();
+
+				let postAt;
+				let delayText = timeInput;
+
+				// Parse relative minutes (e.g. "20", "20 min", "20 mins")
+				const minMatch = timeInput.match(
+					/^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
+				);
+				// Parse relative hours (e.g. "1 hour", "1.5 hrs")
+				const hrMatch = timeInput.match(
+					/^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
+				);
+
+				if (minMatch) {
+					const mins = parseInt(minMatch[1], 10);
+					postAt =
+						Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
+					delayText = `in ${mins} minutes`;
+				} else if (hrMatch) {
+					const hrs = parseFloat(hrMatch[1]);
+					postAt =
+						Math.floor(Date.now() / 1000) +
+						Math.max(hrs * 3600, 65);
+					delayText = `in ${hrs} hours`;
+				} else {
+					// Fallback to your built-in AI date parser for "4:45 pm", "tomorrow", etc.
+					const parsedDateStr = extractDueDate(timeInput, new Date());
+					if (parsedDateStr) {
+						postAt = Math.floor(
+							new Date(parsedDateStr).getTime() / 1000,
+						);
+						delayText = `at ${timeInput}`;
+
+						// If the parsed time has already passed today (e.g. it's 5 PM and they said "4:45 PM"), bump it to tomorrow
+						if (postAt <= Math.floor(Date.now() / 1000) + 60) {
+							postAt += 24 * 3600;
+						}
+					} else {
+						// Couldn't understand the time formatting
+						await raw.slack_client.chat.postMessage({
+							channel: channel,
+							thread_ts: threadRoot || raw.message_ts,
+							text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
+						});
+						return {
+							classification: "GENERAL_DISCUSSION",
+							action: "CONNECT_DELAY_FAILED",
+							dashboard_update: false,
+						};
+					}
+				}
+
+				// DM Original Sender
+				await raw.slack_client.chat.postMessage({
+					channel: originalSenderId,
+					text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
+				});
+				// Confirm in the current thread
+				await raw.slack_client.chat.postMessage({
+					channel: channel,
+					thread_ts: threadRoot || raw.message_ts,
+					text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
+				});
+
+				// Schedule Reminders
+				try {
+					await raw.slack_client.chat.scheduleMessage({
+						channel: originalSenderId,
+						post_at: postAt,
+						text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
+					});
+					await raw.slack_client.chat.scheduleMessage({
+						channel: sender.id,
+						post_at: postAt,
+						text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
+					});
+				} catch (e) {
+					console.error("[Slack] Scheduler error:", e.message);
+				}
+
+				return {
+					classification: "GENERAL_DISCUSSION",
+					action: "CONNECT_DELAYED",
+					dashboard_update: false,
+				};
+			}
+		}
+
+		// ✨ Generic Connect Command (Thread Flow with updated instructions)
+		const connectMatch = text.match(
+			/\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
+		);
+		if (connectMatch) {
+			try {
+				const mentioned = extractMentionedUsers(
+					text,
+					user_directory || {},
+				);
+				const senderId = sender?.id || "unknown";
+				const targetUser = mentioned.find(
+					(u) => u.id && u.id !== senderId,
+				);
+
+				if (targetUser && raw.slack_client) {
+					console.log(
+						`[Connect] Thread Flow Triggered! Sender: ${senderId}, Target: ${targetUser.id}`,
+					);
+
+					const blocks = [
+						{
+							type: "header",
+							text: {
+								type: "plain_text",
+								text: "🗓️ Connection Request",
+							},
+						},
+						{
+							type: "section",
+							text: {
+								type: "mrkdwn",
+								text: `Hi <@${targetUser.id}>, <@${senderId}> would like to connect with you.\n\n*To respond, reply in this thread with:*\n✅ \`accept <@${senderId}>\` _(If free now)_\n🕒 \`delay 20 mins <@${senderId}>\` _(Or '1 hour', '4:45 pm', 'tomorrow')_`,
+							},
+						},
+					];
+
+					// Post publicly in the exact thread where the command was typed
+					await raw.slack_client.chat.postMessage({
+						channel: channel,
+						thread_ts: threadRoot || raw.message_ts,
+						text: `Connection Request for <@${targetUser.id}>`,
+						blocks,
+					});
+
+					return {
+						classification: "GENERAL_DISCUSSION",
+						action: "CONNECT_REQUEST",
+						dashboard_update: true,
+					};
+				}
+			} catch (err) {
+				console.error("[Connect] FATAL ERROR:", err.message);
+			}
 		}
 
 		const parsed = parseMessage({
@@ -314,15 +522,20 @@ class MessageProcessor {
 			await doc.save();
 		}
 
-		// NEW: If task is created as BLOCKED, ask for the reason!
+		// NEW: Ask for reason AND due date if missing!
 		if (doc.status === "BLOCKED" && !doc.block_reason) {
 			doc.block_reason_pending = true;
 			await doc.save();
+
+			const duePrompt = !doc.due_date
+				? " Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow')."
+				: "";
+
 			try {
-				await this.notifications.slack.chat.postMessage({
+				await ctx.slack_client.chat.postMessage({
 					channel: ctx.channel,
 					thread_ts: ctx.thread_id || ctx.message_ts,
-					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason (e.g., "waiting on Nitesh to send keys").`,
+					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.${duePrompt}`,
 				});
 			} catch (err) {
 				console.error("Failed to ask for block reason:", err.message);
@@ -461,94 +674,78 @@ class MessageProcessor {
 			task_id: doc.task_id,
 		});
 
-		return {
-			...parsed,
-			task_created: false,
-			task_updated: true,
-			task: this.taskSnapshot(doc),
-		};
-
+		// ✨ Intercept the exact moment a new block reason is saved
 		if (ctx.updates && ctx.updates.block_reason) {
-			// 1. Run the AI analyzer on the newly submitted reason
-			const blockAnalysis = await analyzeBlockReason(
+			// Extract the tagged user directly from the block reason reply
+			const mentionedInReason = extractMentionedUsers(
 				ctx.updates.block_reason,
 				ctx.user_directory,
-				/*, yourAiClient */
 			);
 
-			if (blockAnalysis) {
+			// Find the first tagged person who isn't the person who owns the task
+			const targetUser = mentionedInReason.find(
+				(u) => u.id && u.id !== (doc.assigned_to?.id || ctx.sender?.id),
+			);
+
+			if (targetUser) {
 				const ownerName =
 					doc.assigned_to?.name ||
 					ctx.sender?.name ||
 					"A team member";
-				let blocks = [];
+				const senderId = ctx.sender?.id || "unknown";
 
-				if (blockAnalysis.intent === "MEETING_REQUEST") {
-					// Professional Interactive Meeting Request
-					blocks = [
-						{
-							type: "header",
-							text: {
-								type: "plain_text",
-								text: "🗓️ Connection Request",
-							},
+				const blocks = [
+					{
+						type: "header",
+						text: {
+							type: "plain_text",
+							text: "🚨 Action Required: Task Blocked",
 						},
-						{
-							type: "section",
-							text: {
-								type: "mrkdwn",
-								text: `Hi ${blockAnalysis.user.display_name},\n\n*${ownerName}* has requested to connect with you regarding a blocked task: *${doc.title}*.\n\nAre you available for a quick sync now?`,
-							},
+					},
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `Hi ${targetUser.display_name},\n\nThe task *${doc.title}* has been marked as blocked by *${ownerName}*.\n\n*Reason:* ${ctx.updates.block_reason}\n\nPlease review this at your earliest convenience.`,
 						},
-						{
-							type: "actions",
-							elements: [
-								{
-									type: "button",
-									text: {
-										type: "plain_text",
-										text: "✅ Yes, I'm Free",
-									},
-									style: "primary",
-									action_id: `accept_sync_${doc.task_id}`,
+					},
+					{
+						type: "actions",
+						elements: [
+							{
+								type: "button",
+								text: {
+									type: "plain_text",
+									text: "✅ I'm looking into it",
 								},
-								{
-									type: "button",
-									text: {
-										type: "plain_text",
-										text: "🕒 Ping Me Later",
-									},
-									action_id: `later_sync_${doc.task_id}`,
+								style: "primary",
+								action_id: "accept_sync_btn",
+								value: `${doc.task_id}|${senderId}`,
+							},
+							{
+								type: "button",
+								text: {
+									type: "plain_text",
+									text: "🕒 I'll check later",
 								},
-							],
-						},
-					];
-				} else {
-					// Professional Action Item Notification
-					blocks = [
-						{
-							type: "header",
-							text: {
-								type: "plain_text",
-								text: "🚨 Action Required: Task Blocked",
+								action_id: "later_sync_btn",
+								value: `${doc.task_id}|${senderId}`,
 							},
-						},
-						{
-							type: "section",
-							text: {
-								type: "mrkdwn",
-								text: `Hi ${blockAnalysis.user.display_name},\n\nThe task *${doc.title}* has been marked as blocked by *${ownerName}*.\n\n*Reason:* ${blockAnalysis.summary}\n\nPlease review this at your earliest convenience so development can continue.`,
-							},
-						},
-					];
-				}
+						],
+					},
+				];
 
-				// 2. Send the formatted Block Kit message directly to the target user
 				try {
-					await this.notifications.slack.chat.postMessage({
-						channel: blockAnalysis.user.id, // Sends as a direct DM to the user
-						text: `Blocked Task Notification: ${doc.title}`, // Fallback text for mobile notifications
-						blocks: blocks,
+					await ctx.slack_client.chat.postMessage({
+						channel: targetUser.id,
+						text: `Blocked Task Notification: ${doc.title}`,
+						blocks,
+					});
+
+					await ctx.slack_client.chat.postMessage({
+						channel: ctx.channel,
+						thread_ts: ctx.thread_id || ctx.message_ts,
+						text: `✅ <@${senderId}> I have privately messaged <@${targetUser.id}> about this blocker. I will DM you directly with their response.`,
 					});
 				} catch (err) {
 					console.error(
@@ -559,19 +756,20 @@ class MessageProcessor {
 			}
 		}
 
-		// NEW: If task is updated to BLOCKED, ask for the reason!
-		if (
-			doc.status === "BLOCKED" &&
-			!doc.block_reason &&
-			!doc.block_reason_pending
-		) {
+		// Ask for reason AND due date if missing
+		if (doc.status === "BLOCKED" && !doc.block_reason) {
 			doc.block_reason_pending = true;
 			await doc.save();
+
+			const duePrompt = !doc.due_date
+				? " Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow')."
+				: "";
+
 			try {
-				await this.notifications.slack.chat.postMessage({
+				await ctx.slack_client.chat.postMessage({
 					channel: ctx.channel,
 					thread_ts: ctx.thread_id || ctx.message_ts,
-					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason (e.g., "waiting on Nitesh to send keys").`,
+					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.${duePrompt}`,
 				});
 			} catch (err) {
 				console.error("Failed to ask for block reason:", err.message);
@@ -579,7 +777,7 @@ class MessageProcessor {
 		}
 
 		return {
-			...ctx,
+			...parsed,
 			task_created: false,
 			task_updated: true,
 			task: this.taskSnapshot(doc),
