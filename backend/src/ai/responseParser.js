@@ -1,98 +1,52 @@
 /**
- * Removes markdown wrappers like:
- *
- * ```json
- * { ... }
- * ```
+ * src/ai/responseParser.js
+ * Parses Gemini JSON output and merges it into the final executable parser result.
  */
-function cleanResponse(text = "") {
-	return text
-		.replace(/^```json/i, "")
-		.replace(/^```/i, "")
-		.replace(/```$/i, "")
-		.trim();
+
+function parseGeminiResponse(rawText, fallbackResult) {
+  try {
+    // Strip markdown code fences if present
+    const cleanJson = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
+    return JSON.parse(cleanJson);
+  } catch (err) {
+    console.warn("[responseParser] Failed to parse Gemini JSON response, returning fallback:", err.message);
+    return fallbackResult;
+  }
 }
 
-/**
- * Extract first JSON object from Gemini response.
- */
-function extractJson(text = "") {
-	const cleaned = cleanResponse(text);
+function mergeParserResult(baseResult, aiResult) {
+  if (!aiResult || !aiResult.classification) {
+    return baseResult;
+  }
 
-	const start = cleaned.indexOf("{");
-	const end = cleaned.lastIndexOf("}");
+  const classification = aiResult.classification;
+  let action = "STORE_DISCUSSION";
 
-	if (start === -1 || end === -1) {
-		throw new Error("No JSON object found in Gemini response.");
-	}
+  if (classification === "TASK") {
+    action = baseResult.existing_task ? "UPDATE_TASK" : "CREATE_TASK";
+  } else if (classification === "ISSUE") {
+    action = baseResult.existing_issue ? "UPDATE_ISSUE" : "CREATE_ISSUE";
+  }
 
-	return cleaned.substring(start, end + 1);
-}
-
-/**
- * Safely parse Gemini JSON.
- */
-function parseGeminiResponse(text, fallback = null) {
-	try {
-		const json = extractJson(text);
-
-		return JSON.parse(json);
-	} catch (error) {
-		console.error("Failed to parse Gemini response:", error.message);
-
-		if (fallback) {
-			return fallback;
-		}
-
-		throw error;
-	}
-}
-
-/**
- * Merge AI response with parser response.
- * AI only overrides fields it actually returns.
- */
-function mergeParserResult(parserResult, aiResult) {
-	if (!aiResult) {
-		return parserResult;
-	}
-
-	return {
-		...parserResult,
-
-		...aiResult,
-
-		task: aiResult.task
-			? {
-					...parserResult.task,
-					...aiResult.task,
-			  }
-			: parserResult.task,
-
-		issue: aiResult.issue
-			? {
-					...parserResult.issue,
-					...aiResult.issue,
-			  }
-			: parserResult.issue,
-
-		discussion: aiResult.discussion
-			? {
-					...parserResult.discussion,
-					...aiResult.discussion,
-			  }
-			: parserResult.discussion,
-
-		context: parserResult.context,
-
-		meta: {
-			...parserResult.meta,
-			...(aiResult.meta || {}),
-		},
-	};
+  return {
+    ...baseResult,
+    classification,
+    action,
+    confidence: aiResult.confidence || 0.9,
+    task: classification === "TASK" ? (aiResult.task || baseResult.task) : null,
+    issue: classification === "ISSUE" ? (aiResult.issue || baseResult.issue) : null,
+    discussion: classification === "GENERAL_DISCUSSION" ? {
+      content: baseResult.text || "",
+      flagged_for_review: false
+    } : null,
+    task_created: action === "CREATE_TASK",
+    task_updated: action === "UPDATE_TASK",
+    issue_created: action === "CREATE_ISSUE",
+    issue_updated: action === "UPDATE_ISSUE",
+  };
 }
 
 module.exports = {
-	parseGeminiResponse,
-	mergeParserResult,
+  parseGeminiResponse,
+  mergeParserResult,
 };

@@ -1,10 +1,10 @@
 const fs = require("fs/promises");
 const path = require("path");
-const pdf = require("pdf-parse");
 const mammoth = require("mammoth");
 const XLSX = require("xlsx");
 const { parse } = require("csv-parse/sync");
 
+// FIXED: Correct relative import path to gemini.js
 const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/gemini.js");
 const {
   MAX_ATTACHMENT_SIZE,
@@ -78,24 +78,58 @@ async function readCsvFile(file) {
 }
 
 /**
- * Extract text from PDF
+ * Extract text from PDF (Supports pdf-parse v1.x and v2.x APIs safely)
  */
 async function extractPdf(file) {
   validateAttachment(file);
   const buffer = await fs.readFile(file.localPath);
 
-  const pdfData = await withTimeout(pdf(buffer), EXTRACTION_TIMEOUT);
+  const pdfParseLib = require("pdf-parse");
 
-  // Scanned PDF support will be added later using Gemini Vision.
-  if (pdfData.text.trim().length > 20) {
+  let text = "";
+  let numpages = 0;
+  let info = {};
+
+  try {
+    if (typeof pdfParseLib === "function") {
+      // Legacy pdf-parse v1.x API
+      const pdfData = await withTimeout(pdfParseLib(buffer), EXTRACTION_TIMEOUT);
+      text = pdfData.text || "";
+      numpages = pdfData.numpages || 0;
+      info = pdfData.info || {};
+    } else if (pdfParseLib.PDFParse) {
+      // Modern pdf-parse v2.x Class API
+      const uint8Data = new Uint8Array(buffer);
+      const parser = new pdfParseLib.PDFParse(uint8Data);
+      
+      const parsedText = await withTimeout(parser.getText(), EXTRACTION_TIMEOUT);
+      text = typeof parsedText === "string" ? parsedText : parsedText.text || "";
+      
+      if (typeof parser.destroy === "function") {
+        await parser.destroy();
+      }
+    } else {
+      throw new Error("Compatible pdf-parse library handler not found.");
+    }
+  } catch (err) {
+    return {
+      extracted: false,
+      type: "PDF",
+      content: null,
+      metadata: { fileName: file.fileName },
+      error: err.message,
+    };
+  }
+
+  if (text.trim().length > 20) {
     return {
       extracted: true,
       type: "PDF",
-      content: pdfData.text,
+      content: text,
       metadata: {
         fileName: file.fileName,
-        pages: pdfData.numpages,
-        info: pdfData.info,
+        pages: numpages,
+        info,
       },
       error: null,
     };
@@ -107,7 +141,7 @@ async function extractPdf(file) {
     content: null,
     metadata: {
       fileName: file.fileName,
-      pages: pdfData.numpages,
+      pages: numpages,
       scanned: true,
     },
     error: "Scanned PDF extraction is not implemented yet.",
@@ -182,12 +216,12 @@ async function extractPresentation(file) {
 }
 
 /**
- * Placeholder for Gemini Vision
+ * Image analysis via OpenRouter / Gemini Vision
  */
 async function analyzeImage(file) {
   validateAttachment(file);
   const result = await withTimeout(
-    analyzeImageWithGemini(file),
+    analyzeImageWithGemini(file.localPath, file.mimeType),
     EXTRACTION_TIMEOUT,
   );
 

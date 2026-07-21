@@ -4,6 +4,9 @@ const { toUser } = require('../agent/parser');
 const { findWorkByMessageTs } = require('./similarity');
 const { Discussion } = require('../models');
 const { getDashboard } = require('./dashboard');
+const fs = require('fs/promises');
+const path = require('path');
+const axios = require('axios');
 
 function looksLikePlaceholder(value, prefixes = []) {
   if (!value) return true;
@@ -61,7 +64,6 @@ async function buildDirectory(client, text, cache) {
   return directory;
 }
 
-// FIXED: Enhanced status wrapper to return meaningful states back to the execution trace loop
 async function alreadyProcessed(messageTs) {
   const { task, issue } = await findWorkByMessageTs(messageTs);
   if (task || issue) return { skipped: true, type: task ? 'TASK_MATCH' : 'ISSUE_MATCH' };
@@ -114,6 +116,55 @@ async function fetchChannelHistory(client, channelId, limit) {
   return messages.reverse();
 }
 
+/**
+ * Downloads Slack attachments and guarantees the destination temp folder exists in root.
+ */
+async function downloadSlackAttachments(attachments = [], token) {
+  if (!attachments || attachments.length === 0) return [];
+
+  // 1. Ensure temp directory exists at project root
+  const tempDir = path.join(process.cwd(), 'temp');
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+  } catch (mkdirErr) {
+    console.error(`[attachments] Failed to create temp folder:`, mkdirErr.message);
+  }
+
+  const downloadedFiles = [];
+
+  for (const file of attachments) {
+    const downloadUrl = file.urlPrivateDownload || file.urlPrivate;
+    if (!downloadUrl) continue;
+
+    const ext = path.extname(file.fileName || '') || '.bin';
+    const localFileName = `${file.slackFileId || Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+    const localPath = path.join(tempDir, localFileName);
+
+    try {
+      const response = await axios.get(downloadUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'arraybuffer',
+      });
+
+      await fs.writeFile(localPath, response.data);
+
+      downloadedFiles.push({
+        ...file,
+        localPath,
+        size: response.data.length,
+      });
+      console.log(`[attachments] Downloaded file: ${file.fileName} -> ${localPath}`);
+    } catch (err) {
+      console.error(`[attachments] Failed to download file ${file.fileName}:`, err.message);
+    }
+  }
+
+  return downloadedFiles;
+}
+
+/**
+ * Pull recent Slack channel messages into the message processor, then return dashboard data.
+ */
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
@@ -140,13 +191,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
     throw error;
   }
 
-  let downloadToken;
-  try {
-    downloadToken = await module.exports.getSlackAccessToken(); 
-  } catch (tokenErr) {
-    downloadToken = config.slack.botToken;
-  }
-
+  const downloadToken = config.slack.botToken;
   const channels = await listChannels(client, { channelIds });
   const userCache = new Map();
   const summary = {
@@ -176,17 +221,14 @@ async function syncFromSlack(messageProcessor, options = {}) {
     for (const msg of history) {
       summary.messages_seen += 1;
       
-      // FIXED: Allow processing if there are attachments present, even if raw message text field is blank
       const hasFiles = msg.files && msg.files.length > 0;
       const safeText = msg.text || "";
 
       if ((!safeText && !hasFiles) || msg.bot_id || msg.subtype === 'bot_message') {
-        console.log(`[Sync Debug] Skipping item ts=${msg.ts}: Identified as bot notification or lacks content.`);
         summary.messages_skipped += 1;
         continue;
       }
       if (msg.subtype && msg.subtype !== 'file_share') {
-        console.log(`[Sync Debug] Skipping item ts=${msg.ts}: Excluded due to message subtype alignment.`);
         summary.messages_skipped += 1;
         continue;
       }
@@ -195,7 +237,6 @@ async function syncFromSlack(messageProcessor, options = {}) {
       try {
         const checkDuplicate = await alreadyProcessed(msg.ts);
         if (checkDuplicate.skipped) {
-          console.log(`[Sync Debug] Skipping duplicate item ts=${msg.ts}: Already indexed as [${checkDuplicate.type}].`);
           summary.messages_skipped += 1;
           continue;
         }
@@ -209,13 +250,12 @@ async function syncFromSlack(messageProcessor, options = {}) {
             urlPrivateDownload: f.url_private_download,
             urlPrivate: f.url_private
           }));
-          downloadedFiles = await module.exports.downloadSlackAttachments(rawAttachments, downloadToken);
+          downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
         }
 
         const sender = await resolveUser(client, msg.user, userCache);
         const user_directory = await buildDirectory(client, safeText, userCache);
         
-        console.log(`[Sync Debug] Handing off message context (ts=${msg.ts}) directly to MessageProcessor core.`);
         const result = await messageProcessor.process(
           {
             text: safeText,
@@ -242,16 +282,11 @@ async function syncFromSlack(messageProcessor, options = {}) {
           summary.created.discussions += 1;
         }
       } catch (err) {
-        console.error(`[Sync Error] Failed parsing operations for timeline item ts=${msg.ts}:`, err.message);
         summary.errors.push({
           channel: channel.id,
           ts: msg.ts,
           error: err.message,
         });
-      } finally {
-        if (downloadedFiles.length > 0) {
-          await module.exports.cleanupTemporaryFiles(downloadedFiles);
-        }
       }
     }
   }
@@ -268,4 +303,10 @@ async function syncFromSlack(messageProcessor, options = {}) {
   return { ok: true, sync: summary, dashboard };
 }
 
-module.exports = { syncFromSlack, createSlackClient };
+module.exports = { 
+  syncFromSlack, 
+  createSlackClient, 
+  buildDirectory, 
+  resolveUser,
+  downloadSlackAttachments 
+};

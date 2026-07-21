@@ -79,15 +79,6 @@ const ISSUE_PATTERNS = [
 	/\bdown\b/i,
 	/\bfail(ed|ure|ing)?\b/i,
 	/\berror\b/i,
-	/\bissue\b/i, // <--- Added
-	/\bproblem\b/i, // <--- Added
-	/\bnot\s+showing\b/i, // <--- Added
-	/\bbug\b/i,
-	/\bcrash(ed|ing)?\b/i,
-	/\boutage\b/i,
-	/\bdown\b/i,
-	/\bfail(ed|ure|ing)?\b/i,
-	/\berror\b/i,
 	/\bincident\b/i,
 	/\bregression\b/i,
 	/\btimeout\b/i,
@@ -195,10 +186,29 @@ function emptyUser() {
 }
 
 function toUser(u = {}) {
+	// 1. Pick the best human-readable name field available
+	let rawName =
+		u.display_name ||
+		u.real_name ||
+		u.name ||
+		u.email ||
+		"";
+
+	// 2. If the selected name is an email address, extract only the username prefix (before '@')
+	if (rawName.includes("@")) {
+		rawName = rawName.split("@")[0];
+	}
+
+	// 3. Format into clean, capitalized words (e.g. "john.doe" -> "John Doe")
+	const cleanFormattedName = rawName
+		.replace(/[._-]/g, " ")
+		.replace(/\b\w/g, (char) => char.toUpperCase())
+		.trim();
+
 	return {
 		id: u.id || u.slack_id || "",
-		name: u.name || u.real_name || "",
-		display_name: u.display_name || u.real_name || u.name || "",
+		name: cleanFormattedName || "Unknown",
+		display_name: u.display_name || cleanFormattedName || "Unknown",
 		email: u.email || "",
 	};
 }
@@ -241,7 +251,6 @@ function extractMentionedUsers(text, userDirectory = {}) {
 		users.push(toUser({ name, display_name: name, ...known }));
 	}
 
-	// NEW: Catch plain text names without the @ symbol
 	const cleanWords = lowerText.replace(/[^a-z0-9\s]/g, "").split(/\s+/);
 	Object.values(userDirectory).forEach((u) => {
 		const dName = (u.display_name || "").toLowerCase();
@@ -264,6 +273,7 @@ function extractMentionedUsers(text, userDirectory = {}) {
 }
 
 function detectAssignee(text, sender, mentionedUsers) {
+	// 1. Explicit unassigned requests ("can someone...", "volunteer...")
 	if (matchAny(text, UNASSIGNED_PATTERNS)) {
 		return {
 			owner: { id: "", name: "Unassigned" },
@@ -273,20 +283,19 @@ function detectAssignee(text, sender, mentionedUsers) {
 		};
 	}
 
+	// 2. Explicit assignee patterns (e.g. "@nandani task -", "assign to @john")
 	for (const pattern of ASSIGNEE_PATTERNS) {
 		const m = text.match(pattern);
 		if (!m) continue;
 		const token = m[1] || m[2] || m[3];
 		if (!token) continue;
 
-		// UPDATED: Allow partial name matching for the extracted token
 		const mentioned =
 			mentionedUsers.find(
 				(u) =>
 					u.id === token ||
 					(u.name || "").toLowerCase() === token.toLowerCase() ||
-					(u.display_name || "").toLowerCase() ===
-						token.toLowerCase(),
+					(u.display_name || "").toLowerCase() === token.toLowerCase(),
 			) || null;
 
 		const assignee =
@@ -304,7 +313,9 @@ function detectAssignee(text, sender, mentionedUsers) {
 			needs_assignment: false,
 		};
 	}
-	if (matchAny(text, SELF_ASSIGN_PATTERNS) || mentionedUsers.length === 0) {
+
+	// 3. Explicit self-assignment ("I'll do this...", "my task")
+	if (matchAny(text, SELF_ASSIGN_PATTERNS)) {
 		const self = toUser(sender);
 		return {
 			owner: self,
@@ -314,20 +325,23 @@ function detectAssignee(text, sender, mentionedUsers) {
 		};
 	}
 
-	// Default: first mention becomes assignee when action language present
-	if (mentionedUsers.length > 0 && matchAny(text, TASK_PATTERNS)) {
+	// 4. Mentioned user assignment (if someone else was explicitly tagged in text)
+	if (mentionedUsers.length > 0) {
+		const target = mentionedUsers.find((u) => u.id !== sender.id) || mentionedUsers[0];
 		return {
-			owner: mentionedUsers[0],
-			assigned_to: mentionedUsers[0],
+			owner: target,
+			assigned_to: target,
 			assigned_by: toUser(sender),
 			needs_assignment: false,
 		};
 	}
 
+	// 5. DEFAULT FALLBACK: Assign to the user who sent the message!
+	const senderUser = toUser(sender);
 	return {
-		owner: toUser(sender),
-		assigned_to: toUser(sender),
-		assigned_by: toUser(sender),
+		owner: senderUser,
+		assigned_to: senderUser,
+		assigned_by: senderUser,
 		needs_assignment: false,
 	};
 }
@@ -355,7 +369,6 @@ function nextWeekday(from, dayIndex) {
 }
 
 function parseTimeOfDay(text, base) {
-	// NEW: Allows a colon or a space between hours and minutes (e.g., "5:45 pm" or "5 45 pm")
 	const m = text.match(/\b(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm)\b/i);
 
 	if (!m) return null;
@@ -409,7 +422,6 @@ function extractDueDate(text, now = new Date()) {
 	if (nextDay) {
 		const d = nextWeekday(now, WEEKDAYS[nextDay[1]]);
 		d.setDate(d.getDate() + (d.getDay() === WEEKDAYS[nextDay[1]] ? 0 : 0));
-		// ensure at least 7 days ahead for "next"
 		if (d - now < 7 * 24 * 3600 * 1000) d.setDate(d.getDate() + 7);
 		return d.toISOString();
 	}
@@ -466,7 +478,6 @@ function extractDueDate(text, now = new Date()) {
 
 	const timeOnly = parseTimeOfDay(text, now);
 	if (timeOnly) {
-		// FIXED: If they type a time (e.g., "by 5 PM"), strictly set it for today!
 		return timeOnly.toISOString();
 	}
 
@@ -546,47 +557,26 @@ function classifyMessage(text) {
 
 	const issueScore = scoreMatches(text, ISSUE_PATTERNS);
 	const taskScore = scoreMatches(text, TASK_PATTERNS);
-	const discussionScore = scoreMatches(text, DISCUSSION_PATTERNS);
-
-	let classification = "GENERAL_DISCUSSION";
-	let confidence = 0.55;
 
 	if (issueScore > 0 && issueScore >= taskScore) {
-		classification = "ISSUE";
-		confidence = Math.min(0.98, 0.72 + issueScore * 0.08);
-	} else if (taskScore > 0) {
-		classification = "TASK";
-		confidence = Math.min(0.98, 0.7 + taskScore * 0.07);
-	} else if (discussionScore > 0) {
-		classification = "GENERAL_DISCUSSION";
-		confidence = Math.min(0.95, 0.75 + discussionScore * 0.05);
-	}
-
-	// Short action imperatives
-	if (
-		/^[A-Z]?[a-z]+\s+the\s+\w+/i.test(text) &&
-		taskScore === 0 &&
-		issueScore === 0
-	) {
-		if (/\b(is|are|was|were|isn't|aren't)\b/i.test(text)) {
-			// likely statement not task
-		} else if (
-			/\b(deploy|create|fix|update|build|add|prepare)\b/i.test(text)
-		) {
-			classification = "TASK";
-			confidence = 0.85;
-		}
-	}
-
-	if (confidence < config.confidenceFloor) {
 		return {
-			classification: "GENERAL_DISCUSSION",
-			confidence,
-			needs_human_review: true,
+			classification: "ISSUE",
+			confidence: 0.5,
+			needs_human_review: false,
+		};
+	} else if (taskScore > 0) {
+		return {
+			classification: "TASK",
+			confidence: 0.5,
+			needs_human_review: false,
 		};
 	}
 
-	return { classification, confidence, needs_human_review: false };
+	return {
+		classification: "GENERAL_DISCUSSION",
+		confidence: 0.5,
+		needs_human_review: false,
+	};
 }
 
 function generateTitle(text, classification) {
@@ -597,7 +587,6 @@ function generateTitle(text, classification) {
 		.replace(/\s+/g, " ")
 		.trim();
 
-	// NEW: Aggressively removes names and the command prefix (e.g., "nandani task - ")
 	cleaned = cleaned.replace(/^.*?(task|issue)\s*-\s*/i, "");
 
 	if (cleaned.endsWith("]")) {
@@ -637,22 +626,6 @@ function isAcknowledgement(text) {
 	return ACK_PATTERNS.some((p) => p.test(text.trim()));
 }
 
-/**
- * @param {object} input
- * @param {string} input.text
- * @param {object} input.sender
- * @param {string} [input.channel]
- * @param {string} [input.thread_id]
- * @param {string} [input.workspace_id]
- * @param {string} [input.team]
- * @param {string} [input.message_ts]
- * @param {boolean} [input.is_edit]
- * @param {object} [input.user_directory]
- * @param {object|null} [input.existing_task]
- * @param {object|null} [input.existing_issue]
- * @param {Array} [input.thread_context]
- * @param {Date} [input.now]
- */
 async function parseMessage(input) {
 	const {
 		text = "",
@@ -698,7 +671,6 @@ async function parseMessage(input) {
 			? { issue_id: thread_context.find((c) => c.issue_id).issue_id }
 			: null);
 
-	// Acknowledgement of dependency
 	if (isAcknowledgement(text) && (linkingTask || linkingIssue)) {
 		return buildResponse({
 			classification: "GENERAL_DISCUSSION",
@@ -738,7 +710,6 @@ async function parseMessage(input) {
 		});
 	}
 
-	// Thread updates against existing work
 	if (
 		(linkingTask || linkingIssue) &&
 		classification === "GENERAL_DISCUSSION" &&
@@ -746,22 +717,19 @@ async function parseMessage(input) {
 	) {
 		const updates = {};
 
-		// Map status updates dynamically based on work type
 		if (status !== "TODO") {
 			if (linkingIssue) {
-				// If they replied "done" or "resolved" to an Issue, set it to RESOLVED
 				updates.status =
 					status === "COMPLETED" || status === "PROCESSING"
 						? "RESOLVED"
 						: "HOLD";
 			} else {
-				// Normal tasks keep normal statuses (PROCESSING, BLOCKED, COMPLETED)
 				updates.status = status;
 			}
 		}
 
 		if (priority !== "MEDIUM") updates.priority = priority;
-		if (dueDate && linkingTask) updates.due_date = dueDate; // Prevent due dates bleeding to issues here
+		if (dueDate && linkingTask) updates.due_date = dueDate;
 		if (blockedReason) updates.blocked_reason = blockedReason;
 
 		if (Object.keys(updates).length > 0 || text.trim()) {
@@ -791,7 +759,7 @@ async function parseMessage(input) {
 						? linkingIssue.issue_id || linkingIssue.id
 						: null,
 				},
-				updates, // Contains the { status: 'RESOLVED' } payload
+				updates,
 				notifications: [],
 				meta: {
 					is_edit,
@@ -875,7 +843,7 @@ async function parseMessage(input) {
 				: existing_issue
 					? "UPDATE_ISSUE"
 					: "CREATE_ISSUE";
-		const issueStatus = status === "COMPLETED" ? "RESOLVED" : "HOLD"; // Map status for issues
+		const issueStatus = status === "COMPLETED" ? "RESOLVED" : "HOLD";
 
 		return buildResponse({
 			classification: "ISSUE",
@@ -907,19 +875,17 @@ async function parseMessage(input) {
 				block_reason_pending: issueStatus === "HOLD" && !blockedReason,
 				needs_assignment: assignment.needs_assignment,
 				dependencies,
-				// Removed due_date and due_date_pending
 			},
 			notifications: buildNotificationHints({
 				classification: "ISSUE",
 				title: existing_issue?.title || title,
 				owner: assignment.owner,
 				assignedBy: assignment.assigned_by,
-				status: issueStatus, // Pass mapped status
+				status: issueStatus,
 				blockedReason,
 				dependencies,
 				text,
 				mentionedUsers,
-				// Omitted dueDate intentionally so the hint function ignores it
 			}),
 			meta: {
 				is_edit,
@@ -932,7 +898,6 @@ async function parseMessage(input) {
 		});
 	}
 
-	// GENERAL_DISCUSSION
 	return buildResponse({
 		classification: "GENERAL_DISCUSSION",
 		confidence,
@@ -979,7 +944,6 @@ function buildNotificationHints({
 }) {
 	const notifications = [];
 
-	// 1. DUE DATES: STRICTLY FOR TASKS ONLY
 	if (
 		classification === "TASK" &&
 		!dueDate &&
@@ -996,7 +960,6 @@ function buildNotificationHints({
 		});
 	}
 
-	// 2. MISSING BLOCK REASON: STRICTLY FOR TASKS
 	if (
 		classification === "TASK" &&
 		status === "BLOCKED" &&
@@ -1014,9 +977,7 @@ function buildNotificationHints({
 		});
 	}
 
-	// 3. NOTIFY TEAM MEMBERS TO CONNECT ON ISSUES
 	if (classification === "ISSUE" && mentionedUsers.length > 0) {
-		// Find the mentioned user (e.g., Nandani)
 		const dependent =
 			mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
 
@@ -1031,9 +992,7 @@ function buildNotificationHints({
 				expects_acknowledgement: true,
 			});
 		}
-	}
-	// 4. NOTIFY BLOCKERS ON TASKS
-	else if (
+	} else if (
 		classification === "TASK" &&
 		status === "BLOCKED" &&
 		/(waiting\s+(for|on)|blocked\s+by)\s+<?@?/i.test(text)
