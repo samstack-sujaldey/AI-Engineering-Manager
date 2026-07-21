@@ -1,5 +1,6 @@
 const { Task, Issue, Discussion, Activity } = require("../models");
 const { parseMessage } = require("../agent/parser");
+const { cleanupCompletedWork } = require("../utils/retention");
 const {
 	findSimilarTask,
 	findSimilarIssue,
@@ -137,6 +138,8 @@ class MessageProcessor {
 			existing_task,
 			existing_issue,
 		});
+
+		await cleanupCompletedWork();
 
 		if (this.io && !quiet) {
 			this.io.emit("dashboard:update", {

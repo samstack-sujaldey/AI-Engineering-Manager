@@ -12,6 +12,7 @@ const { NotificationService } = require('./services/notifications');
 const { MessageProcessor } = require('./services/messageProcessor');
 const { createSlackApp } = require('./slack/app');
 const { startReminderScheduler } = require('./jobs/reminders');
+const { cleanupCompletedWork } = require('./utils/retention');
 
 async function main() {
   await mongoose.connect(config.mongodbUri);
@@ -71,6 +72,7 @@ async function main() {
   }
 
   startReminderScheduler(notificationService);
+  await cleanupCompletedWork();
 
   server.listen(config.port, () => {
     console.log(`[api] AI Engineering Manager listening on http://localhost:${config.port}`);

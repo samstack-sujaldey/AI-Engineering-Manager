@@ -36,10 +36,6 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             <div class="stat-value">{{ countStatus(data.tasks, 'PROCESSING') }}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Completed</div>
-            <div class="stat-value">{{ countStatus(data.tasks, 'COMPLETED') }}</div>
-          </div>
-          <div class="stat-card">
             <div class="stat-label">Blocked</div>
             <div class="stat-value critical">{{ countStatus(data.tasks, 'BLOCKED') }}</div>
             <div class="stat-badge critical" *ngIf="countStatus(data.tasks, 'BLOCKED') > 0">
@@ -412,6 +408,22 @@ export class DashboardComponent {
   countStatus(tasks: any[], status: string): number {
     if (!tasks) return 0;
     return tasks.filter((t) => t.status === status).length;
+  }
+
+  displayName(user: any): string {
+    if (!user) return 'Unassigned';
+    const candidate = user.display_name || user.real_name || user.name || '';
+    return this.normalizeName(candidate) || 'Unassigned';
+  }
+
+  private normalizeName(value: string): string {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) {
+      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    }
+    return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
   getInitials(name: string): string {

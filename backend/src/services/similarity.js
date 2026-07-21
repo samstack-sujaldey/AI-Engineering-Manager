@@ -72,7 +72,7 @@ async function findSimilarIssue(title, description, workspaceId, channel) {
 
 async function findWorkByThread(thread, channel) {
 	if (!thread) return { task: null, issue: null };
-	const [task, issue] = await Promise.all([
+	let [task, issue] = await Promise.all([
 		Task.findOne({ thread, channel }).sort({ updated_time: -1 }).lean(),
 		Issue.findOne({ thread, channel }).sort({ updated_time: -1 }).lean(),
 	]);
@@ -96,14 +96,14 @@ async function findWorkByThread(thread, channel) {
 
 async function findWorkByMessageTs(messageTs) {
 	if (!messageTs) return { task: null, issue: null };
-	const [task, issue] = await Promise.all([
+	let [task, issue] = await Promise.all([
 		Task.findOne({ slack_message_ts: messageTs }).lean(),
 		Issue.findOne({ slack_message_ts: messageTs }).lean(),
 	]);
 
 	if (!task && !issue) {
 		const notif = await Notification.findOne({
-			slack_dm_ts: thread,
+			slack_dm_ts: messageTs,
 		}).lean();
 		if (notif) {
 			if (notif.task_id)

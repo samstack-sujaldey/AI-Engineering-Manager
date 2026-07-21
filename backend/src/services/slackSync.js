@@ -117,6 +117,7 @@ async function fetchChannelHistory(client, channelId, limit) {
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
+    channelId = null,
     channelIds = (process.env.SLACK_SYNC_CHANNELS || '')
       .split(',')
       .map((s) => s.trim())
@@ -125,22 +126,14 @@ async function syncFromSlack(messageProcessor, options = {}) {
 
   const client = createSlackClient();
 
-  let auth;
-  try {
-    auth = await client.auth.test();
-  } catch (err) {
-    const slackErr = err?.data?.error || err.message;
-    const error = new Error(
-      slackErr === 'invalid_auth'
-        ? 'Slack rejected the bot token (invalid_auth). Reinstall the app and update SLACK_BOT_TOKEN.'
-        : `Slack auth failed: ${slackErr}`
-    );
-    error.status = 401;
-    error.code = slackErr;
-    throw error;
+  // Authenticate to prevent ReferenceError and fetch workspace identity
+  const auth = await client.auth.test();
+
+  let channels = await listChannels(client, { channelIds });
+  if (channelId) {
+    channels = channels.filter((ch) => ch.id === channelId);
   }
 
-  const channels = await listChannels(client, { channelIds });
   const userCache = new Map();
   const summary = {
     workspace: auth.team || '',
@@ -154,89 +147,79 @@ async function syncFromSlack(messageProcessor, options = {}) {
   };
 
   for (const channel of channels) {
-    summary.channels_scanned += 1;
-    let history;
+    summary.channels_scanned++;
     try {
-      history = await fetchChannelHistory(client, channel.id, limitPerChannel);
-    } catch (err) {
-      summary.errors.push({
-        channel: channel.id,
-        error: err?.data?.error || err.message,
-      });
-      continue;
-    }
-
-    for (const msg of history) {
-      summary.messages_seen += 1;
-      if (!msg?.text || msg.bot_id || msg.subtype === 'bot_message') {
-        summary.messages_skipped += 1;
-        continue;
-      }
-      if (msg.subtype && msg.subtype !== 'file_share') {
-        summary.messages_skipped += 1;
-        continue;
-      }
-
-      try {
-        if (await alreadyProcessed(msg.ts)) {
-          summary.messages_skipped += 1;
+      const messages = await fetchChannelHistory(client, channel.id, limitPerChannel);
+      
+      for (const msg of messages) {
+        summary.messages_seen++;
+        if (!msg.text || msg.subtype) {
+          summary.messages_skipped++;
           continue;
         }
 
-        const sender = await resolveUser(client, msg.user, userCache);
-        const user_directory = await buildDirectory(client, msg.text, userCache);
-        const result = await messageProcessor.process(
-          {
+        if (await alreadyProcessed(msg.ts)) {
+          summary.messages_skipped++;
+          continue;
+        }
+
+        try {
+          const sender = await resolveUser(client, msg.user, userCache);
+          const threadContext = [];
+          if (msg.thread_ts && msg.thread_ts !== msg.ts) {
+            try {
+              const replies = await client.conversations.replies({
+                channel: channel.id,
+                ts: msg.thread_ts,
+                limit: 10,
+              });
+              threadContext.push(...(replies.messages || []));
+            } catch {}
+          }
+
+          const directory = await buildDirectory(client, msg.text, userCache);
+
+          const processed = await messageProcessor.process({
             text: msg.text,
             sender,
-            channel: channel.id,
-            thread_id: msg.thread_ts || msg.ts,
+            channel: channel.name || channel.id,
+            thread_id: msg.thread_ts || '',
             workspace_id: auth.team_id || '',
             team: auth.team || '',
             message_ts: msg.ts,
-            is_edit: false,
-            user_directory,
-          },
-          { quiet: true }
-        );
+            user_directory: directory,
+            thread_context: threadContext,
+          });
 
-        summary.messages_processed += 1;
-        if (result.task_created) summary.created.tasks += 1;
-        if (result.issue_created) summary.created.issues += 1;
-        if (
-          result.discussion?.id &&
-          (result.action === 'STORE_DISCUSSION' || result.action === 'LINK_DISCUSSION')
-        ) {
-          summary.created.discussions += 1;
+          if (processed) {
+            summary.messages_processed++;
+            if (processed.type === 'TASK') summary.created.tasks++;
+            if (processed.type === 'ISSUE') summary.created.issues++;
+            if (processed.type === 'DISCUSSION') summary.created.discussions++;
+          } else {
+            summary.messages_skipped++;
+          }
+        } catch (msgErr) {
+          summary.messages_skipped++;
+          summary.errors.push({
+            channel: channel.name || channel.id,
+            message: msgErr.message,
+          });
         }
-      } catch (err) {
-        summary.errors.push({
-          channel: channel.id,
-          ts: msg.ts,
-          error: err.message,
-        });
       }
+    } catch (chErr) {
+      summary.errors.push({
+        channel: channel.name || channel.id,
+        message: chErr.message,
+      });
     }
   }
 
-  if (messageProcessor.io) {
-    messageProcessor.io.emit('dashboard:update', {
-      action: 'SLACK_SYNC',
-      at: new Date().toISOString(),
-      summary,
-    });
-  }
-
-  const dashboard = await getDashboard();
-
-  if (summary.channels_scanned === 0) {
-    summary.errors.push({
-      error:
-        'No channels found. Invite the bot to channels and grant channels:read / groups:read scopes, then reinstall the app.',
-    });
-  }
-
-  return { ok: true, sync: summary, dashboard };
+  return summary;
 }
 
-module.exports = { syncFromSlack, createSlackClient };
+module.exports = {
+  createSlackClient,
+  listChannels,
+  syncFromSlack,
+};

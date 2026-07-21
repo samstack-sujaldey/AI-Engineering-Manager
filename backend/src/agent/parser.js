@@ -194,11 +194,29 @@ function emptyUser() {
 	return { id: "", name: "", display_name: "", email: "" };
 }
 
+function normalizePersonName(value = "") {
+	const trimmed = String(value || "").trim();
+	if (!trimmed) return "";
+
+	const withoutAngleBrackets = trimmed.replace(/^<|>$/g, "").trim();
+	if (!withoutAngleBrackets) return "";
+
+	if (withoutAngleBrackets.includes("@")) {
+		return withoutAngleBrackets.split("@")[0].trim();
+	}
+
+	return withoutAngleBrackets.replace(/[_-]+/g, " ").trim();
+}
+
 function toUser(u = {}) {
+	const primaryName = normalizePersonName(u.name || u.real_name || "");
+	const displayName = normalizePersonName(
+		u.display_name || u.real_name || u.name || "",
+	);
 	return {
 		id: u.id || u.slack_id || "",
-		name: u.name || u.real_name || "",
-		display_name: u.display_name || u.real_name || u.name || "",
+		name: primaryName || u.name || u.real_name || "",
+		display_name: displayName || primaryName || u.name || u.real_name || "",
 		email: u.email || "",
 	};
 }
@@ -1107,5 +1125,6 @@ module.exports = {
 	detectStatus,
 	extractMentionedUsers,
 	isAcknowledgement,
+	normalizePersonName,
 	toUser,
 };

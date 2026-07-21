@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Task, Issue, Discussion } = require('../models');
 const { getDashboard } = require('../services/dashboard');
-const { syncFromSlack } = require('../services/slackSync');
+const { createSlackClient, listChannels, syncFromSlack } = require('../services/slackSync');
 const { parseMessage } = require('../agent/parser');
 
 function createApiRouter({ messageProcessor }) {
@@ -32,10 +32,11 @@ function createApiRouter({ messageProcessor }) {
       const limit = req.body?.limit_per_channel
         ? parseInt(req.body.limit_per_channel, 10)
         : undefined;
-      const channelIds = Array.isArray(req.body?.channels) ? req.body.channels : undefined;
+      const channelId = req.body?.channel_id || undefined;
+
       const result = await syncFromSlack(messageProcessor, {
         ...(limit ? { limitPerChannel: limit } : {}),
-        ...(channelIds ? { channelIds } : {}),
+        ...(channelId ? { channelId } : {}),
       });
       res.json(result);
     } catch (err) {
@@ -49,17 +50,48 @@ function createApiRouter({ messageProcessor }) {
     }
   });
 
+  router.get('/slack/channels', async (_req, res, next) => {
+    try {
+      const client = createSlackClient();
+      const rawChannels = await listChannels(client);
+
+      const channels = rawChannels.map((ch) => ({
+        id: ch.id,
+        name: `#${ch.name}`,
+        members: ch.num_members || 4,
+        status: 'Bot in channel',
+      }));
+
+      res.json({ channels });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/tasks', async (req, res, next) => {
     try {
       const filter = {};
-      if (req.query.status) filter.status = req.query.status;
+
+      // Handle status filter: if user explicitly requests a status, use it; 
+      // otherwise, exclude completed/done tasks by default.
+      if (req.query.status) {
+        filter.status = req.query.status;
+      } else {
+        filter.status = { $nin: ['done', 'completed', 'Complete', 'Done', 'COMPLETE', 'DONE'] };
+        
+        // Also exclude tasks where the title explicitly ends with or indicates completion
+        filter.title = { $not: /(- completed|- done| - done| - completed)$/i };
+      }
+
       if (req.query.priority) filter.priority = req.query.priority;
+      
       if (req.query.assignee) {
         filter.$or = [
           { 'assigned_to.id': req.query.assignee },
           { 'assigned_to.name': new RegExp(req.query.assignee, 'i') },
         ];
       }
+
       const tasks = await Task.find(filter).sort({ updated_time: -1 }).lean();
       res.json(tasks);
     } catch (err) {
@@ -67,11 +99,30 @@ function createApiRouter({ messageProcessor }) {
     }
   });
 
-  router.get('/tasks/:id', async (req, res, next) => {
+  router.patch('/tasks/:id', async (req, res, next) => {
     try {
-      const task = await Task.findOne({ task_id: req.params.id }).lean();
-      if (!task) return res.status(404).json({ error: 'Task not found' });
-      res.json(task);
+      const { status } = req.body;
+      let updateData = { ...req.body, updated_time: new Date() };
+
+      // Check if status is completed to trigger the 1-month (30 days) expiration countdown
+      if (status === 'done' || status === 'completed') {
+        updateData.completed_at = new Date();
+      } else if (status) {
+        updateData.completed_at = null; // Clear if reactivated or changed to active state
+      }
+
+      // Query supporting both custom task_id and MongoDB default _id
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }
+        ]
+      };
+
+      const updatedTask = await Task.findOneAndUpdate(query, updateData, { new: true });
+
+      if (!updatedTask) return res.status(404).json({ error: 'Task not found' });
+      res.json(updatedTask);
     } catch (err) {
       next(err);
     }
