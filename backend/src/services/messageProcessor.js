@@ -6,6 +6,7 @@ const { analyzeSlackMessage } = require("../ai/gemini");
 const { shouldAnalyze } = require("../ai/shouldAnalyze");
 const { extractAttachments } = require("../attachments/extractor");
 const { invalidateDailySummary } = require("../utils/cacheHelper");
+const { inngest } = require("../inngest/client");
 
 const {
   findSimilarTask,
@@ -423,6 +424,21 @@ class MessageProcessor {
       local_file_logs: parsed.local_attachments || [],
     });
 
+    try {
+      console.log(`[MessageProcessor] ⚡ Sending Inngest event 'issue/created' for ID: ${doc.issue_id}`);
+      const sendRes = await inngest.send({
+        name: "issue/created",
+        data: {
+          issueId: doc.issue_id,
+          workspaceId: ctx.workspace_id || "",
+          channel: ctx.channel || "",
+        },
+      });
+      console.log("[MessageProcessor] ✅ Inngest event dispatched successfully:", sendRes);
+    } catch (err) {
+      console.error("[MessageProcessor] ❌ Inngest Send Error:", err.message);
+    }
+
     await this.logActivity({
       type: "ISSUE_CREATED",
       summary: `Issue created: ${doc.title}`,
@@ -432,7 +448,7 @@ class MessageProcessor {
       thread: ctx.thread_id,
     });
 
-    // ⚡ Invalidate daily summary cache for today
+    // Invalidate daily summary cache for today
     await invalidateDailySummary();
 
     return {

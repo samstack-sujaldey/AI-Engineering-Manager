@@ -7,6 +7,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node src/agent/parser.test.js",
+    "inngest":"npx inngest-cli@latest dev -u http://localhost:4000/api/inngest --no-discovery",
     "test:parser": "node src/agent/parser.test.js",
     "seed": "node src/scripts/seed.js"
   },
@@ -31,6 +32,7 @@
     "express": "^5.2.1",
     "express-validator": "^7.3.2",
     "helmet": "^8.3.0",
+    "inngest": "^4.13.0",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "mammoth": "^1.12.0",
@@ -39,6 +41,7 @@
     "multer": "^2.2.0",
     "node-cron": "^4.6.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.19.1",
     "socket.io": "^4.8.3",
     "unzipper": "^0.12.5",
     "xlsx": "^0.18.5"

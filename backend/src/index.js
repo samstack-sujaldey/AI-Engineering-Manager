@@ -13,6 +13,11 @@ const { MessageProcessor } = require('./services/messageProcessor');
 const { createSlackApp } = require('./slack/app');
 const { startReminderScheduler } = require('./jobs/reminders');
 
+const { serve } = require('inngest/express');
+const { inngest } = require('./inngest/client');
+const { issueResolverAgent } = require('./inngest/issueResolverAgent');
+
+
 async function main() {
   await mongoose.connect(config.mongodbUri);
   console.log('[db] Connected to MongoDB');
@@ -44,6 +49,17 @@ async function main() {
     console.log('[socket] client connected', socket.id);
     socket.on('disconnect', () => console.log('[socket] client disconnected', socket.id));
   });
+
+
+  app.use(
+  '/api/inngest',
+  serve({
+    client: inngest,
+    functions: [
+      issueResolverAgent,
+    ],
+  })
+);
 
   const slackApp = createSlackApp({ messageProcessor, notificationService });
   if (slackApp) {
