@@ -4,4 +4,5 @@ module.exports = {
   Discussion: require('./Discussion'),
   Notification: require('./Notification'),
   Activity: require('./Activity'),
+  DailySummary: require('./DailySummary'),
 };

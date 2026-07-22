@@ -7,6 +7,7 @@ const { parseMessage } = require("../agent/parser");
 const { callOpenRouter } = require("../ai/gemini");
 const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
+const { sendDailyStandupBriefings } = require('../config/scheduler.js');
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
@@ -232,6 +233,25 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
       res.json(tasks);
     } catch (err) {
       next(err);
+    }
+  });
+
+  //test route for checking the task-list manually.
+
+  router.all('/slack/standup-briefing', async (req, res) => {
+    try {
+      const { team, userId, hours, meetingTime } = { ...req.query, ...req.body };
+
+      const result = await sendDailyStandupBriefings({
+        team,
+        userId,
+        lookbackHours: hours ? parseInt(hours, 10) : 24,
+        meetingTime,
+      });
+
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
     }
   });
 
