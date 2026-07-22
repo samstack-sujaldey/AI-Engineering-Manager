@@ -12,6 +12,7 @@ const { NotificationService } = require('./services/notifications');
 const { MessageProcessor } = require('./services/messageProcessor');
 const { createSlackApp } = require('./slack/app');
 const { startReminderScheduler } = require('./jobs/reminders'); // Keep this for hourly reminders
+const {cleanupCompletedWork}=require('./utils/retention')
 
 // 🧠 Load the 10:00 AM Standup Briefing Cron Job
 require('./config/scheduler');
