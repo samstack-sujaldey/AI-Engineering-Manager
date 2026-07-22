@@ -168,6 +168,7 @@ async function downloadSlackAttachments(attachments = [], token) {
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
+    channelId = null,
     channelIds = (process.env.SLACK_SYNC_CHANNELS || '')
       .split(',')
       .map((s) => s.trim())
@@ -191,7 +192,6 @@ async function syncFromSlack(messageProcessor, options = {}) {
     throw error;
   }
 
-  const downloadToken = config.slack.botToken;
   const channels = await listChannels(client, { channelIds });
   const userCache = new Map();
   const summary = {
@@ -220,11 +220,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
 
     for (const msg of history) {
       summary.messages_seen += 1;
-      
-      const hasFiles = msg.files && msg.files.length > 0;
-      const safeText = msg.text || "";
-
-      if ((!safeText && !hasFiles) || msg.bot_id || msg.subtype === 'bot_message') {
+      if (!msg?.text || msg.bot_id || msg.subtype === 'bot_message') {
         summary.messages_skipped += 1;
         continue;
       }
@@ -233,10 +229,8 @@ async function syncFromSlack(messageProcessor, options = {}) {
         continue;
       }
 
-      let downloadedFiles = [];
       try {
-        const checkDuplicate = await alreadyProcessed(msg.ts);
-        if (checkDuplicate.skipped) {
+        if (await alreadyProcessed(msg.ts)) {
           summary.messages_skipped += 1;
           continue;
         }
@@ -254,20 +248,18 @@ async function syncFromSlack(messageProcessor, options = {}) {
         }
 
         const sender = await resolveUser(client, msg.user, userCache);
-        const user_directory = await buildDirectory(client, safeText, userCache);
-        
+        const user_directory = await buildDirectory(client, msg.text, userCache);
         const result = await messageProcessor.process(
           {
-            text: safeText,
+            text: msg.text,
             sender,
-            channel: channel.id,
-            thread_id: msg.thread_ts || msg.ts,
+            channel: channel.name || channel.id,
+            thread_id: msg.thread_ts || '',
             workspace_id: auth.team_id || '',
             team: auth.team || '',
             message_ts: msg.ts,
             is_edit: false,
             user_directory,
-            local_attachments: downloadedFiles
           },
           { quiet: true }
         );
@@ -300,13 +292,15 @@ async function syncFromSlack(messageProcessor, options = {}) {
   }
 
   const dashboard = await getDashboard();
+
+  if (summary.channels_scanned === 0) {
+    summary.errors.push({
+      error:
+        'No channels found. Invite the bot to channels and grant channels:read / groups:read scopes, then reinstall the app.',
+    });
+  }
+
   return { ok: true, sync: summary, dashboard };
 }
 
-module.exports = { 
-  syncFromSlack, 
-  createSlackClient, 
-  buildDirectory, 
-  resolveUser,
-  downloadSlackAttachments 
-};
+module.exports = { syncFromSlack, createSlackClient };

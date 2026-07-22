@@ -49,13 +49,15 @@ export class DashboardService {
     }
   }
 
-  async refresh(): Promise<void> {
+  async refresh(channels?: string[]): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     this.syncInfo.set(null);
     try {
       const result = await firstValueFrom(
-        this.http.post<any>(`${environment.apiUrl}/slack/sync`, {}),
+        this.http.post<any>(`${environment.apiUrl}/slack/sync`, {
+          channels: channels?.filter(Boolean) || [],
+        }),
       );
       this.data.set(result.dashboard);
       const s = result.sync;

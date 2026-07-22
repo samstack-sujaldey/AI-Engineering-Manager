@@ -185,30 +185,29 @@ function emptyUser() {
 	return { id: "", name: "", display_name: "", email: "" };
 }
 
-function toUser(u = {}) {
-	// 1. Pick the best human-readable name field available
-	let rawName =
-		u.display_name ||
-		u.real_name ||
-		u.name ||
-		u.email ||
-		"";
+function normalizePersonName(value = "") {
+	const trimmed = String(value || "").trim();
+	if (!trimmed) return "";
 
-	// 2. If the selected name is an email address, extract only the username prefix (before '@')
-	if (rawName.includes("@")) {
-		rawName = rawName.split("@")[0];
+	const withoutAngleBrackets = trimmed.replace(/^<|>$/g, "").trim();
+	if (!withoutAngleBrackets) return "";
+
+	if (withoutAngleBrackets.includes("@")) {
+		return withoutAngleBrackets.split("@")[0].trim();
 	}
 
-	// 3. Format into clean, capitalized words (e.g. "john.doe" -> "John Doe")
-	const cleanFormattedName = rawName
-		.replace(/[._-]/g, " ")
-		.replace(/\b\w/g, (char) => char.toUpperCase())
-		.trim();
+	return withoutAngleBrackets.replace(/[_-]+/g, " ").trim();
+}
 
+function toUser(u = {}) {
+	const primaryName = normalizePersonName(u.name || u.real_name || "");
+	const displayName = normalizePersonName(
+		u.display_name || u.real_name || u.name || "",
+	);
 	return {
 		id: u.id || u.slack_id || "",
-		name: cleanFormattedName || "Unknown",
-		display_name: u.display_name || cleanFormattedName || "Unknown",
+		name: u.name || u.real_name || "",
+		display_name: u.display_name || u.real_name || u.name || "",
 		email: u.email || "",
 	};
 }
@@ -1066,5 +1065,6 @@ module.exports = {
 	detectStatus,
 	extractMentionedUsers,
 	isAcknowledgement,
+	normalizePersonName,
 	toUser,
 };

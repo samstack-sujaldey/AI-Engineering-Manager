@@ -75,6 +75,7 @@ async function main() {
 
   // Starts hourly reminder notifications
   startReminderScheduler(notificationService);
+  await cleanupCompletedWork();
 
   server.listen(config.port, () => {
     console.log(`[api] AI Engineering Manager listening on http://localhost:${config.port}`);
