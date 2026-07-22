@@ -25,6 +25,52 @@ class MessageProcessor {
 		this.io = io;
 	}
 
+	async checkAndPromptMissingInfo(doc, ctx) {
+		let threadPrompt = "";
+
+		// 1. Check for missing block reason
+		if (doc.status === "BLOCKED" && !doc.blocked_reason) {
+			doc.block_reason_pending = true;
+			threadPrompt += `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.`;
+		}
+
+		// 2. Check for missing due date
+		if (!doc.due_date && doc.status !== "COMPLETED") {
+			doc.due_date_pending = true;
+			if (threadPrompt) {
+				threadPrompt +=
+					" Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow').";
+			} else {
+				threadPrompt += `📅 <@${ctx.sender.id}> I tracked the task, but I couldn't find a due date. Please reply directly to this thread with the deadline (e.g., 'by tomorrow').`;
+			}
+		}
+
+		if (threadPrompt) {
+			// Set the background cron reminder timestamp to 1 hour from now (3,600,000 ms)
+			const nextHour = new Date(Date.now() + 3600000);
+			if (doc.block_reason_pending)
+				doc.block_reason_notification_at = nextHour;
+			if (doc.due_date_pending) doc.due_date_notification_at = nextHour;
+
+			await doc.save();
+
+			try {
+				if (ctx.slack_client) {
+					await ctx.slack_client.chat.postMessage({
+						channel: ctx.channel,
+						thread_ts: ctx.thread_id || ctx.message_ts,
+						text: threadPrompt,
+					});
+				}
+			} catch (err) {
+				console.error(
+					"Failed to ask for missing info in thread:",
+					err.message,
+				);
+			}
+		}
+	}
+
 	/**
 	 * Process one Slack message end-to-end.
 	 * Returns the structured parser result enriched with persisted IDs.
@@ -69,40 +115,6 @@ class MessageProcessor {
 			const byThread = await findWorkByThread(threadRoot, channel);
 			existing_task = byThread.task;
 			existing_issue = byThread.issue;
-		}
-
-		// NEW: If the bot is waiting for a block reason from this task, intercept the reply!
-		if (existing_task && existing_task.block_reason_pending) {
-			const newDueDate =
-				extractDueDate(text, new Date()) || existing_task.due_date;
-
-			// Build proper (parsed, ctx, senderRef) shape that updateTask expects
-			const blockParsed = {
-				classification: "TASK",
-				action: "UPDATE_TASK",
-				task: { id: existing_task.task_id },
-				updates: {
-					block_reason: text,
-					block_reason_pending: false,
-					status: "BLOCKED",
-					due_date: newDueDate,
-				},
-				notifications: [],
-				mentioned_users: [],
-			};
-			const blockCtx = {
-				text,
-				sender,
-				channel,
-				thread_id: threadRoot,
-				workspace_id,
-				message_ts,
-				existing_task,
-				user_directory,
-				slack_client,
-				updates: { block_reason: text },
-			};
-			return this.updateTask(blockParsed, blockCtx, sender);
 		}
 
 		// 1. Intercept "accept @user" or "accept" with a tag
@@ -522,25 +534,7 @@ class MessageProcessor {
 			await doc.save();
 		}
 
-		// NEW: Ask for reason AND due date if missing!
-		if (doc.status === "BLOCKED" && !doc.block_reason) {
-			doc.block_reason_pending = true;
-			await doc.save();
-
-			const duePrompt = !doc.due_date
-				? " Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow')."
-				: "";
-
-			try {
-				await ctx.slack_client.chat.postMessage({
-					channel: ctx.channel,
-					thread_ts: ctx.thread_id || ctx.message_ts,
-					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.${duePrompt}`,
-				});
-			} catch (err) {
-				console.error("Failed to ask for block reason:", err.message);
-			}
-		}
+		await this.checkAndPromptMissingInfo(doc, ctx);
 
 		return {
 			...parsed,
@@ -756,25 +750,7 @@ class MessageProcessor {
 			}
 		}
 
-		// Ask for reason AND due date if missing
-		if (doc.status === "BLOCKED" && !doc.block_reason) {
-			doc.block_reason_pending = true;
-			await doc.save();
-
-			const duePrompt = !doc.due_date
-				? " Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow')."
-				: "";
-
-			try {
-				await ctx.slack_client.chat.postMessage({
-					channel: ctx.channel,
-					thread_ts: ctx.thread_id || ctx.message_ts,
-					text: `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.${duePrompt}`,
-				});
-			} catch (err) {
-				console.error("Failed to ask for block reason:", err.message);
-			}
-		}
+		await this.checkAndPromptMissingInfo(doc, ctx);
 
 		return {
 			...parsed,

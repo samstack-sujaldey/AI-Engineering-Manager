@@ -484,11 +484,21 @@ function extractDependencies(text) {
 }
 
 function extractBlockedReason(text) {
-	const m =
-		text.match(/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|$)/i);
-	return m ? m[1].trim() : "";
+	const explicitMatch = text.match(
+		/(?:reason|blocker|blocked\s+by)[\s:-]+(.+?)(?:\n|$)/i,
+	);
+	if (explicitMatch) return explicitMatch[1].trim();
+
+	const naturalMatch =
+		text.match(
+			/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|\n|$)/i,
+		) ||
+		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|\n|$)/i) ||
+		text.match(
+			/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|\n|$)/i,
+		);
+
+	return naturalMatch ? naturalMatch[1].trim() : "";
 }
 
 function extractEntities(text) {
@@ -599,8 +609,14 @@ function generateTitle(text, classification) {
 		.replace(/\s+/g, " ")
 		.trim();
 
-	// NEW: Aggressively removes names and the command prefix (e.g., "nandani task - ")
 	cleaned = cleaned.replace(/^.*?(task|issue)\s*-\s*/i, "");
+
+	cleaned = cleaned
+		.replace(
+			/\s*-\s*(block(ed)?|done|todo|processing|in progress)\s*$/i,
+			"",
+		)
+		.trim();
 
 	if (cleaned.endsWith("]")) {
 		cleaned = cleaned.slice(0, -1).trim();
@@ -981,41 +997,6 @@ function buildNotificationHints({
 	mentionedUsers,
 }) {
 	const notifications = [];
-
-	// 1. DUE DATES: STRICTLY FOR TASKS ONLY
-	if (
-		classification === "TASK" &&
-		!dueDate &&
-		owner &&
-		owner.id &&
-		status !== "COMPLETED"
-	) {
-		notifications.push({
-			type: "MISSING_DUE_DATE",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message: `I couldn't determine the due date for your task '${title}'. Please reply with the due date.`,
-			immediate: true,
-		});
-	}
-
-	// 2. MISSING BLOCK REASON: STRICTLY FOR TASKS
-	if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		!blockedReason &&
-		owner &&
-		owner.id
-	) {
-		notifications.push({
-			type: "MISSING_BLOCK_REASON",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message:
-				"Your task is marked as blocked. Please tell me what is blocking it.",
-			immediate: true,
-		});
-	}
 
 	// 3. NOTIFY TEAM MEMBERS TO CONNECT ON ISSUES
 	if (classification === "ISSUE" && mentionedUsers.length > 0) {
