@@ -28,25 +28,30 @@ class MessageProcessor {
 	async checkAndPromptMissingInfo(doc, ctx) {
 		let threadPrompt = "";
 
-		// 1. Check for missing block reason
-		if (doc.status === "BLOCKED" && !doc.blocked_reason) {
+		if (
+			(doc.status === "BLOCKED" || doc.status === "HOLD") &&
+			!doc.blocked_reason
+		) {
 			doc.block_reason_pending = true;
-			threadPrompt += `⚠️ <@${ctx.sender.id}> You marked this task as *BLOCKED*. Please reply directly to this thread with the reason.`;
+			const statusLabel = doc.status === "HOLD" ? "HOLD" : "BLOCKED";
+			threadPrompt += `⚠️ <@${ctx.sender.id}> This item is marked as *${statusLabel}*. Please reply directly to this thread with the reason.`;
 		}
 
-		// 2. Check for missing due date
-		if (!doc.due_date && doc.status !== "COMPLETED") {
+		if (
+			!doc.due_date &&
+			doc.status !== "COMPLETED" &&
+			doc.status !== "RESOLVED"
+		) {
 			doc.due_date_pending = true;
 			if (threadPrompt) {
 				threadPrompt +=
 					" Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow').";
 			} else {
-				threadPrompt += `📅 <@${ctx.sender.id}> I tracked the task, but I couldn't find a due date. Please reply directly to this thread with the deadline (e.g., 'by tomorrow').`;
+				threadPrompt += `📅 <@${ctx.sender.id}> I tracked this, but I couldn't find a due date. Please reply directly to this thread with the deadline (e.g., 'by tomorrow').`;
 			}
 		}
 
 		if (threadPrompt) {
-			// Set the background cron reminder timestamp to 1 hour from now (3,600,000 ms)
 			const nextHour = new Date(Date.now() + 3600000);
 			if (doc.block_reason_pending)
 				doc.block_reason_notification_at = nextHour;
@@ -391,6 +396,8 @@ class MessageProcessor {
 			workspace_id,
 			team,
 			message_ts,
+			slack_client,
+			user_directory: raw.user_directory || {},
 			existing_task,
 			existing_issue,
 		});
@@ -805,10 +812,6 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			issue_id: issueId,
-		});
-
 		return {
 			...parsed,
 			issue_created: true,
@@ -895,10 +898,6 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			issue_id: doc.issue_id,
-		});
-
 		return {
 			...parsed,
 			issue_created: false,
@@ -964,10 +963,12 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			task_id: discussion.task_id,
-			issue_id: discussion.issue_id,
-		});
+		if (discussion.task_id) {
+			await this.dispatchNotifications(parsed.notifications, {
+				task_id: discussion.task_id,
+				issue_id: null,
+			});
+		}
 
 		return {
 			...parsed,
@@ -1112,8 +1113,11 @@ class MessageProcessor {
 			description: doc.description,
 			status: doc.status,
 			priority: doc.priority,
+			due_date: doc.due_date ? doc.due_date.toISOString() : "",
+			due_date_pending: doc.due_date_pending,
 			root_cause: doc.root_cause || "",
 			blocked_reason: doc.blocked_reason || "",
+			block_reason_pending: doc.block_reason_pending,
 			owner: doc.owner,
 			assigned_to: doc.assigned_to,
 			reporter: doc.reporter,

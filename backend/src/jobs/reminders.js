@@ -14,12 +14,10 @@ function startReminderScheduler(notificationService) {
 		return null;
 	}
 
-	// Every 1 minute check; interval between reminder resends controlled by timestamps
 	const job = cron.schedule("*/1 * * * *", async () => {
 		try {
 			const now = new Date();
 
-			// 1. Check for tasks missing block reasons
 			const tasksMissingBlock = await Task.find({
 				block_reason_pending: true,
 				status: "BLOCKED",
@@ -46,7 +44,6 @@ function startReminderScheduler(notificationService) {
 				await t.save();
 			}
 
-			// 2. Check for tasks missing due dates
 			const tasksMissingDueDate = await Task.find({
 				due_date_pending: true,
 				due_date_notification_at: { $lte: now },
@@ -64,7 +61,6 @@ function startReminderScheduler(notificationService) {
 					scheduleReminder: false,
 				});
 
-				// ✨ FIXED: Removed the stray comma so math calculates 1 hour (3600000 ms) correctly
 				t.due_date_notification_at = new Date(Date.now() + 3600000);
 				await t.save();
 			}

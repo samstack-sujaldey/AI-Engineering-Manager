@@ -926,7 +926,6 @@ function parseMessage(input) {
 				block_reason_pending: issueStatus === "HOLD" && !blockedReason,
 				needs_assignment: assignment.needs_assignment,
 				dependencies,
-				// Removed due_date and due_date_pending
 			},
 			notifications: buildNotificationHints({
 				classification: "ISSUE",
@@ -938,7 +937,6 @@ function parseMessage(input) {
 				dependencies,
 				text,
 				mentionedUsers,
-				// Omitted dueDate intentionally so the hint function ignores it
 			}),
 			meta: {
 				is_edit,
@@ -998,23 +996,8 @@ function buildNotificationHints({
 }) {
 	const notifications = [];
 
-	// 3. NOTIFY TEAM MEMBERS TO CONNECT ON ISSUES
-	if (classification === "ISSUE" && mentionedUsers.length > 0) {
-		// Find the mentioned user (e.g., Nandani)
-		const dependent =
-			mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
-
-		if (dependent && dependent.id && dependent.id !== owner?.id) {
-			notifications.push({
-				type: "DEPENDENT_USER",
-				target_user_id: dependent.id,
-				target_user_name:
-					dependent.name || dependent.display_name || "",
-				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"} reported an issue ('${title}') and needs to connect with you. Please reply 'resolved' or 'done' in the original thread once it is fixed!`,
-				immediate: true,
-				expects_acknowledgement: true,
-			});
-		}
+	if (classification === "ISSUE") {
+		return notifications;
 	}
 
 	return notifications;
