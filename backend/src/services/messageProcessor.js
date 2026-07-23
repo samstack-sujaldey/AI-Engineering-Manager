@@ -1,13 +1,12 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const { Task, Issue, Discussion, Activity } = require("../models");
-const { parseMessage } = require("../agent/parser");
-const { analyzeSlackMessage } = require("../ai/gemini");
-const { shouldAnalyze } = require("../ai/shouldAnalyze");
-const { extractAttachments } = require("../attachments/extractor");
-const { invalidateDailySummary } = require("../utils/cacheHelper");
-
-const { cleanupCompletedWork } = require("../utils/retention");
+const {
+  parseMessage,
+  detectStatus,
+  extractDueDate,
+  extractMentionedUsers,
+} = require("../agent/parser");
 const {
   findSimilarTask,
   findSimilarIssue,
@@ -15,6 +14,7 @@ const {
   findWorkByMessageTs,
 } = require("./similarity");
 const { newId } = require("../utils/helpers");
+const { invalidateDailySummary } = require("../utils/cacheHelper");
 
 function hashText(text = "") {
   return crypto.createHash("sha1").update(text || "").digest("hex");
@@ -23,7 +23,7 @@ function hashText(text = "") {
 function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
   if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
   return doc.history.some(
-    (h) => h?.details?.message_ts === message_ts && h?.details?.text_hash === hash,
+    (h) => h?.details?.message_ts === message_ts && h?.details?.text_hash === hash
   );
 }
 
@@ -37,6 +37,53 @@ class MessageProcessor {
     this.io = io;
   }
 
+  async checkAndPromptMissingInfo(doc, ctx) {
+    let threadPrompt = "";
+
+    if (
+      (doc.status === "BLOCKED" || doc.status === "HOLD") &&
+      !doc.blocked_reason
+    ) {
+      doc.block_reason_pending = true;
+      const statusLabel = doc.status === "HOLD" ? "HOLD" : "BLOCKED";
+      threadPrompt += `⚠️ <@${ctx.sender?.id}> This item is marked as *${statusLabel}*. Please reply directly to this thread with the reason.`;
+    }
+
+    if (
+      !doc.due_date &&
+      doc.status !== "COMPLETED" &&
+      doc.status !== "RESOLVED"
+    ) {
+      doc.due_date_pending = true;
+      if (threadPrompt) {
+        threadPrompt +=
+          " Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow').";
+      } else {
+        threadPrompt += `📅 <@${ctx.sender?.id}> I tracked this, but I couldn't find a due date. Please reply directly to this thread with the deadline (e.g., 'by tomorrow').`;
+      }
+    }
+
+    if (threadPrompt) {
+      const nextHour = new Date(Date.now() + 3600000);
+      if (doc.block_reason_pending) doc.block_reason_notification_at = nextHour;
+      if (doc.due_date_pending) doc.due_date_notification_at = nextHour;
+
+      await doc.save();
+
+      try {
+        if (ctx.slack_client) {
+          await ctx.slack_client.chat.postMessage({
+            channel: ctx.channel,
+            thread_ts: ctx.thread_id || ctx.message_ts,
+            text: threadPrompt,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to ask for missing info in thread:", err.message);
+      }
+    }
+  }
+
   async process(raw, options = {}) {
     const {
       text = "",
@@ -48,6 +95,7 @@ class MessageProcessor {
       message_ts = "",
       is_edit = false,
       user_directory = {},
+      slack_client = null,
       local_attachments = [],
     } = raw;
     const { quiet = false } = options;
@@ -57,16 +105,19 @@ class MessageProcessor {
 
     const isExplicitCommand = /task\s*-/i.test(text) || /issue\s*-/i.test(text);
     const textHash = hashText(text);
-    let alreadyAnalyzed = false;
 
     if (is_edit && message_ts) {
       const byMsg = await findWorkByMessageTs(message_ts);
       existing_task = byMsg.task;
       existing_issue = byMsg.issue;
 
-      alreadyAnalyzed =
+      const alreadyAnalyzed =
         wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
         wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
+
+      if (alreadyAnalyzed) {
+        console.log(`[MessageProcessor] Skipping already analyzed message edit (${message_ts})`);
+      }
     }
 
     const threadRoot = thread_id || message_ts;
@@ -77,7 +128,154 @@ class MessageProcessor {
       existing_issue = byThread.issue;
     }
 
-    // Step 1: Baseline parse
+    // 1. Intercept "accept" command
+    if (text.trim().toLowerCase().startsWith("accept")) {
+      const mentioned = extractMentionedUsers(text, user_directory || {});
+      const targetToTag = mentioned.find((u) => u.id && u.id !== sender?.id);
+
+      if (targetToTag && slack_client) {
+        const originalSenderId = targetToTag.id;
+        await slack_client.chat.postMessage({
+          channel: originalSenderId,
+          text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
+        });
+        await slack_client.chat.postMessage({
+          channel: channel,
+          thread_ts: threadRoot || message_ts,
+          text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
+        });
+        return {
+          classification: "GENERAL_DISCUSSION",
+          action: "CONNECT_ACCEPTED",
+          dashboard_update: false,
+        };
+      }
+    }
+
+    // 2. Intercept "delay" command
+    if (text.trim().toLowerCase().startsWith("delay")) {
+      const mentioned = extractMentionedUsers(text, user_directory || {});
+      const targetToTag = mentioned.find((u) => u.id && u.id !== sender?.id);
+
+      if (targetToTag && slack_client) {
+        const originalSenderId = targetToTag.id;
+        const timeInput = text
+          .replace(/^delay/i, "")
+          .replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
+          .replace(/@[A-Za-z0-9_.-]+/g, "")
+          .trim();
+
+        let postAt;
+        let delayText = timeInput;
+
+        const minMatch = timeInput.match(/^(\d+)\s*(?:m|min|mins|minutes?)?$/i);
+        const hrMatch = timeInput.match(/^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i);
+
+        if (minMatch) {
+          const mins = parseInt(minMatch[1], 10);
+          postAt = Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
+          delayText = `in ${mins} minutes`;
+        } else if (hrMatch) {
+          const hrs = parseFloat(hrMatch[1]);
+          postAt = Math.floor(Date.now() / 1000) + Math.max(hrs * 3600, 65);
+          delayText = `in ${hrs} hours`;
+        } else {
+          const parsedDateStr = extractDueDate(timeInput, new Date());
+          if (parsedDateStr) {
+            postAt = Math.floor(new Date(parsedDateStr).getTime() / 1000);
+            delayText = `at ${timeInput}`;
+            if (postAt <= Math.floor(Date.now() / 1000) + 60) {
+              postAt += 24 * 3600;
+            }
+          } else {
+            await slack_client.chat.postMessage({
+              channel: channel,
+              thread_ts: threadRoot || message_ts,
+              text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
+            });
+            return {
+              classification: "GENERAL_DISCUSSION",
+              action: "CONNECT_DELAY_FAILED",
+              dashboard_update: false,
+            };
+          }
+        }
+
+        await slack_client.chat.postMessage({
+          channel: originalSenderId,
+          text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
+        });
+        await slack_client.chat.postMessage({
+          channel: channel,
+          thread_ts: threadRoot || message_ts,
+          text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
+        });
+
+        try {
+          await slack_client.chat.scheduleMessage({
+            channel: originalSenderId,
+            post_at: postAt,
+            text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
+          });
+          await slack_client.chat.scheduleMessage({
+            channel: sender.id,
+            post_at: postAt,
+            text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
+          });
+        } catch (e) {
+          console.error("[Slack] Scheduler error:", e.message);
+        }
+
+        return {
+          classification: "GENERAL_DISCUSSION",
+          action: "CONNECT_DELAYED",
+          dashboard_update: false,
+        };
+      }
+    }
+
+    // 3. Intercept "connect" command
+    const connectMatch = text.match(/\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i);
+    if (connectMatch) {
+      try {
+        const mentioned = extractMentionedUsers(text, user_directory || {});
+        const senderId = sender?.id || "unknown";
+        const targetUser = mentioned.find((u) => u.id && u.id !== senderId);
+
+        if (targetUser && slack_client) {
+          const blocks = [
+            {
+              type: "header",
+              text: { type: "plain_text", text: "🗓️ Connection Request" },
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `Hi <@${targetUser.id}>, <@${senderId}> would like to connect with you.\n\n*To respond, reply in this thread with:*\n✅ \`accept <@${senderId}>\` _(If free now)_\n🕒 \`delay 20 mins <@${senderId}>\` _(Or '1 hour', '4:45 pm', 'tomorrow')_`,
+              },
+            },
+          ];
+
+          await slack_client.chat.postMessage({
+            channel: channel,
+            thread_ts: threadRoot || message_ts,
+            text: `Connection Request for <@${targetUser.id}>`,
+            blocks,
+          });
+
+          return {
+            classification: "GENERAL_DISCUSSION",
+            action: "CONNECT_REQUEST",
+            dashboard_update: true,
+          };
+        }
+      } catch (err) {
+        console.error("[Connect] FATAL ERROR:", err.message);
+      }
+    }
+
+    // Baseline parser
     const parsed = await parseMessage({
       text,
       sender,
@@ -96,14 +294,14 @@ class MessageProcessor {
     if (
       parsed.classification === "TASK" &&
       parsed.action === "CREATE_TASK" &&
-      parsed.task &&
-      !isExplicitCommand
+      parsed.task
     ) {
       const sim = await findSimilarTask(
         parsed.task.title,
         parsed.task.description,
         workspace_id,
         channel,
+        0.6
       );
       if (sim) {
         parsed.action = "UPDATE_TASK";
@@ -111,45 +309,72 @@ class MessageProcessor {
         parsed.task_updated = true;
         parsed.task.id = sim.task.task_id;
         existing_task = sim.task;
+
+        if (parsed.task.status && parsed.task.status !== "TODO") {
+          parsed.updates = { ...parsed.updates, status: parsed.task.status };
+        }
       }
     }
 
-		if (
-			parsed.classification === "ISSUE" &&
-			parsed.action === "CREATE_ISSUE" &&
-			parsed.issue
-		) {
-			const sim = await findSimilarIssue(
-				parsed.issue.title,
-				parsed.issue.description,
-				workspace_id,
-				channel,
-			);
-			if (sim) {
-				parsed.action = "UPDATE_ISSUE";
-				parsed.issue_created = false;
-				parsed.issue_updated = true;
-				parsed.issue.id = sim.issue.issue_id;
-				existing_issue = sim.issue;
-				parsed.meta = {
-					...parsed.meta,
-					similarity_score: sim.score,
-					deduped: true,
-				};
-			}
-		}
+    if (
+      parsed.classification === "GENERAL_DISCUSSION" &&
+      parsed.action === "STORE_DISCUSSION"
+    ) {
+      const statusMatch = detectStatus(text);
+      if (statusMatch !== "TODO") {
+        const sim = await findSimilarTask(text, "", workspace_id, channel, 0.75);
+        if (sim) {
+          parsed.classification = "TASK";
+          parsed.action = "UPDATE_TASK";
+          parsed.task_created = false;
+          parsed.task_updated = true;
+          parsed.task = {
+            ...sim.task,
+            id: sim.task.task_id,
+            status: statusMatch,
+          };
+          parsed.updates = { status: statusMatch };
+          existing_task = sim.task;
+        }
+      }
+    }
 
-		const result = await this.persist(parsed, {
-			text,
-			sender,
-			channel,
-			thread_id: threadRoot,
-			workspace_id,
-			team,
-			message_ts,
-			existing_task,
-			existing_issue,
-		});
+    if (
+      parsed.classification === "ISSUE" &&
+      parsed.action === "CREATE_ISSUE" &&
+      parsed.issue
+    ) {
+      const sim = await findSimilarIssue(
+        parsed.issue.title,
+        parsed.issue.description,
+        workspace_id,
+        channel,
+        0.6
+      );
+      if (sim) {
+        parsed.action = "UPDATE_ISSUE";
+        parsed.issue_created = false;
+        parsed.issue_updated = true;
+        parsed.issue.id = sim.issue.issue_id;
+        existing_issue = sim.issue;
+      }
+    }
+
+    const result = await this.persist(parsed, {
+      text,
+      sender,
+      channel,
+      thread_id: threadRoot,
+      workspace_id,
+      team,
+      message_ts,
+      text_hash: textHash,
+      slack_client,
+      user_directory: raw.user_directory || {},
+      existing_task,
+      existing_issue,
+      local_attachments,
+    });
 
     if (this.io && !quiet) {
       this.io.emit("dashboard:update", {
@@ -172,7 +397,9 @@ class MessageProcessor {
           console.log(`[cleanup] Deleted local temp attachment: ${attachment.localPath}`);
         }
       } catch (err) {
-        console.warn(`[cleanup] Failed to delete file ${attachment.localPath}:`, err.message);
+        if (err.code !== "ENOENT") {
+          console.warn(`[cleanup] Failed to delete file ${attachment.localPath}:`, err.message);
+        }
       }
     }
   }
@@ -205,75 +432,6 @@ class MessageProcessor {
     }
   }
 
-  async storeDiscussion(parsed, ctx, senderRef) {
-    if (parsed.updates && parsed.updates.status) {
-      if (parsed.discussion?.task_id) {
-        await Task.updateOne(
-          { task_id: parsed.discussion.task_id },
-          { $set: { status: parsed.updates.status } },
-        );
-      } else if (parsed.discussion?.issue_id) {
-        await Issue.updateOne(
-          { issue_id: parsed.discussion.issue_id },
-          { $set: { status: parsed.updates.status } },
-        );
-      }
-    }
-
-    const discussion = await this.createDiscussionRecord(
-      parsed,
-      ctx,
-      senderRef,
-      {
-        task_id: parsed.discussion?.task_id || null,
-        issue_id: parsed.discussion?.issue_id || null,
-      },
-    );
-
-    if (discussion.task_id) {
-      await Task.updateOne(
-        { task_id: discussion.task_id },
-        { $addToSet: { related_discussions: discussion.discussion_id } },
-      );
-    }
-    if (discussion.issue_id) {
-      await Issue.updateOne(
-        { issue_id: discussion.issue_id },
-        { $addToSet: { related_discussions: discussion.discussion_id } },
-      );
-    }
-
-    await this.logActivity({
-      type: "DISCUSSION",
-      summary: `Discussion: ${(parsed.discussion?.content || ctx.text || "").slice(0, 80)}`,
-      actor: senderRef,
-      discussion_id: discussion.discussion_id,
-      task_id: discussion.task_id,
-      issue_id: discussion.issue_id,
-      channel: ctx.channel,
-      thread: ctx.thread_id,
-    });
-
-    await this.dispatchNotifications(parsed.notifications, {
-      task_id: discussion.task_id,
-      issue_id: discussion.issue_id,
-    });
-
-    // ⚡ Invalidate daily summary cache for today
-    await invalidateDailySummary();
-
-    return {
-      ...parsed,
-      discussion: {
-        id: discussion.discussion_id,
-        content: discussion.content,
-        task_id: discussion.task_id,
-        issue_id: discussion.issue_id,
-        flagged_for_review: discussion.flagged_for_review,
-      },
-    };
-  }
-
   async createTask(parsed, ctx, senderRef) {
     const t = parsed.task || {};
     const taskId = newId("tsk");
@@ -290,10 +448,13 @@ class MessageProcessor {
       created_by: senderRef,
       last_updated_by: senderRef,
       mentioned_users: parsed.mentioned_users || [],
+      watcher_users: parsed.meta?.watchers || [],
+      reviewer_users: parsed.meta?.reviewers || [],
       priority: t.priority || "MEDIUM",
       status: t.status || "TODO",
       due_date: dueDate,
       due_date_pending: !dueDate,
+      needs_assignment: !!t.needs_assignment || !!parsed.meta?.needs_assignment,
       blocked_reason: t.blocked_reason || "",
       block_reason_pending: t.status === "BLOCKED" && !t.blocked_reason,
       dependencies: t.dependencies || [],
@@ -304,12 +465,16 @@ class MessageProcessor {
       team: ctx.team,
       slack_message_ts: ctx.message_ts,
       entities: parsed.meta?.entities || {},
-      local_file_logs: parsed.local_attachments || [],
+      local_file_logs: ctx.local_attachments || [],
       history: [
         {
           event: "CREATED",
           by: senderRef,
-          details: { action: "CREATE_TASK", message_ts: ctx.message_ts, text_hash: ctx.text_hash },
+          details: {
+            action: "CREATE_TASK",
+            message_ts: ctx.message_ts,
+            text_hash: ctx.text_hash,
+          },
         },
       ],
     });
@@ -325,7 +490,43 @@ class MessageProcessor {
 
     await this.dispatchNotifications(parsed.notifications, { task_id: taskId });
 
-    // ⚡ Invalidate daily summary cache for today
+    if (
+      doc.assigned_to &&
+      doc.assigned_to.id &&
+      doc.assigned_to.name !== "Unassigned" &&
+      doc.assigned_to.id !== senderRef.id &&
+      this.notifications
+    ) {
+      await this.notifications.createAndSend({
+        type: "GENERAL",
+        target_user_id: doc.assigned_to.id,
+        target_user_name: doc.assigned_to.name,
+        message: `🎯 *New Task Assigned:* '${doc.title}'\n_Reply to this thread with "processing", "blocked", or "done" to update its status on the dashboard._`,
+        task_id: taskId,
+        scheduleReminder: false,
+      });
+    }
+
+    if (doc.due_date_pending) {
+      doc.due_date_notification_at = new Date();
+      await doc.save();
+    }
+    if (doc.block_reason_pending) {
+      doc.block_reason_notification_at = new Date();
+      await doc.save();
+    }
+
+    const depNtf = (parsed.notifications || []).find((n) => n.type === "DEPENDENT_USER");
+    if (depNtf) {
+      doc.awaiting_acknowledgement = {
+        user: { id: depNtf.target_user_id, name: depNtf.target_user_name },
+        acknowledged: false,
+        notification_at: new Date(),
+      };
+      await doc.save();
+    }
+
+    await this.checkAndPromptMissingInfo(doc, ctx);
     await invalidateDailySummary();
 
     return {
@@ -350,14 +551,147 @@ class MessageProcessor {
     if (t.description) doc.description = t.description;
     if (parsed.owner) doc.owner = parsed.owner;
     if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+    if (parsed.assigned_by) doc.assigned_by = parsed.assigned_by;
+    if (parsed.mentioned_users?.length) {
+      doc.mentioned_users = mergeUsers(doc.mentioned_users, parsed.mentioned_users);
+    }
 
     const nextStatus = updates.status || t.status;
-    if (nextStatus) doc.status = nextStatus;
+    const nextPriority = updates.priority || t.priority;
+    const nextDue = updates.due_date || t.due_date;
+    const nextBlock = updates.blocked_reason || t.blocked_reason;
+
+    if (nextStatus) {
+      doc.status = nextStatus;
+      if (nextStatus === "COMPLETED") {
+        doc.due_date_pending = false;
+        doc.block_reason_pending = false;
+      }
+    }
+    if (nextPriority) doc.priority = nextPriority;
+    if (nextDue) {
+      doc.due_date = new Date(nextDue);
+      doc.due_date_pending = false;
+      if (this.notifications) {
+        await this.notifications.cancelForEntity({
+          task_id: doc.task_id,
+          types: ["MISSING_DUE_DATE", "DUE_DATE_REMINDER"],
+        });
+      }
+    }
+    if (nextBlock) {
+      doc.blocked_reason = nextBlock;
+      doc.block_reason_pending = false;
+      if (this.notifications) {
+        await this.notifications.cancelForEntity({
+          task_id: doc.task_id,
+          types: ["MISSING_BLOCK_REASON", "BLOCK_REASON_REMINDER"],
+        });
+      }
+    }
+
+    if (t.dependencies?.length) {
+      doc.dependencies = [...new Set([...(doc.dependencies || []), ...t.dependencies])];
+    }
+
+    if (doc.status === "BLOCKED" && !doc.blocked_reason) {
+      doc.block_reason_pending = true;
+    }
+    if (!doc.due_date) {
+      doc.due_date_pending = true;
+    }
 
     doc.last_updated_by = senderRef;
+    doc.history.push({
+      event: "UPDATED",
+      by: senderRef,
+      details: { action: parsed.action, updates, text_hash: ctx.text_hash },
+    });
+
+    if (parsed.discussion || parsed.classification === "GENERAL_DISCUSSION") {
+      const discussion = await this.createDiscussionRecord(parsed, ctx, senderRef, {
+        task_id: doc.task_id,
+        issue_id: null,
+      });
+      doc.related_discussions = [
+        ...new Set([...(doc.related_discussions || []), discussion.discussion_id]),
+      ];
+    }
+
     await doc.save();
 
-    // ⚡ Invalidate daily summary cache for today
+    await this.logActivity({
+      type: "TASK_UPDATED",
+      summary: `Task updated: ${doc.title}`,
+      actor: senderRef,
+      task_id: doc.task_id,
+      channel: ctx.channel,
+      thread: ctx.thread_id,
+    });
+
+    await this.dispatchNotifications(parsed.notifications, { task_id: doc.task_id });
+
+    if (nextBlock && ctx.slack_client) {
+      const mentionedInReason = extractMentionedUsers(nextBlock, ctx.user_directory);
+      const targetUser = mentionedInReason.find(
+        (u) => u.id && u.id !== (doc.assigned_to?.id || ctx.sender?.id)
+      );
+
+      if (targetUser) {
+        const ownerName = doc.assigned_to?.name || ctx.sender?.name || "A team member";
+        const senderId = ctx.sender?.id || "unknown";
+
+        const blocks = [
+          {
+            type: "header",
+            text: { type: "plain_text", text: "🚨 Action Required: Task Blocked" },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `Hi ${targetUser.display_name || targetUser.name},\n\nThe task *${doc.title}* has been marked as blocked by *${ownerName}*.\n\n*Reason:* ${nextBlock}\n\nPlease review this at your earliest convenience.`,
+            },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                text: { type: "plain_text", text: "✅ I'm looking into it" },
+                style: "primary",
+                action_id: "accept_sync_btn",
+                value: `${doc.task_id}|${senderId}`,
+              },
+              {
+                type: "button",
+                text: { type: "plain_text", text: "🕒 I'll check later" },
+                action_id: "later_sync_btn",
+                value: `${doc.task_id}|${senderId}`,
+              },
+            ],
+          },
+        ];
+
+        try {
+          await ctx.slack_client.chat.postMessage({
+            channel: targetUser.id,
+            text: `Blocked Task Notification: ${doc.title}`,
+            blocks,
+          });
+
+          await ctx.slack_client.chat.postMessage({
+            channel: ctx.channel,
+            thread_ts: ctx.thread_id || ctx.message_ts,
+            text: `✅ <@${senderId}> I have privately messaged <@${targetUser.id}> about this blocker. I will DM you directly with their response.`,
+          });
+        } catch (err) {
+          console.error("[Slack] Failed to notify blocking user:", err.message);
+        }
+      }
+    }
+
+    await this.checkAndPromptMissingInfo(doc, ctx);
     await invalidateDailySummary();
 
     return {
@@ -385,13 +719,24 @@ class MessageProcessor {
       mentioned_users: parsed.mentioned_users || [],
       priority: i.priority || "HIGH",
       status: i.status || "HOLD",
+      blocked_reason: i.blocked_reason || "",
+      block_reason_pending: i.status === "HOLD" && !i.blocked_reason,
+      dependencies: i.dependencies || [],
       confidence_score: parsed.confidence,
       channel: ctx.channel,
       thread: ctx.thread_id,
       workspace_id: ctx.workspace_id,
       team: ctx.team,
       slack_message_ts: ctx.message_ts,
-      local_file_logs: parsed.local_attachments || [],
+      entities: parsed.meta?.entities || {},
+      local_file_logs: ctx.local_attachments || [],
+      history: [
+        {
+          event: "CREATED",
+          by: senderRef,
+          details: { action: "CREATE_ISSUE", text_hash: ctx.text_hash },
+        },
+      ],
     });
 
     await this.logActivity({
@@ -403,7 +748,6 @@ class MessageProcessor {
       thread: ctx.thread_id,
     });
 
-    // ⚡ Invalidate daily summary cache for today
     await invalidateDailySummary();
 
     return {
@@ -417,6 +761,7 @@ class MessageProcessor {
   async updateIssue(parsed, ctx, senderRef) {
     const issueId = parsed.issue?.id || ctx.existing_issue?.issue_id;
     const doc = await Issue.findOne({ issue_id: issueId });
+
     if (!doc) {
       return this.createIssue({ ...parsed, action: "CREATE_ISSUE", issue_created: true }, ctx, senderRef);
     }
@@ -425,13 +770,50 @@ class MessageProcessor {
     const updates = parsed.updates || {};
 
     if (i.description) doc.description = i.description;
+    if (parsed.owner) doc.owner = parsed.owner;
+    if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+    if (parsed.mentioned_users?.length) {
+      doc.mentioned_users = mergeUsers(doc.mentioned_users, parsed.mentioned_users);
+    }
+
     const nextStatus = updates.status || i.status;
+    const nextPriority = updates.priority || i.priority;
+    const nextBlock = updates.blocked_reason || i.blocked_reason;
+
     if (nextStatus) doc.status = nextStatus;
+    if (nextPriority) doc.priority = nextPriority;
+    if (nextBlock) {
+      doc.blocked_reason = nextBlock;
+      doc.block_reason_pending = false;
+    }
+
+    if (parsed.discussion || parsed.classification === "GENERAL_DISCUSSION") {
+      const discussion = await this.createDiscussionRecord(parsed, ctx, senderRef, {
+        task_id: null,
+        issue_id: doc.issue_id,
+      });
+      doc.related_discussions = [
+        ...new Set([...(doc.related_discussions || []), discussion.discussion_id]),
+      ];
+    }
 
     doc.last_updated_by = senderRef;
+    doc.history.push({
+      event: "UPDATED",
+      by: senderRef,
+      details: { action: parsed.action, updates, text_hash: ctx.text_hash },
+    });
     await doc.save();
 
-    // ⚡ Invalidate daily summary cache for today
+    await this.logActivity({
+      type: "ISSUE_UPDATED",
+      summary: `Issue updated: ${doc.title}`,
+      actor: senderRef,
+      issue_id: doc.issue_id,
+      channel: ctx.channel,
+      thread: ctx.thread_id,
+    });
+
     await invalidateDailySummary();
 
     return {
@@ -442,12 +824,127 @@ class MessageProcessor {
     };
   }
 
+  async storeDiscussion(parsed, ctx, senderRef) {
+    if (parsed.updates && parsed.updates.status) {
+      if (parsed.discussion?.task_id) {
+        await Task.updateOne(
+          { task_id: parsed.discussion.task_id },
+          { $set: { status: parsed.updates.status } }
+        );
+      } else if (parsed.discussion?.issue_id) {
+        await Issue.updateOne(
+          { issue_id: parsed.discussion.issue_id },
+          { $set: { status: parsed.updates.status } }
+        );
+      }
+    }
+
+    const discussion = await this.createDiscussionRecord(parsed, ctx, senderRef, {
+      task_id: parsed.discussion?.task_id || null,
+      issue_id: parsed.discussion?.issue_id || null,
+    });
+
+    if (discussion.task_id) {
+      await Task.updateOne(
+        { task_id: discussion.task_id },
+        { $addToSet: { related_discussions: discussion.discussion_id } }
+      );
+    }
+    if (discussion.issue_id) {
+      await Issue.updateOne(
+        { issue_id: discussion.issue_id },
+        { $addToSet: { related_discussions: discussion.discussion_id } }
+      );
+    }
+
+    await this.logActivity({
+      type: "DISCUSSION",
+      summary: `Discussion: ${(parsed.discussion?.content || ctx.text || "").slice(0, 80)}`,
+      actor: senderRef,
+      discussion_id: discussion.discussion_id,
+      task_id: discussion.task_id,
+      issue_id: discussion.issue_id,
+      channel: ctx.channel,
+      thread: ctx.thread_id,
+    });
+
+    if (discussion.task_id) {
+      await this.dispatchNotifications(parsed.notifications, {
+        task_id: discussion.task_id,
+        issue_id: null,
+      });
+    }
+
+    await invalidateDailySummary();
+
+    return {
+      ...parsed,
+      discussion: {
+        id: discussion.discussion_id,
+        content: discussion.content,
+        task_id: discussion.task_id,
+        issue_id: discussion.issue_id,
+        flagged_for_review: discussion.flagged_for_review,
+      },
+    };
+  }
+
   async acknowledge(parsed, ctx, senderRef) {
+    const taskId = parsed.task?.id;
+    const issueId = parsed.issue?.id;
+
+    if (taskId) {
+      await Task.updateOne(
+        { task_id: taskId },
+        {
+          $set: {
+            "awaiting_acknowledgement.acknowledged": true,
+            last_updated_by: senderRef,
+          },
+          $push: {
+            history: {
+              event: "ACKNOWLEDGED",
+              by: senderRef,
+              at: new Date(),
+            },
+          },
+        }
+      );
+    }
+    if (issueId) {
+      await Issue.updateOne(
+        { issue_id: issueId },
+        {
+          $set: {
+            "awaiting_acknowledgement.acknowledged": true,
+            last_updated_by: senderRef,
+          },
+        }
+      );
+    }
+
+    if (this.notifications) {
+      await this.notifications.acknowledge({
+        task_id: taskId,
+        issue_id: issueId,
+        user_id: senderRef.id,
+      });
+    }
+
+    await this.logActivity({
+      type: "ACKNOWLEDGED",
+      summary: `${senderRef.name || senderRef.display_name} acknowledged dependency`,
+      actor: senderRef,
+      task_id: taskId,
+      issue_id: issueId,
+      channel: ctx.channel,
+      thread: ctx.thread_id,
+    });
+
     return { ...parsed, acknowledgement: true };
   }
 
-    async createDiscussionRecord(parsed, ctx, senderRef, links) {
-    // 🟢 Safe fallback logic: Guarantees content is never empty or ""
+  async createDiscussionRecord(parsed, ctx, senderRef, links) {
     const safeContent =
       parsed.discussion?.content?.trim() ||
       parsed.content?.trim() ||
@@ -456,7 +953,7 @@ class MessageProcessor {
 
     return Discussion.create({
       discussion_id: newId("dsc"),
-      content: safeContent, // 👈 Fixes Mongoose validation error
+      content: safeContent,
       author: senderRef,
       channel: ctx.channel,
       thread: ctx.thread_id || ctx.thread,
@@ -464,12 +961,15 @@ class MessageProcessor {
       team: ctx.team,
       task_id: links.task_id,
       issue_id: links.issue_id,
-      slack_message_ts: ctx.message_ts || ctx.ts, // 👈 Checks both message_ts and ts
+      slack_message_ts: ctx.message_ts || ctx.ts,
       mentioned_users: parsed.mentioned_users || [],
+      flagged_for_review:
+        !!parsed.discussion?.flagged_for_review ||
+        !!parsed.meta?.needs_human_review,
+      confidence_score: parsed.confidence,
       timestamp: new Date(),
     });
   }
-
 
   async dispatchNotifications(list = [], ids = {}) {
     if (!this.notifications || !list.length) return;
@@ -506,8 +1006,16 @@ class MessageProcessor {
       priority: doc.priority,
       status: doc.status,
       due_date: doc.due_date ? doc.due_date.toISOString() : "",
+      dependencies: doc.dependencies || [],
       owner: doc.owner,
       assigned_to: doc.assigned_to,
+      assigned_by: doc.assigned_by,
+      reporter: doc.reporter,
+      created_by: doc.created_by,
+      needs_assignment: doc.needs_assignment,
+      due_date_pending: doc.due_date_pending,
+      block_reason_pending: doc.block_reason_pending,
+      blocked_reason: doc.blocked_reason,
     };
   }
 
@@ -518,10 +1026,26 @@ class MessageProcessor {
       description: doc.description,
       status: doc.status,
       priority: doc.priority,
+      due_date: doc.due_date ? doc.due_date.toISOString() : "",
+      due_date_pending: doc.due_date_pending,
+      root_cause: doc.root_cause || "",
+      blocked_reason: doc.blocked_reason || "",
+      block_reason_pending: doc.block_reason_pending,
       owner: doc.owner,
       assigned_to: doc.assigned_to,
+      reporter: doc.reporter,
     };
   }
+}
+
+function mergeUsers(existing = [], incoming = []) {
+  const map = new Map();
+  for (const u of [...existing, ...incoming]) {
+    const key = u.id || u.name;
+    if (!key) continue;
+    map.set(key, u);
+  }
+  return [...map.values()];
 }
 
 module.exports = { MessageProcessor };

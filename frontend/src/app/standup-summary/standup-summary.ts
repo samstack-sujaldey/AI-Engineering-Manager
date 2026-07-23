@@ -197,7 +197,6 @@ import { PageHeaderComponent } from '../shared/page-header';
       color: #2c2c3e;
     }
 
-    /* Markdown Heading and List Styling */
     .formatted-points ::ng-deep strong {
       color: #1a1a2e;
       font-size: 15px;
@@ -271,7 +270,7 @@ export class StandupSummaryComponent implements OnInit {
   constructor(private http: HttpClient) {}
 
   ngOnInit(): void {
-    this.setDefaultToMonday();
+    this.setDefaultToToday();
   }
 
   /**
@@ -281,32 +280,26 @@ export class StandupSummaryComponent implements OnInit {
     if (!this.currentSummary) return '<em>No activity logged for this date.</em>';
 
     return this.currentSummary
-      // Convert Markdown headers (**Heading**) to styled strong tags
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Convert bullet list dashes to bullet indicators
       .replace(/^- /gm, '• ')
-      // Convert newlines into HTML line breaks
       .replace(/\n/g, '<br/>');
   }
 
-  setDefaultToMonday(): void {
+  /**
+   * Sets default selected date to today's current date
+   */
+  setDefaultToToday(): void {
     const today = new Date();
-    const currentDay = today.getDay(); // 0 is Sunday, 1 is Monday
-
-    // Calculate distance to Monday of current week
-    const distanceToMonday = currentDay === 0 ? -6 : 1 - currentDay;
-    const monday = new Date(today);
-    monday.setDate(today.getDate() + distanceToMonday);
 
     // Format YYYY-MM-DD for <input type="date">
-    const year = monday.getFullYear();
-    const month = String(monday.getMonth() + 1).padStart(2, '0');
-    const day = String(monday.getDate()).padStart(2, '0');
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
 
     this.selectedDate = `${year}-${month}-${day}`;
-    this.updateFormattedDateDisplay(monday);
+    this.updateFormattedDateDisplay(today);
     
-    // Initial fetch loads directly from cache
+    // Initial fetch loads summary directly for today
     this.fetchSummaryForDate(this.selectedDate, false);
   }
 
@@ -317,13 +310,9 @@ export class StandupSummaryComponent implements OnInit {
     const dateObj = new Date(year, month - 1, day);
 
     this.updateFormattedDateDisplay(dateObj);
-    // Fetch cached summary when date changes
     this.fetchSummaryForDate(this.selectedDate, false);
   }
 
-  /**
-   * User manually clicks "Refresh AI Summary" button
-   */
   onRefreshClick(): void {
     if (!this.selectedDate) return;
     this.fetchSummaryForDate(this.selectedDate, true);

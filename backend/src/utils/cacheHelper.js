@@ -1,42 +1,50 @@
 const DailySummary = require('../models/DailySummary');
 const { callOpenRouter } = require('../ai/gemini');
-const { Task, Issue, Discussion } = require('../models');
+const { Task, Issue } = require('../models');
 
 let debounceTimer = null;
 
 /**
- * Marks cache stale immediately, then schedules an AI summary update in the background.
+ * Gets formatted date string YYYY-MM-DD for yesterday
+ */
+function getYesterdayDateString() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().split('T')[0];
+}
+
+/**
+ * Marks cache stale immediately, then schedules an AI summary update.
  */
 async function invalidateDailySummary(dateStr = null) {
-  const targetDate = dateStr || new Date().toISOString().split('T')[0];
+  const targetDate = dateStr || getYesterdayDateString();
 
   try {
-    // 1. Instantly mark as stale in DB (<2ms)
     await DailySummary.updateOne({ date: targetDate }, { $set: { is_stale: true } });
   } catch (err) {
     console.error('[Cache] Failed to mark summary stale:', err.message);
   }
 
-  // 2. Debounce AI call: If 30 requests come in within 30 seconds, 
-  // clear previous timers and run ONLY ONCE at the end.
   if (debounceTimer) clearTimeout(debounceTimer);
 
+  // Reduced delay to 3 seconds for instant summary generation
   debounceTimer = setTimeout(async () => {
-    console.log(`[AI Summary] Running debounced background update for ${targetDate}...`);
+    console.log(`[AI Summary] Running background update for yesterday (${targetDate})...`);
     await regenerateSummaryInBackground(targetDate);
-  }, 30000); // 30-second buffer
+  }, 3000); 
 }
 
 /**
- * Regenerates the summary in background without blocking task submission
+ * Generates yesterday's summary with 2 sections: Tasks and Issues with Team Members & Status.
  */
 async function regenerateSummaryInBackground(targetDateStr) {
   try {
-    const [year, month, day] = targetDateStr.split('-').map(Number);
+    const targetDate = targetDateStr || getYesterdayDateString();
+    const [year, month, day] = target.split('-').map(Number);
     const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
     const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
-    const [tasks, issues, discussions] = await Promise.all([
+    const [tasks, issues] = await Promise.all([
       Task.find({
         $or: [
           { created_time: { $gte: startOfDay, $lte: endOfDay } },
@@ -52,61 +60,61 @@ async function regenerateSummaryInBackground(targetDateStr) {
           { status: { $in: ['OPEN', 'HOLD'] } },
         ],
       }).lean().catch(() => []),
-
-      Discussion.find({
-        timestamp: { $gte: startOfDay, $lte: endOfDay },
-        channel: { $ne: 'daily-wrapup' },
-      }).lean().catch(() => []),
     ]);
 
-    const uniqueTasks = Object.values(
-      tasks.reduce((acc, t) => {
-        const key = (t.title || '').toLowerCase().trim();
-        if (!acc[key]) acc[key] = { title: t.title, status: t.status, assignees: new Set() };
-        const assignee = t.assigned_to?.name || t.owner?.name;
-        if (assignee && assignee !== 'Unassigned') acc[key].assignees.add(assignee);
-        return acc;
-      }, {})
-    ).map(t => ({
+    // Format tasks with assigned team member and current status
+    const formattedTasks = tasks.map(t => ({
       title: t.title,
       status: t.status,
-      assignees: Array.from(t.assignees).join(', ') || 'Unassigned',
+      assigned_to: t.assigned_to?.name || t.owner?.name || 'Unassigned',
+      blocked_reason: t.blocked_reason || null
+    }));
+
+    // Format issues with assigned team member and priority/status
+    const formattedIssues = issues.map(i => ({
+      title: i.title,
+      status: i.status,
+      priority: i.priority,
+      assigned_to: i.assigned_to?.name || i.owner?.name || 'Unassigned'
     }));
 
     const prompt = `
-Generate a 3-section engineering stand-up summary for ${targetDateStr}:
+Generate an engineering daily summary for Yesterday (${targetDate}):
 
-1. 📌 **Tasks Activity**
-2. 🐞 **Issues & Bugs**
-3. 💬 **General Discussions**
+Create EXACTLY two sections:
 
-Data:
-Tasks: ${JSON.stringify(uniqueTasks)}
-Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions: ${JSON.stringify(discussions.map(d => ({ author: d.author?.name, text: d.content })))}
+1. 📌 **Tasks Summary**
+- List yesterday's tasks, their assigned team member, and status (TODO, PROCESSING, BLOCKED, COMPLETED).
+- Highlight blocker reasons if a task is blocked.
+
+2. 🚨 **Issues & Bugs Summary**
+- List yesterday's issues, assigned team member, priority, and status (OPEN, HOLD, RESOLVED).
+
+Data to summarize:
+Tasks: ${JSON.stringify(formattedTasks)}
+Issues: ${JSON.stringify(formattedIssues)}
 `;
 
     const summaryText = await callOpenRouter(
       [{ role: 'user', content: prompt }],
-      { maxTokens: 350, temperature: 0.1 }
+      { maxTokens: 400, temperature: 0.1 }
     );
 
     if (summaryText) {
       await DailySummary.findOneAndUpdate(
-        { date: targetDateStr },
+        { date: targetDate },
         {
           summary: summaryText,
           tasks_count: tasks.length,
           issues_count: issues.length,
-          discussions_count: discussions.length,
           is_stale: false,
         },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' } // Fixed deprecation warning
       );
-      console.log(`[AI Summary] Updated and cached for ${targetDateStr}`);
+      console.log(`[AI Summary] Updated and cached for yesterday (${targetDate})`);
     }
   } catch (err) {
-    console.error('[AI Summary Background Error]:', err.message);
+    console.error('[AI Summary Error]:', err.message);
   }
 }
 

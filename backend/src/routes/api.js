@@ -12,251 +12,146 @@ const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
-  router.get("/discussions/daily-summary", async (req, res) => {
-    try {
-      // 1. Standardize date string format (e.g. "2026-07-21")
-      const rawDate = req.query.date || new Date().toISOString().split("T")[0];
-      const targetDateStr = rawDate.split("T")[0].trim();
-      const forceRefresh = req.query.forceRefresh === "true";
+router.get("/discussions/daily-summary", async (req, res) => {
+  try {
+    const getTodayStr = () => {
+      const d = new Date();
+      return d.toISOString().split("T")[0];
+    };
 
-      if (!forceRefresh) {
-        const cachedDoc = await DailySummary.findOne({
-          date: targetDateStr,
-        }).lean();
+    const targetDateStr = req.query.date
+      ? String(req.query.date).split("T")[0].trim()
+      : getTodayStr();
 
-        if (cachedDoc) {
-          console.log(
-            `[DailySummary] ⚡ Serving cached summary for date: ${targetDateStr}`
-          );
-          return res.json({
-            date: targetDateStr,
-            summary: cachedDoc.summary,
-            tasks_count: cachedDoc.tasks_count,
-            issues_count: cachedDoc.issues_count,
-            discussions_count: cachedDoc.discussions_count,
-            cached: true,
-            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-          });
-        }
-      }
+    const forceRefresh = req.query.forceRefresh === "true";
 
-      console.log(
-        `[DailySummary] 🤖 Generating AI summary for date: ${targetDateStr} (forceRefresh=${forceRefresh})`
-      );
-
-      const [year, month, day] = targetDateStr.split("-").map(Number);
-      if (!year || !month || !day) {
-        return res
-          .status(400)
-          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-      }
-
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-
-      // 2. Fetch raw items for today from MongoDB
-      const [tasks, issues, discussions, cachedDoc] = await Promise.all([
-        Task.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { due_date: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["TODO", "PROCESSING", "BLOCKED"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Issue.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["OPEN", "HOLD"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Discussion.find({
-          timestamp: { $gte: startOfDay, $lte: endOfDay },
-          channel: { $ne: "daily-wrapup" },
-        })
-          .lean()
-          .catch(() => []),
-
-        DailySummary.findOne({ date: targetDateStr }).lean(),
-      ]);
-
-      // Handle empty data state
-      if (!tasks.length && !issues.length && !discussions.length) {
+    // 1. Instant Cache Lookup (Returns cached results in <5ms)
+    if (!forceRefresh) {
+      const cachedDoc = await DailySummary.findOne({ date: targetDateStr }).lean();
+      if (cachedDoc && cachedDoc.summary) {
+        console.log(`[DailySummary] ⚡ Serving lightning-fast cache for: ${targetDateStr}`);
         return res.json({
           date: targetDateStr,
-          summary: `No activity recorded for ${targetDateStr}.`,
-          tasks: [],
-          issues: [],
-          discussions: [],
-          tasks_count: 0,
-          issues_count: 0,
+          summary: cachedDoc.summary,
+          tasks_count: cachedDoc.tasks_count || 0,
+          issues_count: cachedDoc.issues_count || 0,
           discussions_count: 0,
           cached: true,
+          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
         });
       }
-
-      // ⚡ STEP 3: CHECK FOR NEW ACTIVITY BEFORE CALLING AI
-      if (cachedDoc) {
-        const latestTaskTime = tasks.reduce(
-          (max, t) =>
-            Math.max(
-              max,
-              new Date(t.updated_time || t.created_time || 0).getTime(),
-            ),
-          0,
-        );
-        const latestIssueTime = issues.reduce(
-          (max, i) =>
-            Math.max(
-              max,
-              new Date(i.updated_time || i.created_time || 0).getTime(),
-            ),
-          0,
-        );
-        const latestDiscussionTime = discussions.reduce(
-          (max, d) => Math.max(max, new Date(d.timestamp || 0).getTime()),
-          0,
-        );
-
-        const latestActivityTimestamp = Math.max(
-          latestTaskTime,
-          latestIssueTime,
-          latestDiscussionTime,
-        );
-        const lastSummaryTimestamp = new Date(
-          cachedDoc.updatedAt || cachedDoc.createdAt,
-        ).getTime();
-
-        if (!forceRefresh || latestActivityTimestamp <= lastSummaryTimestamp) {
-          console.log(
-            `[DailySummary] ⚡ Serving cached summary for ${targetDateStr} (No new activity detected).`,
-          );
-          return res.json({
-            date: targetDateStr,
-            summary: cachedDoc.summary,
-            tasks,
-            issues,
-            discussions,
-            tasks_count: tasks.length,
-            issues_count: issues.length,
-            discussions_count: discussions.length,
-            cached: true,
-            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-          });
-        }
-      }
-
-      // 🤖 STEP 4: AI RE-GENERATION (Formats titles, statuses, and usernames)
-      console.log(
-        `[DailySummary] 🤖 New tasks/issues detected for ${targetDateStr}. Calling AI...`,
-      );
-
-      const ignoreList = ["go for break", "break", "test"];
-      const filteredTasks = tasks.filter(
-        (t) =>
-          !ignoreList.some((term) =>
-            (t.title || "").toLowerCase().includes(term)
-          )
-      );
-
-      const uniqueTasks = Object.values(
-        filteredTasks.reduce((acc, t) => {
-          const key = (t.title || "").toLowerCase().trim();
-          if (!acc[key]) {
-            acc[key] = {
-              title: t.title,
-              status: t.status,
-              assignees: new Set(),
-            };
-          }
-          const assignee =
-            t.assigned_to?.name ||
-            t.assigned_to?.display_name ||
-            t.owner?.name ||
-            t.owner?.display_name;
-          if (assignee && assignee !== "Unassigned") {
-            acc[key].assignees.add(assignee);
-          }
-          return acc;
-        }, {})
-      ).map((t) => ({
-        title: t.title,
-        status: t.status,
-        assigned_to: Array.from(t.assignees).join(", ") || "Unassigned",
-      }));
-
-      const prompt = `
-Generate a 3-section engineering stand-up summary for ${targetDateStr} following this exact clean format:
-
-📌 **Tasks Activity**
-• <task title> - <username> (${"${status}"})
-
-🐞 **Issues & Bugs**
-• <issue title> (${"${status}"})
-
-💬 **General Discussions**
-• <total message count> messages.
-
-Data:
-Tasks: ${JSON.stringify(uniqueTasks)}
-Issues: ${JSON.stringify(issues.map((i) => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name || d.sender?.name, text: d.content || d.text })))}
-`;
-
-      let summaryText = await callOpenRouter(
-        [{ role: "user", content: prompt }],
-        { maxTokens: 400, temperature: 0.1 },
-      );
-
-      // Direct fallback preserving username layout if AI service times out
-      if (!summaryText) {
-        const taskLines = uniqueTasks
-          .map((t) => `• ${t.title} - ${t.assigned_to} (${t.status})`)
-          .join("\n");
-        const issueLines = issues
-          .map((i) => `• ${i.title} (${i.status})`)
-          .join("\n");
-        summaryText = `📌 **Tasks Activity**\n${taskLines || "• No active tasks."}\n\n🐞 **Issues & Bugs**\n${issueLines || "• No open issues."}\n\n💬 **General Discussions**\n• ${discussions.length} messages.`;
-      }
-
-      // 5. Save/update cache document in MongoDB
-      const updatedDoc = await DailySummary.findOneAndUpdate(
-        { date: targetDateStr },
-        {
-          summary: summaryText,
-          tasks_count: tasks.length,
-          issues_count: issues.length,
-          discussions_count: discussions.length,
-          is_stale: false,
-        },
-        { upsert: true, returnDocument: 'after' }
-      );
-
-      return res.json({
-        date: targetDateStr,
-        summary: summaryText,
-        tasks,
-        issues,
-        discussions,
-        tasks_count: tasks.length,
-        issues_count: issues.length,
-        discussions_count: discussions.length,
-        cached: false,
-        last_updated_at: updatedDoc.updatedAt,
-      });
-    } catch (err) {
-      console.error("[daily-summary route error]:", err);
-      res.status(500).json({ error: "Failed to fetch stand-up summary" });
     }
-  });
 
+    console.log(`[DailySummary] ⚡ Generating instant summary for: ${targetDateStr}`);
+
+    const [year, month, day] = targetDateStr.split("-").map(Number);
+    if (!year || !month || !day) {
+      return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+    }
+
+    const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+    const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+    // 2. Fetch Tasks and Issues using lean queries for maximum speed
+    const [tasks, issues] = await Promise.all([
+      Task.find(
+        {
+          $or: [
+            { created_time: { $gte: startOfDay, $lte: endOfDay } },
+            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+            { status: { $in: ["TODO", "PROCESSING", "BLOCKED"] } },
+          ],
+        },
+        "title status priority blocked_reason"
+      ).lean().catch(() => []),
+
+      Issue.find(
+        {
+          $or: [
+            { created_time: { $gte: startOfDay, $lte: endOfDay } },
+            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+            { status: { $in: ["OPEN", "HOLD", "RESOLVED"] } },
+          ],
+        },
+        "title status priority blocked_reason"
+      ).lean().catch(() => []),
+    ]);
+
+    // 3. Filter noise / break entries
+    const ignoreList = ["go for break", "break", "test"];
+    const filteredTasks = tasks.filter(
+      (t) => !ignoreList.some((term) => (t.title || "").toLowerCase().includes(term))
+    );
+
+    // 4. Deduplicate tasks
+    const uniqueTasks = Object.values(
+      filteredTasks.reduce((acc, t) => {
+        const key = (t.title || "").toLowerCase().trim();
+        if (!acc[key]) {
+          acc[key] = {
+            title: t.title,
+            status: t.status || "TODO",
+            priority: t.priority || "MEDIUM",
+            blocked_reason: t.blocked_reason || null,
+          };
+        }
+        return acc;
+      }, {})
+    );
+
+    // 5. Build clean markdown bullet points instantly in code (No LLM delay)
+    const taskBullets = uniqueTasks.length > 0
+      ? uniqueTasks
+          .map((t) => {
+            let line = `• **${t.title}** [Status: ${t.status} | Priority: ${t.priority}]`;
+            if (t.status === "BLOCKED" || t.blocked_reason) {
+              line += ` - 🚨 *Blocker:* ${t.blocked_reason || "Reason pending"}`;
+            }
+            return line;
+          })
+          .join("\n")
+      : "• No active tasks recorded for this date.";
+
+    const issueBullets = issues.length > 0
+      ? issues
+          .map((i) => {
+            let line = `• **${i.title}** [Status: ${i.status || "HOLD"} | Priority: ${i.priority || "HIGH"}]`;
+            if (i.blocked_reason) {
+              line += ` - ⚠️ *Reason:* ${i.blocked_reason}`;
+            }
+            return line;
+          })
+          .join("\n")
+      : "• No issues or bugs reported for this date.";
+
+    const summaryText = `📌 **Tasks Summary**\n${taskBullets}\n\n🚨 **Issues & Bugs Summary**\n${issueBullets}`;
+
+    // 6. Save directly to cache collection
+    const updatedDoc = await DailySummary.findOneAndUpdate(
+      { date: targetDateStr },
+      {
+        summary: summaryText,
+        tasks_count: uniqueTasks.length,
+        issues_count: issues.length,
+        discussions_count: 0,
+        is_stale: false,
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    return res.json({
+      date: targetDateStr,
+      summary: summaryText,
+      tasks_count: uniqueTasks.length,
+      issues_count: issues.length,
+      cached: false,
+      last_updated_at: updatedDoc.updatedAt || new Date(),
+    });
+  } catch (err) {
+    console.error("[daily-summary route error]:", err);
+    res.status(500).json({ error: "Failed to generate summary points" });
+  }
+});
   router.get("/health", (_req, res) => {
     res.json({
       ok: true,

@@ -4,6 +4,7 @@ import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { DashboardService } from '../services/dashboard.service';
+import { firstValueFrom } from 'rxjs';
 
 interface TeamMember {
   name: string;
@@ -18,8 +19,6 @@ interface TeamMember {
 interface Channel {
   id: string;
   name: string;
-  members: number;
-  status: string;
 }
 
 interface DayActivity {
@@ -31,6 +30,7 @@ interface DayActivity {
 
 @Component({
   selector: 'app-team',
+  standalone: true,
   imports: [CommonModule, PageHeaderComponent, FormsModule],
   template: `
     <app-page-header title="Team" searchPlaceholder="Find a team member..."></app-page-header>
@@ -41,13 +41,19 @@ interface DayActivity {
           <h2 class="squad-title">{{ selectedChannelName }} Team</h2>
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
-        <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
-          <option value="all">All Channels</option>
-          <option *ngFor="let ch of channels" [value]="ch.id">{{ ch.name }}</option>
-        </select>
+
+        <div class="select-wrapper">
+          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
+            <option value="all">All Channels</option>
+            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
+          </select>
+        </div>
       </div>
 
-      <!-- Members Grid (Cleaned: removed individual bar charts underneath) -->
+      <!-- Members Grid -->
       <div class="members-grid">
         <div class="member-card" *ngFor="let member of members">
           <div class="member-card-header">
@@ -74,17 +80,22 @@ interface DayActivity {
           </div>
         </div>
 
-        <div *ngIf="members.length === 0" class="no-members">
-          No team members or tasks found for this channel. Try running a pipeline sync from the Integrations page!
+        <!-- Empty State Graphic -->
+        <div *ngIf="members.length === 0" class="no-members-card">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M17 21v-2a4 4 0 00-2-2H8a4 4 0 00-2 2v2M12 11a4 4 0 100-8 4 4 0 000 8z"></path>
+          </svg>
+          <p class="no-members-title">No team activity found for this channel</p>
+          <p class="no-members-desc">Select "All Channels" or choose another channel from the dropdown above.</p>
         </div>
       </div>
 
-      <!-- Weekly Activity Stacked Bar Graph Section with Percentages -->
+      <!-- Weekly Activity Chart -->
       <div class="weekly-analytics-container" *ngIf="weeklyActivity.length > 0">
         <div class="weekly-analytics-header">
           <div>
-            <h3 class="weekly-title">Weekly Task Progress & Breakdown (Last 7 Days)</h3>
-            <p class="weekly-subtitle">Dynamic weekly tracking with segment percentage distribution.</p>
+            <h3 class="weekly-title">Weekly Task Distribution (Last 7 Days)</h3>
+            <p class="weekly-subtitle">Proportional breakdown of daily workloads.</p>
           </div>
           <div class="weekly-legend">
             <span class="legend-item"><span class="dot bg-current"></span> In Progress</span>
@@ -95,25 +106,25 @@ interface DayActivity {
 
         <div class="weekly-chart-body">
           <div class="weekly-bar-column" *ngFor="let day of weeklyActivity">
-            <div class="weekly-stacked-wrapper" [title]="day.dayName + ' - In Progress: ' + day.current + ' (' + getDayPercentage(day, 'current') + '%), Blocked: ' + day.blocked + ' (' + getDayPercentage(day, 'blocked') + '%), Completed: ' + day.completed + ' (' + getDayPercentage(day, 'completed') + '%)'">
-              
-              <!-- Stacked percentage bars with inner text labels if height is sufficient -->
+            <div
+              class="weekly-stacked-wrapper"
+              [title]="day.dayName + ' Breakdown: In Progress ' + getDayPercentage(day, 'current') + '%, Blocked ' + getDayPercentage(day, 'blocked') + '%, Completed ' + getDayPercentage(day, 'completed') + '%'"
+            >
               <div class="stack-segment bg-done" [style.height.%]="getDayPercentageNumber(day, 'completed')">
-                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'completed') >= 12">
+                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'completed') >= 14">
                   {{ getDayPercentage(day, 'completed') }}%
                 </span>
               </div>
               <div class="stack-segment bg-blocked" [style.height.%]="getDayPercentageNumber(day, 'blocked')">
-                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'blocked') >= 12">
+                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'blocked') >= 14">
                   {{ getDayPercentage(day, 'blocked') }}%
                 </span>
               </div>
               <div class="stack-segment bg-current" [style.height.%]="getDayPercentageNumber(day, 'current')">
-                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'current') >= 12">
+                <span class="segment-label" *ngIf="getDayPercentageNumber(day, 'current') >= 14">
                   {{ getDayPercentage(day, 'current') }}%
                 </span>
               </div>
-
             </div>
             <span class="weekly-bar-label">{{ day.dayName }}</span>
           </div>
@@ -128,63 +139,78 @@ interface DayActivity {
       flex-direction: column;
       gap: 24px;
     }
-
     .team-section-header {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
     }
-
     .squad-title {
-      font-size: 17px;
+      font-size: 18px;
       font-weight: 700;
-      color: #1a1a2e;
+      color: #0f172a;
       margin: 0 0 4px;
     }
-
     .squad-subtitle {
       font-size: 12.5px;
-      color: #888;
+      color: #64748b;
       margin: 0;
     }
-
+    .select-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .select-icon {
+      position: absolute;
+      left: 12px;
+      width: 14px;
+      height: 14px;
+      color: #64748b;
+      pointer-events: none;
+    }
     .team-filter-select {
-      border: 1px solid #e0e0e0;
-      border-radius: 6px;
-      padding: 7px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px 14px 8px 34px;
       font-size: 13px;
-      color: #333;
+      color: #334155;
       background: white;
       cursor: pointer;
       outline: none;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      transition: all 0.2s ease;
     }
-
+    .team-filter-select:hover {
+      border-color: #cbd5e1;
+    }
     .members-grid {
       display: flex;
       gap: 16px;
       flex-wrap: wrap;
     }
-
     .member-card {
       background: white;
-      border: 1px solid #e9ecef;
-      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 20px;
       width: 260px;
       min-width: 240px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
-
+    .member-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 12px -2px rgba(0, 0, 0, 0.05);
+    }
     .member-card-header {
       display: flex;
       align-items: center;
       gap: 12px;
       margin-bottom: 18px;
     }
-
     .avatar-lg {
-      width: 40px;
-      height: 40px;
+      width: 42px;
+      height: 42px;
       border-radius: 50%;
       color: white;
       font-size: 14px;
@@ -193,107 +219,93 @@ interface DayActivity {
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
-
     .member-name {
-      font-size: 13.5px;
+      font-size: 14px;
       font-weight: 600;
-      color: #1a1a2e;
+      color: #0f172a;
     }
-
     .member-role {
       font-size: 11.5px;
-      color: #888;
+      color: #64748b;
       margin-top: 2px;
     }
-
     .member-stats {
       display: flex;
-      gap: 12px;
-      background: #f8f9fa;
+      gap: 8px;
+      background: #f8fafc;
       padding: 10px;
-      border-radius: 6px;
+      border-radius: 8px;
+      border: 1px solid #f1f5f9;
     }
-
     .stat-block {
       flex: 1;
       text-align: center;
     }
-
     .stat-label {
       font-size: 9.5px;
-      color: #777;
-      font-weight: 600;
+      color: #64748b;
+      font-weight: 700;
       letter-spacing: 0.4px;
-      margin-bottom: 3px;
+      margin-bottom: 2px;
     }
-
     .stat-num {
       font-size: 16px;
       font-weight: 700;
-      color: #1a1a2e;
+      color: #0f172a;
     }
+    .stat-num.blocked-red { color: #dc2626; }
+    .text-success { color: #16a34a; }
 
-    .stat-num.blocked-red { color: #e53e3e; }
-    .text-success { color: #27ae60; }
-
-    /* Weekly Analytics Stacked Bar Graph Styles */
     .weekly-analytics-container {
       background: white;
-      border: 1px solid #e9ecef;
-      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
       padding: 24px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
-
     .weekly-analytics-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       margin-bottom: 24px;
     }
-
     .weekly-title {
       font-size: 15px;
       font-weight: 700;
-      color: #1a1a2e;
+      color: #0f172a;
       margin: 0 0 4px;
     }
-
     .weekly-subtitle {
       font-size: 12px;
-      color: #888;
+      color: #64748b;
       margin: 0;
     }
-
     .weekly-legend {
       display: flex;
       gap: 16px;
       font-size: 12px;
-      color: #555;
+      color: #475569;
     }
-
     .legend-item {
       display: flex;
       align-items: center;
       gap: 6px;
     }
-
     .dot {
       width: 10px;
       height: 10px;
       border-radius: 50%;
     }
-
     .weekly-chart-body {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
       height: 200px;
       padding: 0 20px 10px 20px;
-      border-bottom: 2px solid #f0f2f5;
+      border-bottom: 2px solid #f1f5f9;
     }
-
     .weekly-bar-column {
       display: flex;
       flex-direction: column;
@@ -302,18 +314,16 @@ interface DayActivity {
       height: 100%;
       justify-content: flex-end;
     }
-
     .weekly-stacked-wrapper {
-      width: 48px;
+      width: 44px;
       height: 160px;
       display: flex;
-      flex-direction: column-reverse; /* Stacks upwards from bottom */
-      background: #f8f9fa;
-      border-radius: 6px;
+      flex-direction: column-reverse;
+      background: #f8fafc;
+      border-radius: 8px;
       overflow: hidden;
-      border: 1px solid #edf2f7;
+      border: 1px solid #e2e8f0;
     }
-
     .stack-segment {
       width: 100%;
       display: flex;
@@ -322,34 +332,44 @@ interface DayActivity {
       transition: height 0.4s ease;
       overflow: hidden;
     }
-
     .segment-label {
-      font-size: 9.5px;
+      font-size: 9px;
       font-weight: 700;
       color: white;
-      text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-      white-space: nowrap;
     }
-
-    .bg-current { background-color: #5b4fcf; }
-    .bg-blocked { background-color: #e53e3e; }
-    .bg-done { background-color: #27ae60; }
+    .bg-current { background-color: #6366f1; }
+    .bg-blocked { background-color: #ef4444; }
+    .bg-done { background-color: #10b981; }
 
     .weekly-bar-label {
       font-size: 11.5px;
-      color: #6b7280;
+      color: #64748b;
       margin-top: 8px;
-      font-weight: 500;
+      font-weight: 600;
     }
-
-    .no-members {
+    .no-members-card {
       width: 100%;
       text-align: center;
-      padding: 40px;
-      color: #888;
+      padding: 48px;
       background: white;
-      border-radius: 8px;
-      border: 1px dashed #ddd;
+      border-radius: 12px;
+      border: 1px dashed #cbd5e1;
+      color: #64748b;
+    }
+    .no-members-card svg {
+      width: 40px;
+      height: 40px;
+      color: #cbd5e1;
+      margin-bottom: 8px;
+    }
+    .no-members-title {
+      font-weight: 600;
+      color: #334155;
+      margin: 0;
+    }
+    .no-members-desc {
+      font-size: 12.5px;
+      margin: 4px 0 0;
     }
   `]
 })
@@ -364,17 +384,20 @@ export class TeamComponent implements OnInit {
   allTasks: any[] = [];
   weeklyActivity: DayActivity[] = [];
 
-  ngOnInit() {
-    this.fetchChannels();
-    this.loadTeamData();
+  async ngOnInit() {
+    // Synchronous execution ensures channels load first so initial channel mapping works
+    await this.fetchChannels();
+    await this.loadTeamData();
   }
 
   async fetchChannels() {
     try {
-      const res: any = await this.http.get('/api/slack/channels').toPromise();
-      if (res && res.channels) {
-        this.channels = res.channels;
-      }
+      const res: any = await firstValueFrom(this.http.get('/api/slack/channels'));
+      const rawChannels = res?.channels || (Array.isArray(res) ? res : []);
+      this.channels = rawChannels.map((c: any) => ({
+        id: c.id || c.channel_id,
+        name: (c.name || c.channel_name || 'channel').replace(/^#/, '')
+      }));
     } catch (err) {
       console.error('Failed to load channels:', err);
     }
@@ -382,8 +405,8 @@ export class TeamComponent implements OnInit {
 
   async loadTeamData() {
     try {
-      const tasks: any = await this.http.get('/api/tasks').toPromise() || [];
-      this.allTasks = tasks;
+      const tasks: any = (await firstValueFrom(this.http.get('/api/tasks'))) || [];
+      this.allTasks = Array.isArray(tasks) ? tasks : [];
       this.processTasksIntoMembers();
     } catch (err) {
       console.error('Failed to load tasks for team:', err);
@@ -395,26 +418,36 @@ export class TeamComponent implements OnInit {
       this.selectedChannelName = 'All Channels';
     } else {
       const found = this.channels.find(c => c.id === this.selectedChannelId);
-      this.selectedChannelName = found ? found.name : 'Channel';
+      this.selectedChannelName = found ? `#${found.name}` : 'Channel';
     }
     this.processTasksIntoMembers();
   }
 
+  private extractStringName(input: any): string {
+    if (!input) return 'Unassigned';
+    if (typeof input === 'string') return input.trim();
+    if (typeof input === 'object') {
+      return (input.name || input.display_name || input.real_name || 'Unassigned').trim();
+    }
+    return String(input).trim();
+  }
+
   processTasksIntoMembers() {
     const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
-    const colorPalette = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60', '#3b82f6'];
+    const colorPalette = ['#f59e0b', '#ef4444', '#10b981', '#6366f1', '#8b5cf6', '#3b82f6'];
     let colorIndex = 0;
 
-    // Filter tasks based on selected channel dropdown
-    const filteredTasks = this.selectedChannelId === 'all' 
-      ? this.allTasks 
-      : this.allTasks.filter(t => 
-          t.channel_id === this.selectedChannelId || 
-          t.channel === this.selectedChannelName ||
-          t.slack_channel_id === this.selectedChannelId
-        );
+    const rawSearchName = this.selectedChannelName.replace(/^#/, '');
 
-    // Setup weekly tracking for the last 7 days
+    // Filter tasks accurately across all channel fields
+    const filteredTasks = this.selectedChannelId === 'all'
+      ? this.allTasks
+      : this.allTasks.filter(t => {
+          const chanId = t.channel_id || t.slack_channel_id;
+          const chanName = (t.channel || t.channel_name || '').replace(/^#/, '');
+          return chanId === this.selectedChannelId || chanName === rawSearchName;
+        });
+
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyDataMap = new Map<string, { current: number; blocked: number; completed: number; total: number }>();
 
@@ -426,19 +459,19 @@ export class TeamComponent implements OnInit {
     }
 
     for (const task of filteredTasks) {
-      const assigneeName = task.assigned_to?.name || task.owner || task.assignee || 'Unassigned';
-      
+      const rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
+      const assigneeName = this.extractStringName(rawAssignee);
+
       if (!memberMap.has(assigneeName)) {
         memberMap.set(assigneeName, {
           current: 0,
           blocked: 0,
           doneToday: 0,
-          role: task.assigned_to?.role || 'Developer'
+          role: (typeof task.assigned_to === 'object' && task.assigned_to?.role) ? task.assigned_to.role : 'Developer'
         });
       }
 
       const data = memberMap.get(assigneeName)!;
-      
       const status = (task.status || '').toLowerCase();
       const hasBlockedReason = !!task.blocked_reason || !!task.block_reason_pending;
 
@@ -461,24 +494,23 @@ export class TeamComponent implements OnInit {
       }
     }
 
-    // Build members array
     this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
-      const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+      const nameParts = name.trim().split(/\s+/);
+      const initials = nameParts.length > 1
+        ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
+        : name.substring(0, 2).toUpperCase();
 
-      const memberObj: TeamMember = {
+      return {
         name,
         role: stats.role,
         initials: initials || 'UN',
-        color: colorPalette[colorIndex % colorPalette.length],
+        color: colorPalette[colorIndex++ % colorPalette.length],
         current: stats.current,
         blocked: stats.blocked,
         doneToday: stats.doneToday
       };
-      colorIndex++;
-      return memberObj;
     });
 
-    // Build weekly activity data array for percentage-based stacked bars
     this.weeklyActivity = Array.from(weeklyDataMap.entries()).map(([dayName, stats]) => ({
       dayName,
       current: stats.current,

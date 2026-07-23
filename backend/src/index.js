@@ -1,178 +1,180 @@
-const http = require('http');
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const mongoose = require('mongoose');
-const { Server } = require('socket.io');
-const { WebClient } = require('@slack/web-api'); // 👈 1. Import WebClient
+const http = require("http");
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+const mongoose = require("mongoose");
+const { Server } = require("socket.io");
+const { WebClient } = require("@slack/web-api");
 
-const config = require('./config');
-const { createApiRouter } = require('./routes/api');
-const { NotificationService } = require('./services/notifications');
-const { MessageProcessor } = require('./services/messageProcessor');
-const { createSlackApp } = require('./slack/app');
-const { startReminderScheduler } = require('./jobs/reminders');
+process.env.TZ = "Asia/Kolkata";
 
-// 🧠 Load the Standup Briefing Cron Job
-require('./config/scheduler');
-const { cleanupCompletedWork } = require('./utils/retention');
+const config = require("./config");
+const { createApiRouter } = require("./routes/api");
+const { NotificationService } = require("./services/notifications");
+const { MessageProcessor } = require("./services/messageProcessor");
+const { createSlackApp } = require("./slack/app");
+const { startReminderScheduler } = require("./jobs/reminders");
 
-// 👈 2. Import your extraction utility or service here:
-// const { extractTasksAndIssues } = require('./services/extractor'); 
+// Load Standup Scheduler & Retention Cleanup
+require("./config/scheduler");
+const { cleanupCompletedWork } = require("./utils/retention");
 
 async function main() {
   await mongoose.connect(config.mongodbUri);
-  console.log('[db] Connected to MongoDB');
+  console.log("[db] Connected to MongoDB");
 
   const app = express();
   const server = http.createServer(app);
   const io = new Server(server, {
-    cors: { origin: config.corsOrigin, methods: ['GET', 'POST', 'PATCH'] },
+    cors: { origin: config.corsOrigin, methods: ["GET", "POST", "PATCH"] },
   });
 
-  // 👈 3. Initialize Slack WebClient using your config token
-  const slackClient = new WebClient(config.slack?.botToken || process.env.SLACK_BOT_TOKEN);
+  // Initialize Slack WebClient for API queries
+  const slackClient = new WebClient(
+    config.slack?.botToken || process.env.SLACK_BOT_TOKEN
+  );
 
   const notificationService = new NotificationService({ io });
   const messageProcessor = new MessageProcessor({ notificationService, io });
 
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(cors({ origin: config.corsOrigin }));
-  app.use(express.json({ limit: '1mb' }));
-  app.use(morgan(config.nodeEnv === 'production' ? 'combined' : 'dev'));
+  app.use(express.json({ limit: "1mb" }));
+  app.use(morgan(config.nodeEnv === "production" ? "combined" : "dev"));
 
-  app.use('/api', createApiRouter({ messageProcessor }));
+  app.use("/api", createApiRouter({ messageProcessor }));
 
-
-  // 🟢 Full-featured Slack Pipeline Endpoint
-app.post('/api/slack/pipeline/:channelId', async (req, res) => {
-  try {
-    const { channelId } = req.params;
-    // Set target limit (default to 50 tasks/messages or as requested)
-    const targetLimit = parseInt(req.query.limit || req.body?.limit || 50, 10);
-
-    console.log(`[pipeline] Starting sync for channel: ${channelId}...`);
-
-    // 1. Load Slack User Directory to resolve assigned_to members (<@U12345> -> Real Name)
-    const userDirectory = {};
+  // Pipeline Endpoint: Sync historical channel activity
+  app.post("/api/slack/pipeline/:channelId", async (req, res) => {
     try {
-      const usersRes = await slackClient.users.list({});
-      if (usersRes?.members) {
-        usersRes.members.forEach((u) => {
-          userDirectory[u.id] = {
-            id: u.id,
-            name: u.name,
-            real_name: u.profile?.real_name || u.real_name || u.name,
-            display_name: u.profile?.display_name || u.name || u.real_name,
-          };
-        });
-      }
-      console.log(`[pipeline] User Directory loaded (${Object.keys(userDirectory).length} workspace members)`);
-    } catch (userErr) {
-      console.warn('[pipeline warning] User Directory fetch failed, fallback to raw IDs:', userErr.message);
-    }
+      const { channelId } = req.params;
+      const targetLimit = parseInt(req.query.limit || req.body?.limit || 50, 10);
 
-    // 2. Fetch history from Slack up to target limit
-    let rawMessages = [];
-    let cursor;
+      console.log(`[pipeline] Starting sync for channel: ${channelId}...`);
 
-    do {
-      const fetchCount = Math.min(100, targetLimit - rawMessages.length);
-      const slackRes = await slackClient.conversations.history({
-        channel: channelId,
-        limit: fetchCount,
-        cursor,
-      });
-
-      if (slackRes.messages) {
-        rawMessages.push(...slackRes.messages);
-      }
-      cursor = slackRes.response_metadata?.next_cursor;
-    } while (cursor && rawMessages.length < targetLimit);
-
-    // 3. Filter valid messages and REVERSE for chronological execution (Oldest -> Newest)
-    const userMessages = rawMessages
-      .filter((m) => m.text && m.text.trim().length > 0 && !m.subtype && !m.bot_id)
-      .reverse();
-
-    console.log(`[pipeline] Processing ${userMessages.length} user messages in chronological order...`);
-
-    const tasks = [];
-    const issues = [];
-    const discussions = [];
-
-    // 4. Process each message sequentially with full context
-    for (const msg of userMessages) {
+      const userDirectory = {};
       try {
-        const rawPayload = {
-          text: msg.text,
-          sender: msg.user,
-          channel: channelId,
-          thread_id: msg.thread_ts || msg.ts,
-          message_ts: msg.ts,
-          workspace_id: req.body?.workspace_id || "",
-          team: req.body?.team || "",
-          is_edit: false,
-          user_directory: userDirectory, // 👈 Essential for assigned_to member mapping
-        };
-
-        // Run through messageProcessor
-        const result = await messageProcessor.process(rawPayload, { quiet: true });
-
-        if (result) {
-          if (result.classification === 'TASK' || result.task) {
-            tasks.push(result.task || result);
-          } else if (result.classification === 'ISSUE' || result.issue) {
-            issues.push(result.issue || result);
-          } else {
-            discussions.push(result);
-          }
+        const usersRes = await slackClient.users.list({});
+        if (usersRes?.members) {
+          usersRes.members.forEach((u) => {
+            userDirectory[u.id] = {
+              id: u.id,
+              name: u.name,
+              real_name: u.profile?.real_name || u.real_name || u.name,
+              display_name: u.profile?.display_name || u.name || u.real_name,
+            };
+          });
         }
-      } catch (msgErr) {
-        console.warn(`[pipeline warning] Failed to process message (${msg.ts}):`, msgErr.message);
+        console.log(
+          `[pipeline] User Directory loaded (${Object.keys(userDirectory).length} workspace members)`
+        );
+      } catch (userErr) {
+        console.warn(
+          "[pipeline warning] User Directory fetch failed, fallback to raw IDs:",
+          userErr.message
+        );
       }
+
+      let rawMessages = [];
+      let cursor;
+
+      do {
+        const fetchCount = Math.min(100, targetLimit - rawMessages.length);
+        const slackRes = await slackClient.conversations.history({
+          channel: channelId,
+          limit: fetchCount,
+          cursor,
+        });
+
+        if (slackRes.messages) {
+          rawMessages.push(...slackRes.messages);
+        }
+        cursor = slackRes.response_metadata?.next_cursor;
+      } while (cursor && rawMessages.length < targetLimit);
+
+      const userMessages = rawMessages
+        .filter((m) => m.text && m.text.trim().length > 0 && !m.subtype && !m.bot_id)
+        .reverse();
+
+      console.log(
+        `[pipeline] Processing ${userMessages.length} user messages in chronological order...`
+      );
+
+      const tasks = [];
+      const issues = [];
+      const discussions = [];
+
+      for (const msg of userMessages) {
+        try {
+          const rawPayload = {
+            text: msg.text,
+            sender: msg.user,
+            channel: channelId,
+            thread_id: msg.thread_ts || msg.ts,
+            message_ts: msg.ts,
+            workspace_id: req.body?.workspace_id || "",
+            team: req.body?.team || "",
+            is_edit: false,
+            user_directory: userDirectory,
+          };
+
+          const result = await messageProcessor.process(rawPayload, { quiet: true });
+
+          if (result) {
+            if (result.classification === "TASK" || result.task) {
+              tasks.push(result.task || result);
+            } else if (result.classification === "ISSUE" || result.issue) {
+              issues.push(result.issue || result);
+            } else {
+              discussions.push(result);
+            }
+          }
+        } catch (msgErr) {
+          console.warn(
+            `[pipeline warning] Failed to process message (${msg.ts}):`,
+            msgErr.message
+          );
+        }
+      }
+
+      console.log(
+        `[pipeline complete] Extracted Tasks: ${tasks.length} | Issues: ${issues.length} | Discussions: ${discussions.length}`
+      );
+
+      return res.json({
+        success: true,
+        messages_processed: rawMessages.length,
+        user_messages_analyzed: userMessages.length,
+        tasks_count: tasks.length,
+        issues_count: issues.length,
+        discussions_count: discussions.length,
+        tasks,
+        issues,
+        discussions,
+      });
+    } catch (error) {
+      console.error("[pipeline fatal error]", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || "Pipeline execution failed",
+      });
     }
-
-    console.log(`[pipeline complete] Extracted Tasks: ${tasks.length} | Issues: ${issues.length} | Discussions: ${discussions.length}`);
-
-    // 5. Return clean structured payload identical to dashboard data model
-    return res.json({
-      success: true,
-      messages_processed: rawMessages.length,
-      user_messages_analyzed: userMessages.length,
-      tasks_count: tasks.length,
-      issues_count: issues.length,
-      discussions_count: discussions.length,
-      tasks,
-      issues,
-      discussions,
-    });
-  } catch (error) {
-    console.error('[pipeline fatal error]', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Pipeline execution failed',
-    });
-  }
-});
-
-
-
-
-
+  });
 
   // Global Error Handler Middleware
   app.use((err, _req, res, _next) => {
-    console.error('[api]', err);
+    console.error("[api]", err);
     res.status(err.status || 500).json({
-      error: err.message || 'Internal Server Error',
+      error: err.message || "Internal Server Error",
     });
   });
 
-  io.on('connection', (socket) => {
-    console.log('[socket] client connected', socket.id);
-    socket.on('disconnect', () => console.log('[socket] client disconnected', socket.id));
+  io.on("connection", (socket) => {
+    console.log("[socket] client connected", socket.id);
+    socket.on("disconnect", () =>
+      console.log("[socket] client disconnected", socket.id)
+    );
   });
 
   const slackApp = createSlackApp({ messageProcessor, notificationService });
@@ -183,22 +185,35 @@ app.post('/api/slack/pipeline/:channelId', async (req, res) => {
       } else {
         await slackApp.start(config.port + 1);
       }
-      console.log('[slack] Bolt app started');
+      console.log("[slack] Bolt app started");
     } catch (err) {
       const slackErr = err?.data?.error || err.message;
-      console.error(`[slack] Failed to start (${slackErr}).`);
+      console.error(
+        `[slack] Failed to start (${slackErr}). API will keep running without Slack. ` +
+          "Fix tokens in backend/.env: SLACK_BOT_TOKEN (xoxb-…), SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (xapp-…)."
+      );
+      if (slackErr === "invalid_auth") {
+        console.error(
+          "[slack] invalid_auth usually means the bot token was revoked, regenerated, or copied incorrectly. " +
+            "Reinstall the app to the workspace and copy the Bot User OAuth Token from OAuth & Permissions."
+        );
+      }
     }
   }
 
   startReminderScheduler(notificationService);
-  await cleanupCompletedWork();
+  await cleanupCompletedWork().catch((err) =>
+    console.error("[retention warning]", err.message)
+  );
 
   server.listen(config.port, () => {
-    console.log(`[api] AI Engineering Manager listening on http://localhost:${config.port}`);
+    console.log(
+      `[api] AI Engineering Manager listening on http://localhost:${config.port}`
+    );
   });
 }
 
 main().catch((err) => {
-  console.error('Fatal startup error:', err);
+  console.error("Fatal startup error:", err);
   process.exit(1);
 });
