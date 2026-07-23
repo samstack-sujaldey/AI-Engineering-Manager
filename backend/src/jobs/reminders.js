@@ -14,10 +14,10 @@ function startReminderScheduler(notificationService) {
 		return null;
 	}
 
-	// Every 5 minutes check; interval between reminder resends controlled by next_reminder_at
-	const job = cron.schedule("*/60 * * * *", async () => {
+	const job = cron.schedule("*/1 * * * *", async () => {
 		try {
-			// Re-assert pending flags from tasks/issues that still need data
+			const now = new Date();
+
 			const tasksMissingBlock = await Task.find({
 				block_reason_pending: true,
 				status: "BLOCKED",
@@ -28,17 +28,40 @@ function startReminderScheduler(notificationService) {
 				const last = t.block_reason_notification_at
 					? new Date(t.block_reason_notification_at).getTime()
 					: 0;
+
 				if (Date.now() - last < config.reminderIntervalMs) continue;
+
 				await notificationService.createAndSend({
 					type: "BLOCK_REASON_REMINDER",
 					target_user_id: t.owner.id,
 					target_user_name: t.owner.name,
-					message:
-						"Your task is marked as blocked. Please tell me what is blocking it.",
+					message: `⚠️ *Blocked Task Reminder:* Your task *'${t.title}'* is marked as blocked, but no reason was provided. Please reply directly to its original thread with the reason!`,
 					task_id: t.task_id,
 					scheduleReminder: true,
 				});
+
 				t.block_reason_notification_at = new Date();
+				await t.save();
+			}
+
+			const tasksMissingDueDate = await Task.find({
+				due_date_pending: true,
+				due_date_notification_at: { $lte: now },
+				status: { $ne: "COMPLETED" },
+				"owner.id": { $ne: "" },
+			}).limit(50);
+
+			for (const t of tasksMissingDueDate) {
+				await notificationService.createAndSend({
+					type: "MISSING_DUE_DATE",
+					target_user_id: t.owner.id,
+					target_user_name: t.owner.name,
+					message: `📅 *Reminder:* This task ('${t.title}') is still missing a due date. Please reply in this thread with a deadline!`,
+					task_id: t.task_id,
+					scheduleReminder: false,
+				});
+
+				t.due_date_notification_at = new Date(Date.now() + 3600000);
 				await t.save();
 			}
 
@@ -54,7 +77,6 @@ function startReminderScheduler(notificationService) {
 			}).limit(50);
 
 			for (const t of overdueTasks) {
-				// Prevent spam: Check if we already sent an overdue notice in the last 24 hours
 				const recentNotice = await Notification.findOne({
 					task_id: t.task_id,
 					type: "GENERAL",
@@ -101,7 +123,7 @@ function startReminderScheduler(notificationService) {
 	});
 
 	console.log(
-		"[reminders] Hourly reminder scheduler started (checks every 5 min)",
+		"[reminders] Hourly reminder scheduler started (checks every 1 min)",
 	);
 	return job;
 }

@@ -45,16 +45,23 @@ import { HttpClient } from '@angular/common/http';
             </tr>
           </thead>
           <tbody *ngIf="dashService.data()?.tasks as tasks">
-            <tr *ngFor="let task of filteredTasks(tasks)">
+            <tr
+              *ngFor="let task of filteredTasks(tasks)"
+              [ngClass]="{ 'clickable-row': task.status === 'BLOCKED' }"
+              (click)="openBlockedReason(task)"
+            >
               <td class="task-name-cell">
                 <div class="task-name">{{ task.title }}</div>
                 <div class="task-category">{{ task.description || 'General Task' }}</div>
               </td>
-              <td class="assignee-cell">
-                <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(task.owner))">
-                  {{ getInitials(getPersonName(task.owner)) }}
+              <!-- ✨ FIXED: The td is now a standard cell, and the flex layout is safely inside a div -->
+              <td>
+                <div class="assignee-cell">
+                  <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(task.owner))">
+                    {{ getInitials(getPersonName(task.owner)) }}
+                  </div>
+                  <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
                 </div>
-                <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
               </td>
               <td>
                 <span class="priority-badge" [ngClass]="task.priority.toLowerCase()">{{
@@ -75,6 +82,42 @@ import { HttpClient } from '@angular/common/http';
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- BLOCKED REASON MODAL overlay -->
+    <div class="modal-overlay" *ngIf="selectedBlockedTask" (click)="closeModal()">
+      <div class="modal-content" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon">🚨</span>
+            <h2 class="modal-title">Blocked Task Details</h2>
+          </div>
+          <button class="close-btn" (click)="closeModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="info-group">
+            <h3 class="info-label">Task Title</h3>
+            <p class="info-value">{{ selectedBlockedTask.title }}</p>
+          </div>
+
+          <div class="info-group">
+            <h3 class="info-label">Blocker Reason</h3>
+            <div class="reason-box">
+              <p class="reason-text">
+                {{
+                  selectedBlockedTask.blocked_reason ||
+                    'No reason provided yet. Awaiting reply in Slack.'
+                }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-primary" (click)="closeModal()">Close</button>
+        </div>
       </div>
     </div>
   `,
@@ -109,7 +152,7 @@ import { HttpClient } from '@angular/common/http';
       }
       .tasks-table {
         width: 100%;
-        border-collapse: collapse;
+        border-collapse: collapse; /* Restored to standard collapse */
       }
       .tasks-table th {
         text-align: left;
@@ -125,12 +168,24 @@ import { HttpClient } from '@angular/common/http';
         padding: 14px 20px;
         font-size: 13.5px;
         color: #333;
-        border-bottom: 1px solid #f5f5f5;
+        border-bottom: 1px solid #f0f0f0; /* Clean, uniform border */
         vertical-align: middle;
+      }
+      .tasks-table tr {
+        transition: background-color 0.2s ease;
       }
       .tasks-table tr:last-child td {
         border-bottom: none;
       }
+
+      /* ✨ Clickable row styles */
+      .clickable-row {
+        cursor: pointer;
+      }
+      .clickable-row:hover td {
+        background-color: #fff9f9;
+      }
+
       .task-name {
         font-size: 13.5px;
         color: #1a1a2e;
@@ -228,6 +283,129 @@ import { HttpClient } from '@angular/common/http';
         color: #888;
         padding: 30px !important;
       }
+
+      /* ✨ Modal Styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        backdrop-filter: blur(2px);
+      }
+      .modal-content {
+        background: #ffffff;
+        border-radius: 10px;
+        width: 100%;
+        max-width: 450px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+        animation: slideIn 0.2s ease-out forwards;
+      }
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(15px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 18px 24px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .modal-title-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .alert-icon {
+        font-size: 18px;
+      }
+      .modal-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a1a2e;
+      }
+      .close-btn {
+        background: none;
+        border: none;
+        font-size: 24px;
+        color: #999;
+        cursor: pointer;
+        line-height: 1;
+        transition: color 0.2s;
+      }
+      .close-btn:hover {
+        color: #333;
+      }
+      .modal-body {
+        padding: 24px;
+      }
+      .info-group {
+        margin-bottom: 20px;
+      }
+      .info-group:last-child {
+        margin-bottom: 0;
+      }
+      .info-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 0 0 6px 0;
+      }
+      .info-value {
+        margin: 0;
+        font-size: 14px;
+        color: #333;
+        font-weight: 500;
+      }
+      .reason-box {
+        background: #fff9f9;
+        border: 1px solid #ffeaea;
+        border-radius: 6px;
+        padding: 12px 16px;
+      }
+      .reason-text {
+        margin: 0;
+        color: #c0392b;
+        font-size: 13.5px;
+        line-height: 1.5;
+      }
+      .modal-footer {
+        padding: 16px 24px;
+        background: #fafafa;
+        border-top: 1px solid #f0f0f0;
+        display: flex;
+        justify-content: flex-end;
+      }
+      .btn-primary {
+        background: #1a1a2e;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-primary:hover {
+        background: #2a2a4a;
+      }
     `,
   ],
 })
@@ -257,6 +435,8 @@ export class TasksComponent implements OnInit {
       console.error('Failed to load tasks:', err);
     }
   }
+
+  selectedBlockedTask: any = null;
 
   filteredTasks(tasks: any[]): any[] {
     const list = tasks || this.tasks;
@@ -302,5 +482,15 @@ export class TasksComponent implements OnInit {
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
+  }
+
+  openBlockedReason(task: any) {
+    if (task.status === 'BLOCKED') {
+      this.selectedBlockedTask = task;
+    }
+  }
+
+  closeModal() {
+    this.selectedBlockedTask = null;
   }
 }

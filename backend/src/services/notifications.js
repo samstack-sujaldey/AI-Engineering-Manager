@@ -1,4 +1,4 @@
-const { Notification } = require("../models");
+const { Notification, Task, Issue } = require("../models");
 const { newId } = require("../utils/helpers");
 const config = require("../config");
 
@@ -56,13 +56,49 @@ class NotificationService {
 		let slackTs = "";
 		if (this.slack && notification.target_user_id) {
 			try {
+				let targetChannel = notification.target_user_id; // Default to DM
+				let threadTs = undefined;
+				let finalMessage = notification.message;
+
+				// Fetch original channel and thread if it belongs to a task
+				if (notification.task_id) {
+					const task = await Task.findOne({
+						task_id: notification.task_id,
+					}).lean();
+					if (task && task.channel && task.slack_message_ts) {
+						targetChannel = task.channel;
+						threadTs = task.thread || task.slack_message_ts;
+					}
+				} else if (notification.issue_id) {
+					const issue = await Issue.findOne({
+						issue_id: notification.issue_id,
+					}).lean();
+					if (issue && issue.channel && issue.slack_message_ts) {
+						targetChannel = issue.channel;
+						threadTs = issue.thread || issue.slack_message_ts;
+					}
+				}
+
+				// If routing to a public thread, ensure they are explicitly tagged so it hits the Activity feed!
+				if (
+					threadTs &&
+					!finalMessage.includes(`<@${notification.target_user_id}>`)
+				) {
+					finalMessage = `<@${notification.target_user_id}> ${finalMessage}`;
+				}
+
+				// Send the threaded reply (or DM if no thread is found)
 				const result = await this.slack.chat.postMessage({
-					channel: notification.target_user_id,
-					text: notification.message,
+					channel: targetChannel,
+					thread_ts: threadTs,
+					text: finalMessage,
 				});
 				slackTs = result.ts || "";
 			} catch (err) {
-				console.error("[notification] Slack DM failed:", err.message);
+				console.error(
+					"[notification] Slack delivery failed:",
+					err.message,
+				);
 			}
 		}
 

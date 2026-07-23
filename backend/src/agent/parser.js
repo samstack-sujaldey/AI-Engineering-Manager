@@ -372,9 +372,11 @@ function detectPriority(text) {
 }
 
 function detectStatus(text) {
-	if (matchAny(text, STATUS.COMPLETED)) return "COMPLETED";
-	if (matchAny(text, STATUS.BLOCKED)) return "BLOCKED";
-	if (matchAny(text, STATUS.PROCESSING)) return "PROCESSING";
+	const lower = text.toLowerCase();
+	if (/\b(?:done|completed|finished)\b/.test(lower)) return "COMPLETED";
+	if (/\b(?:block|blocked|stuck)\b/.test(lower)) return "BLOCKED";
+	if (/\b(?:processing|doing|working|in progress)\b/.test(lower))
+		return "IN_PROGRESS";
 	return "TODO";
 }
 
@@ -511,11 +513,21 @@ function extractDependencies(text) {
 }
 
 function extractBlockedReason(text) {
-	const m =
-		text.match(/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|$)/i);
-	return m ? m[1].trim() : "";
+	const explicitMatch = text.match(
+		/(?:reason|blocker|blocked\s+by)[\s:-]+(.+?)(?:\n|$)/i,
+	);
+	if (explicitMatch) return explicitMatch[1].trim();
+
+	const naturalMatch =
+		text.match(
+			/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|\n|$)/i,
+		) ||
+		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|\n|$)/i) ||
+		text.match(
+			/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|\n|$)/i,
+		);
+
+	return naturalMatch ? naturalMatch[1].trim() : "";
 }
 
 function extractEntities(text) {
@@ -606,6 +618,13 @@ function generateTitle(text, classification) {
 		.trim();
 
 	cleaned = cleaned.replace(/^.*?(task|issue)\s*-\s*/i, "");
+
+	cleaned = cleaned
+		.replace(
+			/\s*-\s*(block(ed)?|done|todo|processing|in progress)\s*$/i,
+			"",
+		)
+		.trim();
 
 	if (cleaned.endsWith("]")) {
 		cleaned = cleaned.slice(0, -1).trim();
@@ -823,7 +842,8 @@ async function parseMessage(input) {
 				title: existing_task?.title || title,
 				description: text,
 				priority,
-				status,
+				// FIXED: Pulls the detected status (e.g., BLOCKED) instead of defaulting to TODO
+				status: status !== "TODO" ? status : "TODO",
 				due_date: dueDate || "",
 				dependencies,
 				blocked_reason: blockedReason,
@@ -962,6 +982,8 @@ function buildNotificationHints({
 }) {
 	const notifications = [];
 
+	if (classification === "ISSUE") {
+		return notifications;
 	if (
 		classification === "TASK" &&
 		!dueDate &&
