@@ -2,7 +2,7 @@
  * Lightweight parser self-test (no Mongo required).
  * Run: node src/agent/parser.test.js
  */
-const { parseMessage, extractDueDate, detectPriority, detectStatus } = require('./parser');
+const { parseMessage, extractDueDate, detectPriority, detectStatus, toUser } = require('./parser');
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -65,6 +65,15 @@ function run() {
     sender: { id: 'U1', name: 'john' },
   });
   assert(r.classification === 'GENERAL_DISCUSSION', 'discussion');
+
+  // Normalize email-like user names to a displayable person name
+  const normalized = toUser({
+    name: 'jane.doe@example.com',
+    display_name: '',
+    email: 'jane.doe@example.com',
+  });
+  assert(normalized.name === 'jane.doe', 'email-like names should be normalized');
+  assert(normalized.display_name === 'jane.doe', 'display name should be normalized');
 
   // Acknowledgement
   r = parseMessage({

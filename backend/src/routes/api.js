@@ -2,11 +2,12 @@ const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { Task, Issue, Discussion } = require("../models");
 const { getDashboard } = require("../services/dashboard");
-const { syncFromSlack } = require("../services/slackSync");
+const { createSlackClient, listChannels, syncFromSlack } = require("../services/slackSync");
 const { parseMessage } = require("../agent/parser");
 const { callOpenRouter } = require("../ai/gemini");
 const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
+const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
@@ -18,7 +19,38 @@ function createApiRouter({ messageProcessor }) {
       const targetDateStr = rawDate.split("T")[0].trim();
       const forceRefresh = req.query.forceRefresh === "true";
 
+      if (!forceRefresh) {
+        const cachedDoc = await DailySummary.findOne({
+          date: targetDateStr,
+        }).lean();
+
+        if (cachedDoc) {
+          console.log(
+            `[DailySummary] ⚡ Serving cached summary for date: ${targetDateStr}`
+          );
+          return res.json({
+            date: targetDateStr,
+            summary: cachedDoc.summary,
+            tasks_count: cachedDoc.tasks_count,
+            issues_count: cachedDoc.issues_count,
+            discussions_count: cachedDoc.discussions_count,
+            cached: true,
+            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+          });
+        }
+      }
+
+      console.log(
+        `[DailySummary] 🤖 Generating AI summary for date: ${targetDateStr} (forceRefresh=${forceRefresh})`
+      );
+
       const [year, month, day] = targetDateStr.split("-").map(Number);
+      if (!year || !month || !day) {
+        return res
+          .status(400)
+          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+      }
+
       const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
       const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
@@ -126,8 +158,16 @@ function createApiRouter({ messageProcessor }) {
         `[DailySummary] 🤖 New tasks/issues detected for ${targetDateStr}. Calling AI...`,
       );
 
+      const ignoreList = ["go for break", "break", "test"];
+      const filteredTasks = tasks.filter(
+        (t) =>
+          !ignoreList.some((term) =>
+            (t.title || "").toLowerCase().includes(term)
+          )
+      );
+
       const uniqueTasks = Object.values(
-        tasks.reduce((acc, t) => {
+        filteredTasks.reduce((acc, t) => {
           const key = (t.title || "").toLowerCase().trim();
           if (!acc[key]) {
             acc[key] = {
@@ -145,7 +185,7 @@ function createApiRouter({ messageProcessor }) {
             acc[key].assignees.add(assignee);
           }
           return acc;
-        }, {}),
+        }, {})
       ).map((t) => ({
         title: t.title,
         status: t.status,
@@ -167,7 +207,7 @@ Generate a 3-section engineering stand-up summary for ${targetDateStr} following
 Data:
 Tasks: ${JSON.stringify(uniqueTasks)}
 Issues: ${JSON.stringify(issues.map((i) => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, text: d.content })))}
+Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name || d.sender?.name, text: d.content || d.text })))}
 `;
 
       let summaryText = await callOpenRouter(
@@ -196,7 +236,7 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
           discussions_count: discussions.length,
           is_stale: false,
         },
-        { upsert: true, new: true },
+        { upsert: true, returnDocument: 'after' }
       );
 
       return res.json({
@@ -234,9 +274,6 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  /**
-   * Pull recent Slack channel history, process messages, return fresh dashboard payload.
-   */
   router.post("/slack/sync", async (req, res, next) => {
     try {
       if (!messageProcessor) {
@@ -248,9 +285,11 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
       const channelIds = Array.isArray(req.body?.channels)
         ? req.body.channels
         : undefined;
+      const channelId = req.body?.channel_id || undefined;
+
       const result = await syncFromSlack(messageProcessor, {
         ...(limit ? { limitPerChannel: limit } : {}),
-        ...(channelIds ? { channelIds } : {}),
+        ...(channelId ? { channelId } : {}),
       });
       res.json(result);
     } catch (err) {
@@ -264,17 +303,46 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
+  router.get("/slack/channels", async (_req, res, next) => {
+    try {
+      const client = createSlackClient();
+      const rawChannels = await listChannels(client);
+
+      const channels = rawChannels.map((ch) => ({
+        id: ch.id,
+        name: `#${ch.name}`,
+        members: ch.num_members || 4,
+        status: "Bot in channel",
+      }));
+
+      res.json({ channels });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/tasks", async (req, res, next) => {
     try {
       const filter = {};
-      if (req.query.status) filter.status = req.query.status;
+
+      if (req.query.status) {
+        filter.status = req.query.status;
+      } else {
+        filter.status = {
+          $nin: ["done", "completed", "Complete", "Done", "COMPLETE", "DONE"],
+        };
+        filter.title = { $not: /(- completed|- done| - done| - completed)$/i };
+      }
+
       if (req.query.priority) filter.priority = req.query.priority;
+
       if (req.query.assignee) {
         filter.$or = [
           { "assigned_to.id": req.query.assignee },
           { "assigned_to.name": new RegExp(req.query.assignee, "i") },
         ];
       }
+
       const tasks = await Task.find(filter).sort({ updated_time: -1 }).lean();
       res.json(tasks);
     } catch (err) {
@@ -282,11 +350,85 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
+  router.all("/slack/standup-briefing", async (req, res) => {
+    try {
+      const { team, userId, hours, meetingTime } = { ...req.query, ...req.body };
+
+      const result = await sendDailyStandupBriefings({
+        team,
+        userId,
+        lookbackHours: hours ? parseInt(hours, 10) : 24,
+        meetingTime,
+      });
+
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   router.get("/tasks/:id", async (req, res, next) => {
     try {
-      const task = await Task.findOne({ task_id: req.params.id }).lean();
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+        ],
+      };
+      const task = await Task.findOne(query).lean();
       if (!task) return res.status(404).json({ error: "Task not found" });
       res.json(task);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.patch("/tasks/:id", async (req, res, next) => {
+    try {
+      const { status } = req.body;
+      const allowed = [
+        "title",
+        "description",
+        "priority",
+        "status",
+        "due_date",
+        "blocked_reason",
+        "owner",
+        "assigned_to",
+      ];
+
+      const updateData = { updated_time: new Date() };
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) updateData[key] = req.body[key];
+      }
+
+      if (updateData.due_date) {
+        updateData.due_date = new Date(updateData.due_date);
+        updateData.due_date_pending = false;
+      }
+      if (updateData.blocked_reason) {
+        updateData.block_reason_pending = false;
+      }
+
+      if (status === "done" || status === "completed") {
+        updateData.completed_at = new Date();
+      } else if (status) {
+        updateData.completed_at = null;
+      }
+
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+        ],
+      };
+
+      const updatedTask = await Task.findOneAndUpdate(query, updateData, {
+        returnDocument: 'after',
+      });
+
+      if (!updatedTask) return res.status(404).json({ error: "Task not found" });
+      res.json(updatedTask);
     } catch (err) {
       next(err);
     }
@@ -314,139 +456,6 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  // GET /api/discussions/daily-summary
-  router.get("/discussions/daily-summary", async (req, res) => {
-    try {
-      const targetDateStr =
-        req.query.date || new Date().toISOString().split("T")[0];
-
-      const [year, month, day] = targetDateStr.split("-").map(Number);
-      if (!year || !month || !day) {
-        return res
-          .status(400)
-          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-      }
-
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-
-      const [tasks, issues, discussions] = await Promise.all([
-        Task.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { due_date: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["TODO", "PROCESSING", "BLOCKED"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Issue.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["OPEN", "HOLD"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Discussion.find({
-          timestamp: { $gte: startOfDay, $lte: endOfDay },
-          channel: { $ne: "daily-wrapup" },
-        })
-          .lean()
-          .catch(() => []),
-      ]);
-
-      if (!tasks.length && !issues.length && !discussions.length) {
-        return res.json({
-          date: targetDateStr,
-          summary: `No activity recorded for ${targetDateStr}.`,
-          tasks: [],
-          issues: [],
-          discussions: [],
-        });
-      }
-
-      // --- FAST PRE-PROCESSING (IN-MEMORY DEDUPLICATION) ---
-      // Ignore trivial entries
-      const ignoreList = ["go for break", "break", "test"];
-      const filteredTasks = tasks.filter(
-        (t) =>
-          !ignoreList.some((term) =>
-            (t.title || "").toLowerCase().includes(term),
-          ),
-      );
-
-      // Group duplicate titles to cut down prompt token count
-      const uniqueTasks = Object.values(
-        filteredTasks.reduce((acc, t) => {
-          const key = (t.title || "").toLowerCase().trim();
-          if (!acc[key]) {
-            acc[key] = {
-              title: t.title,
-              status: t.status,
-              assignees: new Set(),
-              count: 0,
-            };
-          }
-          acc[key].count += 1;
-          const assignee = t.assigned_to?.name || t.owner?.name;
-          if (assignee && assignee !== "Unassigned")
-            acc[key].assignees.add(assignee);
-          return acc;
-        }, {}),
-      ).map((t) => ({
-        title: t.title,
-        status: t.status,
-        assignees: Array.from(t.assignees).join(", ") || "Unassigned",
-        occurrences: t.count,
-      }));
-
-      // --- COMPACT LLM PROMPT ---
-      const prompt = `
-Generate a quick 3-section engineering stand-up summary for ${targetDateStr}.
-Synthesize the items below into clean, bulleted points.
-
-1. 📌 **Tasks Activity**
-2. 🐞 **Issues & Bugs**
-3. 💬 **General Discussions**
-
-Data:
-Tasks (${uniqueTasks.length} unique items): ${JSON.stringify(uniqueTasks)}
-Issues (${issues.length}): ${JSON.stringify(issues.map((i) => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions (${discussions.length}): ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name || d.sender?.name, text: d.content || d.text })))}
-
-Keep output concise. Emojis and bullet points only.
-`;
-
-      // Reduced maxTokens from 700 to 350 for faster streaming/response time
-      const summaryText = await callOpenRouter(
-        [{ role: "user", content: prompt }],
-        { maxTokens: 350, temperature: 0.1 },
-      );
-
-      res.json({
-        date: targetDateStr,
-        summary: summaryText,
-        tasks,
-        issues,
-        discussions,
-      });
-    } catch (err) {
-      console.error("[daily-summary error]:", err);
-      res.json({
-        date: req.query.date,
-        summary:
-          "📌 **Summary Status**\n- Unable to process summary for this date.",
-        tasks: [],
-        issues: [],
-        discussions: [],
-      });
-    }
-  });
   router.get("/discussions", async (_req, res, next) => {
     try {
       const discussions = await Discussion.find()
@@ -459,9 +468,7 @@ Keep output concise. Emojis and bullet points only.
     }
   });
 
-  /**
-   * Stateless parse endpoint — returns structured JSON without persistence.
-   */
+
   router.post(
     "/parse",
     body("text").isString().notEmpty(),
@@ -491,12 +498,9 @@ Keep output concise. Emojis and bullet points only.
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
 
-  /**
-   * Full process endpoint — parse + persist + notifications.
-   */
   router.post(
     "/messages/process",
     body("text").isString().notEmpty(),
@@ -527,42 +531,8 @@ Keep output concise. Emojis and bullet points only.
       } catch (err) {
         next(err);
       }
-    },
-  );
-
-  router.patch("/tasks/:id", async (req, res, next) => {
-    try {
-      const allowed = [
-        "title",
-        "description",
-        "priority",
-        "status",
-        "due_date",
-        "blocked_reason",
-        "owner",
-        "assigned_to",
-      ];
-      const $set = {};
-      for (const key of allowed) {
-        if (req.body[key] !== undefined) $set[key] = req.body[key];
-      }
-      if ($set.due_date) {
-        $set.due_date = new Date($set.due_date);
-        $set.due_date_pending = false;
-      }
-      if ($set.blocked_reason) $set.block_reason_pending = false;
-
-      const task = await Task.findOneAndUpdate(
-        { task_id: req.params.id },
-        { $set },
-        { new: true },
-      );
-      if (!task) return res.status(404).json({ error: "Task not found" });
-      res.json(task);
-    } catch (err) {
-      next(err);
     }
-  });
+  );
 
   return router;
 }

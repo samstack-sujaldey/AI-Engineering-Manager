@@ -73,14 +73,14 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                   </div>
                 </td>
                 <td class="assignee-cell">
-                  <div class="avatar-sm" [style.background]="getAvatarColor(issue.owner?.name)">
-                    {{ getInitials(issue.owner?.name) }}
+                  <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(issue.owner))">
+                    {{ getInitials(getPersonName(issue.owner)) }}
                   </div>
-                  <span>{{ issue.owner?.name || 'Unassigned' }}</span>
+                  <span>{{ getPersonName(issue.owner) }}</span>
                 </td>
                 <td>
                   <span style="font-size: 13px; color: #555; text-transform: capitalize;">{{
-                    issue.reporter?.name || 'System'
+                    getPersonName(issue.reporter) || 'System'
                   }}</span>
                 </td>
                 <td>
@@ -339,6 +339,22 @@ export class IssuesComponent {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : '';
+  }
+
+  getPersonName(user?: any): string {
+    if (!user) return 'Unassigned';
+    const candidate = user.display_name || user.real_name || user.name || '';
+    return this.normalizeName(candidate) || 'Unassigned';
+  }
+
+  private normalizeName(value?: string): string {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) {
+      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    }
+    return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
   getInitials(name?: string): string {

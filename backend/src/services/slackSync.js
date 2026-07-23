@@ -168,6 +168,7 @@ async function downloadSlackAttachments(attachments = [], token) {
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
+    channelId = null,
     channelIds = (process.env.SLACK_SYNC_CHANNELS || '')
       .split(',')
       .map((s) => s.trim())
@@ -192,7 +193,11 @@ async function syncFromSlack(messageProcessor, options = {}) {
   }
 
   const downloadToken = config.slack.botToken;
-  const channels = await listChannels(client, { channelIds });
+  let channels = await listChannels(client, { channelIds });
+  if (channelId) {
+    channels = channels.filter((ch) => ch.id === channelId);
+  }
+
   const userCache = new Map();
   const summary = {
     workspace: auth.team || '',
@@ -233,51 +238,64 @@ async function syncFromSlack(messageProcessor, options = {}) {
         continue;
       }
 
+      const checkDuplicate = await alreadyProcessed(msg.ts);
+      if (checkDuplicate.skipped) {
+        summary.messages_skipped += 1;
+        continue;
+      }
+
       let downloadedFiles = [];
+      if (hasFiles) {
+        const rawAttachments = msg.files.map((f) => ({
+          slackFileId: f.id,
+          fileName: f.name,
+          mimeType: f.mimetype,
+          fileType: f.filetype,
+          urlPrivateDownload: f.url_private_download,
+          urlPrivate: f.url_private,
+        }));
+        downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
+      }
+
       try {
-        const checkDuplicate = await alreadyProcessed(msg.ts);
-        if (checkDuplicate.skipped) {
-          summary.messages_skipped += 1;
-          continue;
-        }
-
-        if (hasFiles) {
-          const rawAttachments = msg.files.map(f => ({
-            slackFileId: f.id,
-            fileName: f.name,
-            mimeType: f.mimetype,
-            fileType: f.filetype,
-            urlPrivateDownload: f.url_private_download,
-            urlPrivate: f.url_private
-          }));
-          downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
-        }
-
         const sender = await resolveUser(client, msg.user, userCache);
-        const user_directory = await buildDirectory(client, safeText, userCache);
-        
-        const result = await messageProcessor.process(
+        const threadContext = [];
+        if (msg.thread_ts && msg.thread_ts !== msg.ts) {
+          try {
+            const replies = await client.conversations.replies({
+              channel: channel.id,
+              ts: msg.thread_ts,
+              limit: 10,
+            });
+            threadContext.push(...(replies.messages || []));
+          } catch {}
+        }
+
+        const directory = await buildDirectory(client, safeText, userCache);
+
+        const processed = await messageProcessor.process(
           {
             text: safeText,
             sender,
-            channel: channel.id,
-            thread_id: msg.thread_ts || msg.ts,
+            channel: channel.name || channel.id,
+            thread_id: msg.thread_ts || '',
             workspace_id: auth.team_id || '',
             team: auth.team || '',
             message_ts: msg.ts,
             is_edit: false,
-            user_directory,
-            local_attachments: downloadedFiles
+            user_directory: directory,
+            local_attachments: downloadedFiles,
+            thread_context: threadContext,
           },
           { quiet: true }
         );
 
         summary.messages_processed += 1;
-        if (result.task_created) summary.created.tasks += 1;
-        if (result.issue_created) summary.created.issues += 1;
+        if (processed?.task_created) summary.created.tasks += 1;
+        if (processed?.issue_created) summary.created.issues += 1;
         if (
-          result.discussion?.id &&
-          (result.action === 'STORE_DISCUSSION' || result.action === 'LINK_DISCUSSION')
+          processed?.discussion?.id &&
+          (processed.action === 'STORE_DISCUSSION' || processed.action === 'LINK_DISCUSSION')
         ) {
           summary.created.discussions += 1;
         }
@@ -308,5 +326,6 @@ module.exports = {
   createSlackClient, 
   buildDirectory, 
   resolveUser,
-  downloadSlackAttachments 
+  downloadSlackAttachments ,
+  listChannels
 };

@@ -1,8 +1,9 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject , OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { DashboardService } from '../services/dashboard.service'; // Adjust path
+import { HttpClient } from '@angular/common/http';
 
 @Component({
   selector: 'app-tasks',
@@ -50,10 +51,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                 <div class="task-category">{{ task.description || 'General Task' }}</div>
               </td>
               <td class="assignee-cell">
-                <div class="avatar-sm" [style.background]="getAvatarColor(task.owner?.name)">
-                  {{ getInitials(task.owner?.name) }}
+                <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(task.owner))">
+                  {{ getInitials(getPersonName(task.owner)) }}
                 </div>
-                <span class="assignee-name">{{ task.owner?.name || 'Unassigned' }}</span>
+                <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
               </td>
               <td>
                 <span class="priority-badge" [ngClass]="task.priority.toLowerCase()">{{
@@ -230,15 +231,37 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class TasksComponent {
+export class TasksComponent implements OnInit {
+  http = inject(HttpClient);
   dashService = inject(DashboardService);
 
+  tasks: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
 
+  ngOnInit() {
+    this.loadTasks();
+  }
+
+  // Inside your task loading method with completed tasks filtered out
+  async loadTasks() {
+    try {
+      const tasks: any = await this.http.get('/api/tasks').toPromise() || [];
+      
+      // Filter out completed tasks so they never show up on the Task page view
+      this.tasks = tasks.filter((t: any) => {
+        const status = (t.status || '').toLowerCase();
+        return status !== 'done' && status !== 'completed';
+      });
+    } catch (err) {
+      console.error('Failed to load tasks:', err);
+    }
+  }
+
   filteredTasks(tasks: any[]): any[] {
-    if (!tasks) return [];
-    return tasks.filter((task) => {
+    const list = tasks || this.tasks;
+    if (!list) return [];
+    return list.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
       const matchPriority = this.priorityFilter === 'all' || task.priority === this.priorityFilter;
       return matchStatus && matchPriority;
@@ -247,6 +270,22 @@ export class TasksComponent {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : '';
+  }
+
+  getPersonName(user?: any): string {
+    if (!user) return 'Unassigned';
+    const candidate = user.display_name || user.real_name || user.name || '';
+    return this.normalizeName(candidate) || 'Unassigned';
+  }
+
+  private normalizeName(value?: string): string {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) {
+      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    }
+    return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
   getInitials(name?: string): string {
