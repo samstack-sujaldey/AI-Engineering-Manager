@@ -11,7 +11,10 @@ const { createApiRouter } = require('./routes/api');
 const { NotificationService } = require('./services/notifications');
 const { MessageProcessor } = require('./services/messageProcessor');
 const { createSlackApp } = require('./slack/app');
-const { startReminderScheduler } = require('./jobs/reminders');
+const { startReminderScheduler } = require('./jobs/reminders'); // Keep this for hourly reminders
+
+// 🧠 Load the 10:00 AM Standup Briefing Cron Job
+require('./config/scheduler');
 const { cleanupCompletedWork } = require('./utils/retention');
 
 async function main() {
@@ -71,6 +74,7 @@ async function main() {
     }
   }
 
+  // Starts hourly reminder notifications
   startReminderScheduler(notificationService);
   await cleanupCompletedWork();
 

@@ -4,6 +4,9 @@ const { toUser } = require('../agent/parser');
 const { findWorkByMessageTs } = require('./similarity');
 const { Discussion } = require('../models');
 const { getDashboard } = require('./dashboard');
+const fs = require('fs/promises');
+const path = require('path');
+const axios = require('axios');
 
 function looksLikePlaceholder(value, prefixes = []) {
   if (!value) return true;
@@ -63,9 +66,12 @@ async function buildDirectory(client, text, cache) {
 
 async function alreadyProcessed(messageTs) {
   const { task, issue } = await findWorkByMessageTs(messageTs);
-  if (task || issue) return true;
+  if (task || issue) return { skipped: true, type: task ? 'TASK_MATCH' : 'ISSUE_MATCH' };
+  
   const discussion = await Discussion.findOne({ slack_message_ts: messageTs }).lean();
-  return !!discussion;
+  if (discussion) return { skipped: true, type: 'DISCUSSION_MATCH' };
+  
+  return { skipped: false };
 }
 
 async function listChannels(client, { channelIds = [] } = {}) {
@@ -107,8 +113,53 @@ async function fetchChannelHistory(client, channelId, limit) {
     cursor = result.has_more ? result.response_metadata?.next_cursor || '' : '';
   } while (cursor && remaining > 0);
 
-  // Oldest first so thread continuity works
   return messages.reverse();
+}
+
+/**
+ * Downloads Slack attachments and guarantees the destination temp folder exists in root.
+ */
+async function downloadSlackAttachments(attachments = [], token) {
+  if (!attachments || attachments.length === 0) return [];
+
+  // 1. Ensure temp directory exists at project root
+  const tempDir = path.join(process.cwd(), 'temp');
+  try {
+    await fs.mkdir(tempDir, { recursive: true });
+  } catch (mkdirErr) {
+    console.error(`[attachments] Failed to create temp folder:`, mkdirErr.message);
+  }
+
+  const downloadedFiles = [];
+
+  for (const file of attachments) {
+    const downloadUrl = file.urlPrivateDownload || file.urlPrivate;
+    if (!downloadUrl) continue;
+
+    const ext = path.extname(file.fileName || '') || '.bin';
+    const localFileName = `${file.slackFileId || Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+    const localPath = path.join(tempDir, localFileName);
+
+    try {
+      const response = await axios.get(downloadUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'arraybuffer',
+      });
+
+      await fs.writeFile(localPath, response.data);
+
+      downloadedFiles.push({
+        ...file,
+        localPath,
+        size: response.data.length,
+      });
+      console.log(`[attachments] Downloaded file: ${file.fileName} -> ${localPath}`);
+    } catch (err) {
+      console.error(`[attachments] Failed to download file ${file.fileName}:`, err.message);
+    }
+  }
+
+  return downloadedFiles;
 }
 
 /**
@@ -134,6 +185,23 @@ async function syncFromSlack(messageProcessor, options = {}) {
     channels = channels.filter((ch) => ch.id === channelId);
   }
 
+  let auth;
+  try {
+    auth = await client.auth.test();
+  } catch (err) {
+    const slackErr = err?.data?.error || err.message;
+    const error = new Error(
+      slackErr === 'invalid_auth'
+        ? 'Slack rejected the bot token (invalid_auth). Reinstall the app and update SLACK_BOT_TOKEN.'
+        : `Slack auth failed: ${slackErr}`
+    );
+    error.status = 401;
+    error.code = slackErr;
+    throw error;
+  }
+
+  const downloadToken = config.slack.botToken;
+  const channels = await listChannels(client, { channelIds });
   const userCache = new Map();
   const summary = {
     workspace: auth.team || '',
@@ -147,20 +215,50 @@ async function syncFromSlack(messageProcessor, options = {}) {
   };
 
   for (const channel of channels) {
-    summary.channels_scanned++;
+    summary.channels_scanned += 1;
+    let history;
     try {
-      const messages = await fetchChannelHistory(client, channel.id, limitPerChannel);
+      history = await fetchChannelHistory(client, channel.id, limitPerChannel);
+    } catch (err) {
+      summary.errors.push({
+        channel: channel.id,
+        error: err?.data?.error || err.message,
+      });
+      continue;
+    }
+
+    for (const msg of history) {
+      summary.messages_seen += 1;
       
-      for (const msg of messages) {
-        summary.messages_seen++;
-        if (!msg.text || msg.subtype) {
+      const hasFiles = msg.files && msg.files.length > 0;
+      const safeText = msg.text || "";
+
+      if ((!safeText && !hasFiles) || msg.bot_id || msg.subtype === 'bot_message') {
+        summary.messages_skipped += 1;
+        continue;
+      }
+      if (msg.subtype && msg.subtype !== 'file_share') {
+        summary.messages_skipped += 1;
+        continue;
+      }
+
+      let downloadedFiles = [];
+        const checkDuplicate = await alreadyProcessed(msg.ts);
+        if (checkDuplicate.skipped) {
           summary.messages_skipped++;
           continue;
         }
 
-        if (await alreadyProcessed(msg.ts)) {
-          summary.messages_skipped++;
-          continue;
+        if (hasFiles) {
+          const rawAttachments = msg.files.map(f => ({
+            slackFileId: f.id,
+            fileName: f.name,
+            mimeType: f.mimetype,
+            fileType: f.filetype,
+            urlPrivateDownload: f.url_private_download,
+            urlPrivate: f.url_private
+          }));
+          downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
         }
 
         try {
@@ -177,49 +275,59 @@ async function syncFromSlack(messageProcessor, options = {}) {
             } catch {}
           }
 
-          const directory = await buildDirectory(client, msg.text, userCache);
+          const directory = await buildDirectory(client, safeText, userCache);
+        
 
           const processed = await messageProcessor.process({
-            text: msg.text,
+            text: safeText,
             sender,
             channel: channel.name || channel.id,
             thread_id: msg.thread_ts || '',
             workspace_id: auth.team_id || '',
             team: auth.team || '',
             message_ts: msg.ts,
-            user_directory: directory,
-            thread_context: threadContext,
-          });
+            is_edit: false,
+            user_directory,
+            local_attachments: downloadedFiles
+          },
+          { quiet: true }
+        );
 
-          if (processed) {
-            summary.messages_processed++;
-            if (processed.type === 'TASK') summary.created.tasks++;
-            if (processed.type === 'ISSUE') summary.created.issues++;
-            if (processed.type === 'DISCUSSION') summary.created.discussions++;
-          } else {
-            summary.messages_skipped++;
-          }
-        } catch (msgErr) {
-          summary.messages_skipped++;
-          summary.errors.push({
-            channel: channel.name || channel.id,
-            message: msgErr.message,
-          });
+        summary.messages_processed += 1;
+        if (result.task_created) summary.created.tasks += 1;
+        if (result.issue_created) summary.created.issues += 1;
+        if (
+          result.discussion?.id &&
+          (result.action === 'STORE_DISCUSSION' || result.action === 'LINK_DISCUSSION')
+        ) {
+          summary.created.discussions += 1;
         }
+      } catch (err) {
+        summary.errors.push({
+          channel: channel.id,
+          ts: msg.ts,
+          error: err.message,
+        });
       }
-    } catch (chErr) {
-      summary.errors.push({
-        channel: channel.name || channel.id,
-        message: chErr.message,
-      });
     }
   }
 
-  return summary;
+  if (messageProcessor.io) {
+    messageProcessor.io.emit('dashboard:update', {
+      action: 'SLACK_SYNC',
+      at: new Date().toISOString(),
+      summary,
+    });
+  }
+
+  const dashboard = await getDashboard();
+  return { ok: true, sync: summary, dashboard };
 }
 
-module.exports = {
-  createSlackClient,
-  listChannels,
-  syncFromSlack,
+module.exports = { 
+  syncFromSlack, 
+  createSlackClient, 
+  buildDirectory, 
+  resolveUser,
+  downloadSlackAttachments 
 };

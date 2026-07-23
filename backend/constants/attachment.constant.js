@@ -1,0 +1,7 @@
+const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024; // 20 MB
+const EXTRACTION_TIMEOUT = 30000; // 30 sec
+
+module.exports = {
+    MAX_ATTACHMENT_SIZE,
+    EXTRACTION_TIMEOUT,
+};

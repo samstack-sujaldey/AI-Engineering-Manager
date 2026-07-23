@@ -43,7 +43,7 @@ async function findSimilarIssue(title, description, workspaceId, channel) {
 
 	const candidates = await Issue.find({
 		...filter,
-		status: { $ne: "COMPLETED" },
+		status: { $ne: "RESOLVED" },
 	})
 		.sort({ updated_time: -1 })
 		.limit(50)
