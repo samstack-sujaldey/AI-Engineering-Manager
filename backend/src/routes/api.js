@@ -7,20 +7,17 @@ const { parseMessage } = require("../agent/parser");
 const { callOpenRouter } = require("../ai/gemini");
 const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
-const { sendDailyStandupBriefings } = require('../config/scheduler.js');
+const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
   router.get("/discussions/daily-summary", async (req, res) => {
     try {
-      // Standardize date string format (e.g. "2026-07-21")
       const rawDate = req.query.date || new Date().toISOString().split("T")[0];
       const targetDateStr = rawDate.split("T")[0].trim();
       const forceRefresh = req.query.forceRefresh === "true";
 
-      // ⚡ STEP 1: STRICT CACHE LOOKUP (Loads in ~5-10ms)
-      // If NOT forced, return cached summary from MongoDB instantly without calling AI
       if (!forceRefresh) {
         const cachedDoc = await DailySummary.findOne({
           date: targetDateStr,
@@ -28,7 +25,7 @@ function createApiRouter({ messageProcessor }) {
 
         if (cachedDoc) {
           console.log(
-            `[DailySummary] ⚡ Serving cached summary for date: ${targetDateStr}`,
+            `[DailySummary] ⚡ Serving cached summary for date: ${targetDateStr}`
           );
           return res.json({
             date: targetDateStr,
@@ -42,12 +39,17 @@ function createApiRouter({ messageProcessor }) {
         }
       }
 
-      // 🤖 STEP 2: AI RE-GENERATION (Only executes if no cache exists OR forceRefresh === true)
       console.log(
-        `[DailySummary] 🤖 Generating AI summary for date: ${targetDateStr} (forceRefresh=${forceRefresh})`,
+        `[DailySummary] 🤖 Generating AI summary for date: ${targetDateStr} (forceRefresh=${forceRefresh})`
       );
 
       const [year, month, day] = targetDateStr.split("-").map(Number);
+      if (!year || !month || !day) {
+        return res
+          .status(400)
+          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+      }
+
       const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
       const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
@@ -93,21 +95,29 @@ function createApiRouter({ messageProcessor }) {
         });
       }
 
-      // Clean & format data payload for AI
+      const ignoreList = ["go for break", "break", "test"];
+      const filteredTasks = tasks.filter(
+        (t) =>
+          !ignoreList.some((term) =>
+            (t.title || "").toLowerCase().includes(term)
+          )
+      );
+
       const uniqueTasks = Object.values(
-        tasks.reduce((acc, t) => {
+        filteredTasks.reduce((acc, t) => {
           const key = (t.title || "").toLowerCase().trim();
-          if (!acc[key])
+          if (!acc[key]) {
             acc[key] = {
               title: t.title,
               status: t.status,
               assignees: new Set(),
             };
+          }
           const assignee = t.assigned_to?.name || t.owner?.name;
           if (assignee && assignee !== "Unassigned")
             acc[key].assignees.add(assignee);
           return acc;
-        }, {}),
+        }, {})
       ).map((t) => ({
         title: t.title,
         status: t.status,
@@ -124,15 +134,14 @@ Generate a 3-section engineering stand-up summary for ${targetDateStr}:
 Data:
 Tasks: ${JSON.stringify(uniqueTasks)}
 Issues: ${JSON.stringify(issues.map((i) => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, text: d.content })))}
+Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name || d.sender?.name, text: d.content || d.text })))}
 `;
 
       let summaryText = await callOpenRouter(
         [{ role: "user", content: prompt }],
-        { maxTokens: 350, temperature: 0.1 },
+        { maxTokens: 350, temperature: 0.1 }
       );
 
-      // Fallback if AI fails
       if (!summaryText) {
         const taskLines = uniqueTasks
           .map((t) => `- **${t.title}** (${t.status})`)
@@ -143,7 +152,6 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
         summaryText = `📌 **Tasks Activity**\n${taskLines || "- None"}\n\n🐞 **Issues & Bugs**\n${issueLines || "- None"}\n\n💬 **General Discussions**\n- ${discussions.length} messages.`;
       }
 
-      // Save/Overwrite the cache in MongoDB
       const updatedDoc = await DailySummary.findOneAndUpdate(
         { date: targetDateStr },
         {
@@ -153,7 +161,7 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
           discussions_count: discussions.length,
           is_stale: false,
         },
-        { upsert: true, new: true },
+        { upsert: true, returnDocument: 'after' }
       );
 
       return res.json({
@@ -188,9 +196,6 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  /**
-   * Pull recent Slack channel history, process messages, return fresh dashboard payload.
-   */
   router.post("/slack/sync", async (req, res, next) => {
     try {
       if (!messageProcessor) {
@@ -220,7 +225,7 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  router.get('/slack/channels', async (_req, res, next) => {
+  router.get("/slack/channels", async (_req, res, next) => {
     try {
       const client = createSlackClient();
       const rawChannels = await listChannels(client);
@@ -229,7 +234,7 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
         id: ch.id,
         name: `#${ch.name}`,
         members: ch.num_members || 4,
-        status: 'Bot in channel',
+        status: "Bot in channel",
       }));
 
       res.json({ channels });
@@ -238,23 +243,21 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  router.get('/tasks', async (req, res, next) => {
+  router.get("/tasks", async (req, res, next) => {
     try {
       const filter = {};
 
-      // Handle status filter: if user explicitly requests a status, use it; 
-      // otherwise, exclude completed/done tasks by default.
       if (req.query.status) {
         filter.status = req.query.status;
       } else {
-        filter.status = { $nin: ['done', 'completed', 'Complete', 'Done', 'COMPLETE', 'DONE'] };
-        
-        // Also exclude tasks where the title explicitly ends with or indicates completion
+        filter.status = {
+          $nin: ["done", "completed", "Complete", "Done", "COMPLETE", "DONE"],
+        };
         filter.title = { $not: /(- completed|- done| - done| - completed)$/i };
       }
 
       if (req.query.priority) filter.priority = req.query.priority;
-      
+
       if (req.query.assignee) {
         filter.$or = [
           { "assigned_to.id": req.query.assignee },
@@ -269,9 +272,7 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  //test route for checking the task-list manually.
-
-  router.all('/slack/standup-briefing', async (req, res) => {
+  router.all("/slack/standup-briefing", async (req, res) => {
     try {
       const { team, userId, hours, meetingTime } = { ...req.query, ...req.body };
 
@@ -289,27 +290,64 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
   });
 
   router.get("/tasks/:id", async (req, res, next) => {
-  router.patch('/tasks/:id', async (req, res, next) => {
     try {
-      const { status } = req.body;
-      let updateData = { ...req.body, updated_time: new Date() };
-
-      // Check if status is completed to trigger the 1-month (30 days) expiration countdown
-      if (status === 'done' || status === 'completed') {
-        updateData.completed_at = new Date();
-      } else if (status) {
-        updateData.completed_at = null; // Clear if reactivated or changed to active state
-      }
-
-      // Query supporting both custom task_id and MongoDB default _id
       const query = {
         $or: [
           { task_id: req.params.id },
-          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null }
-        ]
+          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+        ],
+      };
+      const task = await Task.findOne(query).lean();
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      res.json(task);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.patch("/tasks/:id", async (req, res, next) => {
+    try {
+      const { status } = req.body;
+      const allowed = [
+        "title",
+        "description",
+        "priority",
+        "status",
+        "due_date",
+        "blocked_reason",
+        "owner",
+        "assigned_to",
+      ];
+
+      const updateData = { updated_time: new Date() };
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) updateData[key] = req.body[key];
+      }
+
+      if (updateData.due_date) {
+        updateData.due_date = new Date(updateData.due_date);
+        updateData.due_date_pending = false;
+      }
+      if (updateData.blocked_reason) {
+        updateData.block_reason_pending = false;
+      }
+
+      if (status === "done" || status === "completed") {
+        updateData.completed_at = new Date();
+      } else if (status) {
+        updateData.completed_at = null;
+      }
+
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+        ],
       };
 
-      const updatedTask = await Task.findOneAndUpdate(query, updateData, { new: true });
+      const updatedTask = await Task.findOneAndUpdate(query, updateData, {
+        returnDocument: 'after',
+      });
 
       if (!updatedTask) return res.status(404).json({ error: "Task not found" });
       res.json(updatedTask);
@@ -340,139 +378,6 @@ Discussions: ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name, 
     }
   });
 
-  // GET /api/discussions/daily-summary
-  router.get("/discussions/daily-summary", async (req, res) => {
-    try {
-      const targetDateStr =
-        req.query.date || new Date().toISOString().split("T")[0];
-
-      const [year, month, day] = targetDateStr.split("-").map(Number);
-      if (!year || !month || !day) {
-        return res
-          .status(400)
-          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-      }
-
-      const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-
-      const [tasks, issues, discussions] = await Promise.all([
-        Task.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { due_date: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["TODO", "PROCESSING", "BLOCKED"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Issue.find({
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["OPEN", "HOLD"] } },
-          ],
-        })
-          .lean()
-          .catch(() => []),
-
-        Discussion.find({
-          timestamp: { $gte: startOfDay, $lte: endOfDay },
-          channel: { $ne: "daily-wrapup" },
-        })
-          .lean()
-          .catch(() => []),
-      ]);
-
-      if (!tasks.length && !issues.length && !discussions.length) {
-        return res.json({
-          date: targetDateStr,
-          summary: `No activity recorded for ${targetDateStr}.`,
-          tasks: [],
-          issues: [],
-          discussions: [],
-        });
-      }
-
-      // --- FAST PRE-PROCESSING (IN-MEMORY DEDUPLICATION) ---
-      // Ignore trivial entries
-      const ignoreList = ["go for break", "break", "test"];
-      const filteredTasks = tasks.filter(
-        (t) =>
-          !ignoreList.some((term) =>
-            (t.title || "").toLowerCase().includes(term),
-          ),
-      );
-
-      // Group duplicate titles to cut down prompt token count
-      const uniqueTasks = Object.values(
-        filteredTasks.reduce((acc, t) => {
-          const key = (t.title || "").toLowerCase().trim();
-          if (!acc[key]) {
-            acc[key] = {
-              title: t.title,
-              status: t.status,
-              assignees: new Set(),
-              count: 0,
-            };
-          }
-          acc[key].count += 1;
-          const assignee = t.assigned_to?.name || t.owner?.name;
-          if (assignee && assignee !== "Unassigned")
-            acc[key].assignees.add(assignee);
-          return acc;
-        }, {}),
-      ).map((t) => ({
-        title: t.title,
-        status: t.status,
-        assignees: Array.from(t.assignees).join(", ") || "Unassigned",
-        occurrences: t.count,
-      }));
-
-      // --- COMPACT LLM PROMPT ---
-      const prompt = `
-Generate a quick 3-section engineering stand-up summary for ${targetDateStr}.
-Synthesize the items below into clean, bulleted points.
-
-1. 📌 **Tasks Activity**
-2. 🐞 **Issues & Bugs**
-3. 💬 **General Discussions**
-
-Data:
-Tasks (${uniqueTasks.length} unique items): ${JSON.stringify(uniqueTasks)}
-Issues (${issues.length}): ${JSON.stringify(issues.map((i) => ({ title: i.title, priority: i.priority, status: i.status })))}
-Discussions (${discussions.length}): ${JSON.stringify(discussions.map((d) => ({ author: d.author?.name || d.sender?.name, text: d.content || d.text })))}
-
-Keep output concise. Emojis and bullet points only.
-`;
-
-      // Reduced maxTokens from 700 to 350 for faster streaming/response time
-      const summaryText = await callOpenRouter(
-        [{ role: "user", content: prompt }],
-        { maxTokens: 350, temperature: 0.1 },
-      );
-
-      res.json({
-        date: targetDateStr,
-        summary: summaryText,
-        tasks,
-        issues,
-        discussions,
-      });
-    } catch (err) {
-      console.error("[daily-summary error]:", err);
-      res.json({
-        date: req.query.date,
-        summary:
-          "📌 **Summary Status**\n- Unable to process summary for this date.",
-        tasks: [],
-        issues: [],
-        discussions: [],
-      });
-    }
-  });
   router.get("/discussions", async (_req, res, next) => {
     try {
       const discussions = await Discussion.find()
@@ -485,9 +390,7 @@ Keep output concise. Emojis and bullet points only.
     }
   });
 
-  /**
-   * Stateless parse endpoint — returns structured JSON without persistence.
-   */
+
   router.post(
     "/parse",
     body("text").isString().notEmpty(),
@@ -517,12 +420,9 @@ Keep output concise. Emojis and bullet points only.
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
 
-  /**
-   * Full process endpoint — parse + persist + notifications.
-   */
   router.post(
     "/messages/process",
     body("text").isString().notEmpty(),
@@ -553,42 +453,8 @@ Keep output concise. Emojis and bullet points only.
       } catch (err) {
         next(err);
       }
-    },
-  );
-
-  router.patch("/tasks/:id", async (req, res, next) => {
-    try {
-      const allowed = [
-        "title",
-        "description",
-        "priority",
-        "status",
-        "due_date",
-        "blocked_reason",
-        "owner",
-        "assigned_to",
-      ];
-      const $set = {};
-      for (const key of allowed) {
-        if (req.body[key] !== undefined) $set[key] = req.body[key];
-      }
-      if ($set.due_date) {
-        $set.due_date = new Date($set.due_date);
-        $set.due_date_pending = false;
-      }
-      if ($set.blocked_reason) $set.block_reason_pending = false;
-
-      const task = await Task.findOneAndUpdate(
-        { task_id: req.params.id },
-        { $set },
-        { new: true },
-      );
-      if (!task) return res.status(404).json({ error: "Task not found" });
-      res.json(task);
-    } catch (err) {
-      next(err);
     }
-  });
+  );
 
   return router;
 }

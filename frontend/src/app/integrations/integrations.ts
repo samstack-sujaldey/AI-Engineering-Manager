@@ -1,8 +1,8 @@
-import { Component, OnInit, inject } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
 import { PageHeaderComponent } from '../shared/page-header';
 import { DashboardService } from '../services/dashboard.service';
 import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 
 interface Channel {
   id: string;
@@ -12,19 +12,39 @@ interface Channel {
 }
 
 interface SyncSummary {
-  workspace: string;
-  bot_user: string;
-  channels_scanned: number;
-  messages_seen: number;
-  messages_processed: number;
-  messages_skipped: number;
-  created: { tasks: number; issues: number; discussions: number };
+  workspace?: string;
+  bot_user?: string;
+  channels_scanned?: number;
+  messages_seen?: number;
+  messages_processed?: number;
+  messagesProcessed?: number;
+  messages_skipped?: number;
+  messagesCount?: number;
+  created?: { tasks: number; issues: number; discussions: number };
+  tasksExtracted?: number;
+  issuesExtracted?: number;
+  tasks_count?: number;
+  tasksCount?: number;
+  issues_count?: number;
+  issuesCount?: number;
+  tasks?: any[];
+  issues?: any[];
+  messages?: any[];
+  data?: {
+    tasks?: any[];
+    issues?: any[];
+    messages?: any[];
+  };
+  summary?: any;
+  result?: any;
+  results?: any;
+  [key: string]: any;
 }
 
 @Component({
   selector: 'app-integrations',
   standalone: true,
-  imports: [CommonModule, PageHeaderComponent],
+  imports: [PageHeaderComponent],
   template: `
     <app-page-header
       title="Integrations"
@@ -48,6 +68,7 @@ interface SyncSummary {
             <span class="channels-title">Channels</span>
             <button class="refresh-btn" (click)="fetchSlackChannels()">Refresh</button>
           </div>
+
           <table class="channels-table">
             <thead>
               <tr>
@@ -58,36 +79,64 @@ interface SyncSummary {
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let channel of channels">
-                <td class="channel-name">{{ channel.name }}</td>
-                <td>{{ channel.members }}</td>
-                <td class="channel-status">{{ channel.status }}</td>
-                <td class="action-cell">
-                  <button
-                    class="run-pipeline-btn"
-                    (click)="runPipeline(channel)"
-                    [disabled]="loadingChannelId === channel.id"
-                  >
-                    {{ loadingChannelId === channel.id ? 'Syncing...' : 'Run Pipeline' }}
-                  </button>
-                </td>
-              </tr>
+              @for (channel of channels; track channel.id) {
+                <tr>
+                  <td class="channel-name">#{{ channel.name ? channel.name.replace('#', '') : channel.id }}</td>
+                  <td>{{ channel.members }}</td>
+                  <td class="channel-status">{{ channel.status }}</td>
+                  <td class="action-cell">
+                    <button
+                      class="run-pipeline-btn"
+                      (click)="runPipeline(channel)"
+                      [disabled]="loadingChannelId === channel.id"
+                    >
+                      {{ loadingChannelId === channel.id ? 'Syncing...' : 'Run Pipeline' }}
+                    </button>
+                  </td>
+                </tr>
+              }
+
+              @if (channels.length === 0) {
+                <tr>
+                  <td colspan="4" style="text-align: center; color: #888; padding: 20px;">
+                    No channels found. Click "Refresh" to load channels.
+                  </td>
+                </tr>
+              }
             </tbody>
           </table>
 
-          <div
-            *ngIf="dashService.syncInfo()"
-            style="margin-top: 15px; color: #27ae60; font-size: 13px;"
-          >
-            {{ dashService.syncInfo() }}
-          </div>
-
-          <div *ngIf="lastSyncSummary" class="pipeline-success-bar">
-            <span class="green-dot"></span>
-            <div>
-              <strong>Pipeline completely run!</strong> Scanned {{ lastSyncSummary.channels_scanned }} channel(s), inspected <strong>{{ lastSyncSummary.messages_seen }}</strong> messages (Processed: {{ lastSyncSummary.messages_processed }}, Tasks created: {{ lastSyncSummary.created.tasks }}).
+          <!-- Legacy / Global Sync Info -->
+          @if (dashService.syncInfo()) {
+            <div style="margin-top: 15px; color: #27ae60; font-size: 13px;">
+              {{ dashService.syncInfo() }}
             </div>
-          </div>
+          }
+
+          <!-- 🟢 Success Extraction Summary Banner -->
+          @if (lastSyncSummary) {
+            <div class="pipeline-success-bar">
+              <span class="green-dot"></span>
+              <div class="summary-text">
+                <strong>Pipeline completed for {{ lastSyncedChannelName ? '#' + lastSyncedChannelName : 'channel' }}!</strong>
+                <span>
+                  Extracted 
+                  <strong>{{ getTaskCount() }} tasks</strong> and 
+                  <strong>{{ getIssueCount() }} issues</strong>. 
+                  ({{ getProcessedMessagesCount() }} messages processed).
+                </span>
+              </div>
+              <button class="close-summary-btn" (click)="lastSyncSummary = null">✕</button>
+            </div>
+          }
+
+          <!-- ⚠️ Error Banner (If API Fails) -->
+          @if (errorMessage) {
+            <div class="pipeline-error-bar">
+              <span>⚠️ <strong>Error for #{{ lastSyncedChannelName }}:</strong> {{ errorMessage }}</span>
+              <button class="close-summary-btn" (click)="errorMessage = null">✕</button>
+            </div>
+          }
         </div>
       </div>
     </div>
@@ -198,6 +247,7 @@ interface SyncSummary {
         font-size: 13px;
         font-weight: 500;
         cursor: pointer;
+        transition: background 0.2s;
       }
 
       .run-pipeline-btn:hover {
@@ -213,14 +263,39 @@ interface SyncSummary {
         margin-top: 20px;
         padding: 12px 16px;
         background-color: #f0fdf4;
+        border: 1px solid #bbf7d0;
         border-left: 4px solid #22c55e;
-        border-radius: 4px;
+        border-radius: 6px;
         color: #166534;
         font-size: 13px;
         display: flex;
         align-items: center;
-        gap: 10px;
+        justify-content: space-between;
+        gap: 12px;
         animation: fadeIn 0.3s ease-in-out;
+      }
+
+      .pipeline-error-bar {
+        margin-top: 20px;
+        padding: 12px 16px;
+        background-color: #fef2f2;
+        border: 1px solid #fecaca;
+        border-left: 4px solid #ef4444;
+        border-radius: 6px;
+        color: #991b1b;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        animation: fadeIn 0.3s ease-in-out;
+      }
+
+      .summary-text {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
       }
 
       .green-dot {
@@ -230,6 +305,19 @@ interface SyncSummary {
         border-radius: 50%;
         display: inline-block;
         flex-shrink: 0;
+      }
+
+      .close-summary-btn {
+        background: none;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        font-size: 14px;
+        opacity: 0.6;
+      }
+
+      .close-summary-btn:hover {
+        opacity: 1;
       }
 
       @keyframes fadeIn {
@@ -242,10 +330,13 @@ interface SyncSummary {
 export class IntegrationsComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
+  cdr = inject(ChangeDetectorRef);
 
   channels: Channel[] = [];
   loadingChannelId: string | null = null;
   lastSyncSummary: SyncSummary | null = null;
+  lastSyncedChannelName: string | null = null;
+  errorMessage: string | null = null;
 
   ngOnInit() {
     this.fetchSlackChannels();
@@ -253,8 +344,9 @@ export class IntegrationsComponent implements OnInit {
 
   async fetchSlackChannels() {
     try {
-      const data: any = await this.http.get('/api/slack/channels').toPromise();
-      this.channels = data || [];
+      const data: any = await firstValueFrom(this.http.get('/api/slack/channels'));
+      this.channels = Array.isArray(data) ? data : (data?.channels || []);
+      this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to fetch Slack channels:', err);
     }
@@ -262,13 +354,149 @@ export class IntegrationsComponent implements OnInit {
 
   async runPipeline(channel: Channel) {
     this.loadingChannelId = channel.id;
+    this.lastSyncSummary = null;
+    this.errorMessage = null;
+
+    // Clean channel name to prevent double '#' in UI banners
+    const cleanName = channel.name ? channel.name.replace(/^#+/, '') : channel.id;
+    this.lastSyncedChannelName = cleanName;
+
+    this.cdr.detectChanges();
+
     try {
-      const summary: any = await this.http.post(`/api/slack/pipeline/${channel.id}`, {}).toPromise();
+      const summary: any = await firstValueFrom(
+        this.http.post(`/api/slack/pipeline/${encodeURIComponent(channel.id)}`, {
+          channel_id: channel.id,
+          channel_name: cleanName,
+          limit: 50
+        })
+      );
+
+      // 🔍 Open Browser Console (F12) to inspect exact field names from backend
+      console.log('=== SLACK PIPELINE RAW RESPONSE ===', summary);
+
       this.lastSyncSummary = summary;
-    } catch (err) {
+
+      // Trigger app-wide dashboard data reload
+      const service: any = this.dashService;
+      if (typeof service.refreshData === 'function') {
+        service.refreshData();
+      } else if (typeof service.fetchData === 'function') {
+        service.fetchData();
+      }
+
+    } catch (err: any) {
       console.error('Pipeline execution failed:', err);
+
+      this.errorMessage =
+        err?.error?.message ||
+        err?.error?.error ||
+        err?.message ||
+        'Failed to complete sync process. Please check Slack bot permissions.';
     } finally {
       this.loadingChannelId = null;
+      this.cdr.detectChanges();
     }
+  }
+
+  getTaskCount(): number {
+    if (!this.lastSyncSummary) return 0;
+    const s: any = this.lastSyncSummary;
+
+    // Direct numerical count properties
+    const count =
+      s.created?.tasks ??
+      s.tasksExtracted ??
+      s.tasks_count ??
+      s.tasksCount ??
+      s.task_count ??
+      s.extracted_tasks_count ??
+      s.summary?.tasks ??
+      s.summary?.tasks_count ??
+      s.result?.tasks_count ??
+      s.results?.tasks_count;
+
+    if (typeof count === 'number') return count;
+
+    // Fallback: Array length checks
+    const taskArray =
+      s.tasks ||
+      s.extracted_tasks ||
+      s.parsed_tasks ||
+      s.tasks_created ||
+      s.data?.tasks ||
+      s.data?.extracted_tasks ||
+      s.result?.tasks ||
+      s.results?.tasks ||
+      s.summary?.tasks;
+
+    return Array.isArray(taskArray) ? taskArray.length : 0;
+  }
+
+  getIssueCount(): number {
+    if (!this.lastSyncSummary) return 0;
+    const s: any = this.lastSyncSummary;
+
+    // Direct numerical count properties
+    const count =
+      s.created?.issues ??
+      s.issuesExtracted ??
+      s.issues_count ??
+      s.issuesCount ??
+      s.issue_count ??
+      s.extracted_issues_count ??
+      s.summary?.issues ??
+      s.summary?.issues_count ??
+      s.result?.issues_count ??
+      s.results?.issues_count;
+
+    if (typeof count === 'number') return count;
+
+    // Fallback: Array length checks
+    const issueArray =
+      s.issues ||
+      s.extracted_issues ||
+      s.parsed_issues ||
+      s.issues_created ||
+      s.data?.issues ||
+      s.data?.extracted_issues ||
+      s.result?.issues ||
+      s.results?.issues ||
+      s.summary?.issues;
+
+    return Array.isArray(issueArray) ? issueArray.length : 0;
+  }
+
+  getProcessedMessagesCount(): number {
+    if (!this.lastSyncSummary) return 0;
+    const s: any = this.lastSyncSummary;
+
+    // Direct numerical count properties
+    const count =
+      s.messages_processed ??
+      s.messagesProcessed ??
+      s.messages_seen ??
+      s.messagesSeen ??
+      s.messages_scanned ??
+      s.messagesCount ??
+      s.total_messages ??
+      s.messages_analyzed ??
+      s.summary?.messages_processed ??
+      s.summary?.total_messages ??
+      s.result?.messages_processed ??
+      s.results?.messages_processed;
+
+    if (typeof count === 'number') return count;
+
+    // Fallback: Array length checks
+    const msgArray =
+      s.messages ||
+      s.raw_messages ||
+      s.slack_messages ||
+      s.data?.messages ||
+      s.result?.messages ||
+      s.results?.messages;
+
+    return Array.isArray(msgArray) ? msgArray.length : 0;
   }
 }

@@ -114,74 +114,42 @@ class MessageProcessor {
       }
     }
 
-    if (
-      parsed.classification === "ISSUE" &&
-      parsed.action === "CREATE_ISSUE" &&
-      parsed.issue
-    ) {
-      const sim = await findSimilarIssue(
-        parsed.issue.title,
-        parsed.issue.description,
-        workspace_id,
-        channel,
-      );
-      if (sim) {
-        parsed.action = "UPDATE_ISSUE";
-        parsed.issue_created = false;
-        parsed.issue_updated = true;
-        parsed.issue.id = sim.issue.issue_id;
-        existing_issue = sim.issue;
-      }
-    }
+		if (
+			parsed.classification === "ISSUE" &&
+			parsed.action === "CREATE_ISSUE" &&
+			parsed.issue
+		) {
+			const sim = await findSimilarIssue(
+				parsed.issue.title,
+				parsed.issue.description,
+				workspace_id,
+				channel,
+			);
+			if (sim) {
+				parsed.action = "UPDATE_ISSUE";
+				parsed.issue_created = false;
+				parsed.issue_updated = true;
+				parsed.issue.id = sim.issue.issue_id;
+				existing_issue = sim.issue;
+				parsed.meta = {
+					...parsed.meta,
+					similarity_score: sim.score,
+					deduped: true,
+				};
+			}
+		}
 
-    // Step 2: AI Enhancement
-    let enhanced = parsed;
-
-    if (!alreadyAnalyzed) {
-      let attachments = [];
-      if (
-        local_attachments.length &&
-        shouldAnalyze({ rawMessage: text, parserResult: parsed, attachments: local_attachments })
-      ) {
-        attachments = await extractAttachments(local_attachments);
-      }
-
-      enhanced = await analyzeSlackMessage({
-        rawMessage: text,
-        parserResult: parsed,
-        existingTask: existing_task ? this.taskSnapshot(existing_task) : null,
-        existingIssue: existing_issue ? this.issueSnapshot(existing_issue) : null,
-        threadContext: [],
-        attachments,
-      });
-    }
-
-    // Step 3: Persist and cleanup attachments
-    let result;
-    try {
-      result = await this.persist(
-        {
-          ...enhanced,
-          local_attachments,
-        },
-        {
-          text,
-          sender,
-          channel,
-          thread_id: threadRoot,
-          workspace_id,
-          team,
-          message_ts,
-          text_hash: textHash,
-          existing_task,
-          existing_issue,
-        },
-      );
-    } finally {
-      await this.cleanupAttachments(local_attachments);
-    }
-
-		await cleanupCompletedWork();
+		const result = await this.persist(parsed, {
+			text,
+			sender,
+			channel,
+			thread_id: threadRoot,
+			workspace_id,
+			team,
+			message_ts,
+			existing_task,
+			existing_issue,
+		});
 
     if (this.io && !quiet) {
       this.io.emit("dashboard:update", {
@@ -478,22 +446,30 @@ class MessageProcessor {
     return { ...parsed, acknowledgement: true };
   }
 
-  async createDiscussionRecord(parsed, ctx, senderRef, links) {
+    async createDiscussionRecord(parsed, ctx, senderRef, links) {
+    // 🟢 Safe fallback logic: Guarantees content is never empty or ""
+    const safeContent =
+      parsed.discussion?.content?.trim() ||
+      parsed.content?.trim() ||
+      ctx?.text?.trim() ||
+      "Slack discussion update";
+
     return Discussion.create({
       discussion_id: newId("dsc"),
-      content: parsed.discussion?.content || ctx.text,
+      content: safeContent, // 👈 Fixes Mongoose validation error
       author: senderRef,
       channel: ctx.channel,
-      thread: ctx.thread_id,
+      thread: ctx.thread_id || ctx.thread,
       workspace_id: ctx.workspace_id,
       team: ctx.team,
       task_id: links.task_id,
       issue_id: links.issue_id,
-      slack_message_ts: ctx.message_ts,
+      slack_message_ts: ctx.message_ts || ctx.ts, // 👈 Checks both message_ts and ts
       mentioned_users: parsed.mentioned_users || [],
       timestamp: new Date(),
     });
   }
+
 
   async dispatchNotifications(list = [], ids = {}) {
     if (!this.notifications || !list.length) return;
