@@ -1,6 +1,3 @@
-const { shouldAnalyze } = require("./shouldAnalyze");
-const { parseGeminiResponse, mergeParserResult } = require("./responseParser");
-const { buildOptimizedPrompt } = require("./prompt");
 const fs = require("fs/promises");
 const dotenv = require("dotenv");
 
@@ -32,7 +29,7 @@ function sanitizeLlmOutput(text) {
   // 1. Remove explicit <thought>...</thought> blocks if present
   cleaned = cleaned.replace(/<thought>[\s\S]*?<\/thought>/gi, "").trim();
 
-  // 2. If response includes a daily summary heading, slice off any reasoning preamble before it
+  // 2. Slice off any preamble before the daily summary heading if present
   const headingIndex = cleaned.search(/1\.\s*📌|📌\s*\*\*Tasks/i);
   if (headingIndex !== -1) {
     cleaned = cleaned.substring(headingIndex).trim();
@@ -42,18 +39,18 @@ function sanitizeLlmOutput(text) {
 }
 
 /**
- * Calls OpenRouter's chat completions endpoint with timeout and output cleaning.
+ * Calls OpenRouter's chat completions endpoint with configurable model and timeout.
  */
-async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2 } = {}) {
+async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model } = {}) {
   if (!OPENROUTER_API_KEY) {
     throw new Error("OPENROUTER_API_KEY is not configured in backend/.env");
   }
 
-  const modelToUse = process.env.OPENROUTER_MODEL || "openrouter/free";
+  const defaultModel = process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free";
+  const modelToUse = model || defaultModel;
 
-  // Strict 5-second timeout controller to prevent dashboard freezing
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(OPENROUTER_URL, {
@@ -84,18 +81,16 @@ async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2 } =
     const data = await res.json();
     const rawText = data?.choices?.[0]?.message?.content;
 
-    // Handle empty message response
     if (!rawText) {
       console.warn("[OpenRouter Empty Content]:", JSON.stringify(data, null, 2));
       return null;
     }
 
-    // Sanitize response to strip chain-of-thought / internal analysis
     return sanitizeLlmOutput(rawText);
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === "AbortError") {
-      console.warn("[callOpenRouter]: Request timed out after 5s.");
+      console.warn(`[callOpenRouter]: Request timed out after ${timeoutMs / 1000}s.`);
     } else {
       console.error("[callOpenRouter Failure]:", err.message);
     }
@@ -116,6 +111,9 @@ async function analyzeImage(fileOrPath, mimeTypeArg) {
 
   const imageBuffer = await fs.readFile(localPath);
   const base64 = imageBuffer.toString("base64");
+
+  // Force a multimodal vision model for OpenRouter
+  const visionModel = process.env.OPENROUTER_VISION_MODEL || "openrouter/free";
 
   const rawResponse = await callOpenRouter(
     [
@@ -145,59 +143,23 @@ Return ONLY valid JSON in this exact structure without markdown formatting:
         ],
       },
     ],
-    { maxTokens: 500, temperature: 0.2 },
+    {
+      maxTokens: 500,
+      temperature: 0.2,
+      timeoutMs: 25000,
+      model: visionModel,
+    },
   );
 
-  // Clean markdown backticks before JSON parsing
+  if (!rawResponse) {
+    throw new Error("OpenRouter Vision API returned an empty or timed-out response.");
+  }
+
   const jsonText = cleanJsonResponse(rawResponse);
   return JSON.parse(jsonText);
 }
 
-async function analyzeSlackMessage({
-  rawMessage,
-  parserResult,
-  existingTask = null,
-  existingIssue = null,
-  threadContext = [],
-  attachments = [],
-}) {
-  try {
-    if (
-      !shouldAnalyze({
-        rawMessage,
-        parserResult,
-        attachments,
-      })
-    ) {
-      return parserResult;
-    }
-
-    const prompt = buildOptimizedPrompt({
-      rawMessage,
-      parserResult,
-      existingTask,
-      existingIssue,
-      threadContext,
-      attachments,
-    });
-
-    const text = await callOpenRouter(
-      [{ role: "user", content: prompt }],
-      { maxTokens: 500, temperature: 0.1 },
-    );
-
-    if (!text) return parserResult;
-
-    const aiResult = parseGeminiResponse(text, parserResult);
-    return mergeParserResult(parserResult, aiResult);
-  } catch (error) {
-    console.error("OpenRouter Error:", error);
-    return parserResult;
-  }
-}
-
 module.exports = {
-  analyzeSlackMessage,
   analyzeImage,
   callOpenRouter,
 };

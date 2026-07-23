@@ -3,13 +3,17 @@ const path = require("path");
 const mammoth = require("mammoth");
 const XLSX = require("xlsx");
 const { parse } = require("csv-parse/sync");
+const NodeCache = require("node-cache");
 
-// FIXED: Correct relative import path to gemini.js
+// Correct relative import path to gemini.js
 const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/gemini.js");
 const {
   MAX_ATTACHMENT_SIZE,
   EXTRACTION_TIMEOUT,
 } = require("../constants/attachment.constant.js");
+
+// Initialize In-Memory Cache: Auto-expire (TTL) items after 1 hour (3600s)
+const attachmentCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
 
 /**
  * Read plain text, log, xml, html files
@@ -216,24 +220,53 @@ async function extractPresentation(file) {
 }
 
 /**
- * Image analysis via OpenRouter / Gemini Vision
+ * Image analysis via OpenRouter / Gemini Vision with In-Memory Caching & Immediate Disk Cleanup
  */
 async function analyzeImage(file) {
   validateAttachment(file);
-  const result = await withTimeout(
-    analyzeImageWithGemini(file.localPath, file.mimeType),
-    EXTRACTION_TIMEOUT,
-  );
 
-  return {
-    extracted: true,
-    type: "IMAGE",
-    content: result,
-    metadata: {
-      fileName: file.fileName,
-    },
-    error: null,
-  };
+  // Generate a unique cache key
+  const cacheKey = `attachment_analysis_${file.fileId || file.fileName}`;
+
+  // 1. Check In-Memory Cache
+  const cachedAnalysis = attachmentCache.get(cacheKey);
+  if (cachedAnalysis) {
+    console.log(`[Cache Hit]: Returning in-memory analysis for ${file.fileName}`);
+    return {
+      extracted: true,
+      type: "IMAGE",
+      content: cachedAnalysis,
+      metadata: { fileName: file.fileName, cached: true },
+      error: null,
+    };
+  }
+
+  // 2. Cache Miss: Run Vision Analysis
+  console.log(`[Cache Miss]: Analyzing image attachment ${file.fileName}...`);
+  try {
+    const result = await withTimeout(
+      analyzeImageWithGemini(file.localPath, file.mimeType),
+      EXTRACTION_TIMEOUT
+    );
+
+    // 3. Store result in Cache
+    attachmentCache.set(cacheKey, result);
+
+    // 4. Immediately delete local temporary disk file
+    await fs.unlink(file.localPath).catch(() => {});
+
+    return {
+      extracted: true,
+      type: "IMAGE",
+      content: result,
+      metadata: { fileName: file.fileName, cached: false },
+      error: null,
+    };
+  } catch (err) {
+    // Ensure file is deleted even if vision call fails
+    await fs.unlink(file.localPath).catch(() => {});
+    throw err;
+  }
 }
 
 /**
