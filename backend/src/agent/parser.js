@@ -723,24 +723,24 @@ async function parseMessage(input) {
 			acknowledgement: true,
 			task: linkingTask
 				? {
-						id: linkingTask.task_id || linkingTask.id,
-						title: linkingTask.title || "",
-						description: linkingTask.description || "",
-						priority: linkingTask.priority || "",
-						status: linkingTask.status || "",
-						due_date: linkingTask.due_date || "",
-						dependencies: linkingTask.dependencies || [],
-					}
+					id: linkingTask.task_id || linkingTask.id,
+					title: linkingTask.title || "",
+					description: linkingTask.description || "",
+					priority: linkingTask.priority || "",
+					status: linkingTask.status || "",
+					due_date: linkingTask.due_date || "",
+					dependencies: linkingTask.dependencies || [],
+				}
 				: null,
 			issue: linkingIssue
 				? {
-						id: linkingIssue.issue_id || linkingIssue.id,
-						title: linkingIssue.title || "",
-						status: linkingIssue.status || "",
-						priority: linkingIssue.priority || "",
-						root_cause: linkingIssue.root_cause || "",
-						blocked_reason: linkingIssue.blocked_reason || "",
-					}
+					id: linkingIssue.issue_id || linkingIssue.id,
+					title: linkingIssue.title || "",
+					status: linkingIssue.status || "",
+					priority: linkingIssue.priority || "",
+					root_cause: linkingIssue.root_cause || "",
+					blocked_reason: linkingIssue.blocked_reason || "",
+				}
 				: null,
 			notifications: [],
 			meta: { is_edit, needs_human_review: false },
@@ -984,71 +984,71 @@ function buildNotificationHints({
 
 	if (classification === "ISSUE") {
 		return notifications;
-	if (
-		classification === "TASK" &&
-		!dueDate &&
-		owner &&
-		owner.id &&
-		status !== "COMPLETED"
-	) {
-		notifications.push({
-			type: "MISSING_DUE_DATE",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message: `I couldn't determine the due date for your task '${title}'. Please reply with the due date.`,
-			immediate: true,
-		});
-	}
-
-	if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		!blockedReason &&
-		owner &&
-		owner.id
-	) {
-		notifications.push({
-			type: "MISSING_BLOCK_REASON",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message:
-				"Your task is marked as blocked. Please tell me what is blocking it.",
-			immediate: true,
-		});
-	}
-
-	if (classification === "ISSUE" && mentionedUsers.length > 0) {
-		const dependent =
-			mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
-
-		if (dependent && dependent.id && dependent.id !== owner?.id) {
+		if (
+			classification === "TASK" &&
+			!dueDate &&
+			owner &&
+			owner.id &&
+			status !== "COMPLETED"
+		) {
 			notifications.push({
-				type: "DEPENDENT_USER",
-				target_user_id: dependent.id,
-				target_user_name:
-					dependent.name || dependent.display_name || "",
-				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"} reported an issue ('${title}') and needs to connect with you. Please reply 'resolved' or 'done' in the original thread once it is fixed!`,
+				type: "MISSING_DUE_DATE",
+				target_user_id: owner.id,
+				target_user_name: owner.name || owner.display_name || "",
+				message: `I couldn't determine the due date for your task '${title}'. Please reply with the due date.`,
 				immediate: true,
-				expects_acknowledgement: true,
 			});
 		}
-	} else if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		/(waiting\s+(for|on)|blocked\s+by)\s+<?@?/i.test(text)
-	) {
-		const dependent =
-			mentionedUsers.find(
-				(u) =>
-					new RegExp(
-						u.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-						"i",
-					).test(text) ||
-					text
-						.toLowerCase()
-						.includes((u.display_name || "").toLowerCase()),
-			) || mentionedUsers[0];
 
+		if (
+			classification === "TASK" &&
+			status === "BLOCKED" &&
+			!blockedReason &&
+			owner &&
+			owner.id
+		) {
+			notifications.push({
+				type: "MISSING_BLOCK_REASON",
+				target_user_id: owner.id,
+				target_user_name: owner.name || owner.display_name || "",
+				message:
+					"Your task is marked as blocked. Please tell me what is blocking it.",
+				immediate: true,
+			});
+		}
+
+		if (classification === "ISSUE" && mentionedUsers.length > 0) {
+			const dependent =
+				mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
+
+			if (dependent && dependent.id && dependent.id !== owner?.id) {
+				notifications.push({
+					type: "DEPENDENT_USER",
+					target_user_id: dependent.id,
+					target_user_name:
+						dependent.name || dependent.display_name || "",
+					message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"} reported an issue ('${title}') and needs to connect with you. Please reply 'resolved' or 'done' in the original thread once it is fixed!`,
+					immediate: true,
+					expects_acknowledgement: true,
+				});
+			}
+		} else if (
+			classification === "TASK" &&
+			status === "BLOCKED" &&
+			/(waiting\s+(for|on)|blocked\s+by)\s+<?@?/i.test(text)
+		) {
+			const dependent =
+				mentionedUsers.find(
+					(u) =>
+						new RegExp(
+							u.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+							"i",
+						).test(text) ||
+						text
+							.toLowerCase()
+							.includes((u.display_name || "").toLowerCase()),
+				) || mentionedUsers[0];
+		}
 		if (dependent && dependent.id) {
 			notifications.push({
 				type: "DEPENDENT_USER",
