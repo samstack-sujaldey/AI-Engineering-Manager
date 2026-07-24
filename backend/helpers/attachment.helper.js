@@ -5,8 +5,8 @@ const XLSX = require("xlsx");
 const { parse } = require("csv-parse/sync");
 const NodeCache = require("node-cache");
 
-// Correct relative import path to gemini.js
-const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/gemini.js");
+// Correct relative import path to openai.js
+const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/openai.js");
 const {
   MAX_ATTACHMENT_SIZE,
   EXTRACTION_TIMEOUT,

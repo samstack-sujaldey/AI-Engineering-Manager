@@ -1,6 +1,6 @@
 /**
  * src/ai/prompt.js
- * Optimized prompt instructing Gemini to perform full message classification 
+ * Optimized prompt instructing Gemini to perform full message classification
  * and entity extraction.
  */
 function buildOptimizedPrompt({
@@ -11,10 +11,12 @@ function buildOptimizedPrompt({
   threadContext = [],
   attachments = [],
 }) {
-  const serializedAttachments = attachments.map((a, idx) => {
-    return `[Attachment #${idx + 1} - Type: ${a.type}, Name: ${a.fileName}]
-Content: ${typeof a.content === 'object' ? JSON.stringify(a.content).slice(0, 2000) : String(a.content || '').slice(0, 2000)}`;
-  }).join("\n\n");
+  const serializedAttachments = attachments
+    .map((a, idx) => {
+      return `[Attachment #${idx + 1} - Type: ${a.type}, Name: ${a.fileName}]
+Content: ${typeof a.content === "object" ? JSON.stringify(a.content).slice(0, 2000) : String(a.content || "").slice(0, 2000)}`;
+    })
+    .join("\n\n");
 
   return `
 You are an AI Engineering Manager bot reading incoming team messages from Slack.

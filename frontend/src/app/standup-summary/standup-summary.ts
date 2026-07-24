@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
@@ -14,7 +14,7 @@ import { PageHeaderComponent } from '../shared/page-header';
     <div class="standup-body">
       <div class="summary-container">
         
-        <!-- Top Control Bar with Calendar Picker and Sync Button -->
+        <!-- Top Control Bar with Calendar Picker -->
         <div class="control-header">
           <div class="header-left">
             <h2 class="summary-title">🗓 Daily Stand-up Digest</h2>
@@ -25,15 +25,6 @@ import { PageHeaderComponent } from '../shared/page-header';
           </div>
 
           <div class="header-right">
-            <!-- Sync / Refresh AI Summary Button -->
-            <button 
-              class="refresh-btn" 
-              [disabled]="isLoading || isRefreshing" 
-              (click)="onRefreshClick()">
-              <span *ngIf="!isRefreshing">🔄 Refresh AI Summary</span>
-              <span *ngIf="isRefreshing">⏳ Summarizing...</span>
-            </button>
-
             <!-- Calendar Picker -->
             <div class="calendar-picker-wrapper">
               <label for="summaryDate">Select Date:</label>
@@ -48,18 +39,31 @@ import { PageHeaderComponent } from '../shared/page-header';
           </div>
         </div>
 
-        <!-- Summary Display Panel -->
-        <div class="summary-card" *ngIf="!isLoading; else loadingState">
-          <div class="summary-text-box">
-            <div class="formatted-points" [innerHTML]="formattedSummaryHtml"></div>
+        <!-- Two-Section Display Grid -->
+        <div class="sections-grid" *ngIf="!isLoading; else loadingState">
+          
+          <!-- Section 1: Tasks Summary -->
+          <div class="summary-card-section">
+            <div class="section-card-header tasks-header">
+              <h3>📌 Tasks Summary</h3>
+              <span class="count-badge">{{ taskCount }}</span>
+            </div>
+            <div class="section-card-body">
+              <div class="formatted-points" [innerHTML]="tasksHtml"></div>
+            </div>
           </div>
 
-          <!-- Items Counter Badge Bar -->
-          <div class="stats-footer">
-            <span class="stat-tag">Tasks: {{ taskCount }}</span>
-            <span class="stat-tag">Issues: {{ issueCount }}</span>
-            <span class="stat-tag">Discussions: {{ discussionCount }}</span>
+          <!-- Section 2: Issues & Bugs Summary -->
+          <div class="summary-card-section">
+            <div class="section-card-header issues-header">
+              <h3>🚨 Issues & Bugs Summary</h3>
+              <span class="count-badge">{{ issueCount }}</span>
+            </div>
+            <div class="section-card-body">
+              <div class="formatted-points" [innerHTML]="issuesHtml"></div>
+            </div>
           </div>
+
         </div>
 
         <ng-template #loadingState>
@@ -130,31 +134,6 @@ import { PageHeaderComponent } from '../shared/page-header';
       border-radius: 4px;
     }
 
-    /* Sync Button Styling */
-    .refresh-btn {
-      background: #5b4fcf;
-      color: #ffffff;
-      border: none;
-      border-radius: 6px;
-      padding: 7px 14px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: background 0.2s ease, opacity 0.2s ease;
-    }
-
-    .refresh-btn:hover:not(:disabled) {
-      background: #4a3ebd;
-    }
-
-    .refresh-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
     .calendar-picker-wrapper {
       display: flex;
       align-items: center;
@@ -175,53 +154,70 @@ import { PageHeaderComponent } from '../shared/page-header';
       cursor: pointer;
     }
 
-    /* Main Summary Card */
-    .summary-card {
-      display: flex;
-      flex-direction: column;
+    /* Two-Section Grid Layout */
+    .sections-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 20px;
       flex: 1;
     }
 
-    .summary-text-box {
-      flex: 1;
+    .summary-card-section {
       background: #fafafd;
       border: 1px solid #eae6fb;
       border-radius: 8px;
-      padding: 20px;
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
-    .formatted-points {
-      font-size: 14.5px;
-      line-height: 1.8;
-      color: #2c2c3e;
+    .section-card-header {
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .tasks-header {
+      background: #f0edff;
+      color: #5b4fcf;
+      border-bottom: 1px solid #e2dbfc;
+    }
+
+    .issues-header {
+      background: #ffeaea;
+      color: #c0392b;
+      border-bottom: 1px solid #fcdada;
+    }
+
+    .section-card-header h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .count-badge {
+      background: rgba(0, 0, 0, 0.08);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .section-card-body {
+      padding: 16px;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: #333;
+      flex: 1;
+      overflow-y: auto;
+      max-height: 480px;
     }
 
     .formatted-points ::ng-deep strong {
       color: #1a1a2e;
-      font-size: 15px;
-      display: inline-block;
-      margin-top: 14px;
-      margin-bottom: 4px;
-    }
-
-    .formatted-points ::ng-deep strong:first-child {
-      margin-top: 0;
-    }
-
-    .stats-footer {
-      display: flex;
-      gap: 12px;
-      margin-top: 20px;
-    }
-
-    .stat-tag {
-      background: #f0edff;
-      color: #5b4fcf;
-      font-size: 12px;
       font-weight: 600;
-      padding: 6px 14px;
-      border-radius: 20px;
     }
 
     /* Loading Spinner */
@@ -257,41 +253,23 @@ export class StandupSummaryComponent implements OnInit {
   selectedDate: string = ''; // YYYY-MM-DD
   formattedDateDisplay: string = '';
 
-  currentSummary: string = '';
+  tasksHtml: string = '';
+  issuesHtml: string = '';
   taskCount: number = 0;
   issueCount: number = 0;
-  discussionCount: number = 0;
   lastSyncTime: Date | null = null;
 
   isLoading: boolean = false;
-  isRefreshing: boolean = false;
   loadingMessage: string = '';
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private cdRef: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     this.setDefaultToToday();
   }
 
-  /**
-   * Converts markdown returned by backend/LLM into clean HTML for rendering
-   */
-  get formattedSummaryHtml(): string {
-    if (!this.currentSummary) return '<em>No activity logged for this date.</em>';
-
-    return this.currentSummary
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/^- /gm, '• ')
-      .replace(/\n/g, '<br/>');
-  }
-
-  /**
-   * Sets default selected date to today's current date
-   */
   setDefaultToToday(): void {
     const today = new Date();
-
-    // Format YYYY-MM-DD for <input type="date">
     const year = today.getFullYear();
     const month = String(today.getMonth() + 1).padStart(2, '0');
     const day = String(today.getDate()).padStart(2, '0');
@@ -299,8 +277,7 @@ export class StandupSummaryComponent implements OnInit {
     this.selectedDate = `${year}-${month}-${day}`;
     this.updateFormattedDateDisplay(today);
     
-    // Initial fetch loads summary directly for today
-    this.fetchSummaryForDate(this.selectedDate, false);
+    this.fetchSummaryForDate(this.selectedDate);
   }
 
   onDateChange(): void {
@@ -310,12 +287,7 @@ export class StandupSummaryComponent implements OnInit {
     const dateObj = new Date(year, month - 1, day);
 
     this.updateFormattedDateDisplay(dateObj);
-    this.fetchSummaryForDate(this.selectedDate, false);
-  }
-
-  onRefreshClick(): void {
-    if (!this.selectedDate) return;
-    this.fetchSummaryForDate(this.selectedDate, true);
+    this.fetchSummaryForDate(this.selectedDate);
   }
 
   updateFormattedDateDisplay(dateObj: Date): void {
@@ -324,23 +296,18 @@ export class StandupSummaryComponent implements OnInit {
     this.formattedDateDisplay = `${dayName}, ${monthDay}`;
   }
 
-  fetchSummaryForDate(dateStr: string, forceRefresh: boolean = false): void {
-    if (forceRefresh) {
-      this.isRefreshing = true;
-      this.loadingMessage = `Re-analyzing new tasks & issues with AI for ${this.formattedDateDisplay}...`;
-    } else {
-      this.isLoading = true;
-      this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
-    }
+  fetchSummaryForDate(dateStr: string): void {
+    this.isLoading = true;
+    this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
+    this.cdRef.detectChanges();
 
-    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}&forceRefresh=${forceRefresh}`;
+    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}`;
 
     this.http.get<any>(url).subscribe({
       next: (res) => {
-        this.currentSummary = res.summary;
-        this.taskCount = res.tasks?.length || res.tasks_count || 0;
-        this.issueCount = res.issues?.length || res.issues_count || 0;
-        this.discussionCount = res.discussions?.length || res.discussions_count || 0;
+        this.parseSummaryIntoSections(res.summary);
+        this.taskCount = res.tasks_count || 0;
+        this.issueCount = res.issues_count || 0;
         
         if (res.last_updated_at) {
           this.lastSyncTime = new Date(res.last_updated_at);
@@ -349,14 +316,41 @@ export class StandupSummaryComponent implements OnInit {
         }
 
         this.isLoading = false;
-        this.isRefreshing = false;
+        this.cdRef.detectChanges();
       },
       error: (err) => {
         console.error('Failed to fetch summary:', err);
-        this.currentSummary = 'Unable to generate summary for this date.';
+        this.tasksHtml = '<em>Unable to load tasks for this date.</em>';
+        this.issuesHtml = '<em>Unable to load issues for this date.</em>';
         this.isLoading = false;
-        this.isRefreshing = false;
+        this.cdRef.detectChanges();
       }
     });
+  }
+
+  parseSummaryIntoSections(fullText: string): void {
+    if (!fullText) {
+      this.tasksHtml = 'No tasks recorded.';
+      this.issuesHtml = 'No issues recorded.';
+      return;
+    }
+
+    const taskMatch = fullText.match(/📌\s*\*\*Tasks Summary\*\*([\s\S]*?)(?=🚨\s*\*\*Issues\s*&\s*Bugs\s*Summary\*\*|$)/i);
+    const issueMatch = fullText.match(/🚨\s*\*\*Issues\s*&\s*Bugs\s*Summary\*\*([\s\S]*)$/i);
+
+    const rawTasks = taskMatch ? taskMatch[1] : 'No tasks recorded.';
+    const rawIssues = issueMatch ? issueMatch[1] : 'No issues recorded.';
+
+    this.tasksHtml = this.formatSectionContent(rawTasks);
+    this.issuesHtml = this.formatSectionContent(rawIssues);
+  }
+
+  formatSectionContent(text: string): string {
+    return text
+      .trim()
+      .replace(/^- /gm, '• ')
+      .replace(/^\s{2,}- /gm, '&nbsp;&nbsp;&nbsp;&nbsp;↳ ') // Indent sub-lines nicely
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br/>');
   }
 }

@@ -1,5 +1,5 @@
 const DailySummary = require('../models/DailySummary');
-const { callOpenRouter } = require('../ai/gemini');
+const { callOpenRouter } = require('../ai/openai');
 const { Task, Issue } = require('../models');
 
 let debounceTimer = null;

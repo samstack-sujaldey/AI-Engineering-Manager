@@ -1,10 +1,12 @@
 const fs = require("fs/promises");
 const dotenv = require("dotenv");
+const OpenAI = require("openai");
 
 dotenv.config();
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 /**
  * Safely strips Markdown code blocks (e.g. ```json ... ```) before JSON parsing
@@ -39,67 +41,55 @@ function sanitizeLlmOutput(text) {
 }
 
 /**
- * Calls OpenRouter's chat completions endpoint with configurable model and timeout.
+ * Calls OpenAI's chat completions endpoint with configurable model and timeout.
  */
-async function callOpenRouter(messages, { maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model } = {}) {
-  if (!OPENROUTER_API_KEY) {
-    throw new Error("OPENROUTER_API_KEY is not configured in backend/.env");
+async function callOpenAI(messages, { maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model } = {}) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not configured in backend/.env");
   }
 
-  const defaultModel = process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free";
+  const defaultModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
   const modelToUse = model || defaultModel;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "http://localhost",
-        "X-Title": process.env.OPENROUTER_APP_NAME || "AI Engineering Manager",
-      },
-      body: JSON.stringify({
+    const response = await openai.chat.completions.create(
+      {
         model: modelToUse,
-        messages,
+        messages: messages,
         max_tokens: maxTokens,
-        temperature,
-      }),
-    });
+        temperature: temperature,
+      },
+      {
+        signal: controller.signal,
+      }
+    );
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`[OpenRouter HTTP ${res.status} Error]:`, errText);
-      return null;
-    }
-
-    const data = await res.json();
-    const rawText = data?.choices?.[0]?.message?.content;
+    const rawText = response?.choices?.[0]?.message?.content;
 
     if (!rawText) {
-      console.warn("[OpenRouter Empty Content]:", JSON.stringify(data, null, 2));
+      console.warn("[OpenAI Empty Content]:", JSON.stringify(response, null, 2));
       return null;
     }
 
     return sanitizeLlmOutput(rawText);
   } catch (err) {
     clearTimeout(timeoutId);
-    if (err.name === "AbortError") {
-      console.warn(`[callOpenRouter]: Request timed out after ${timeoutMs / 1000}s.`);
+    if (err.name === "AbortError" || err.code === "ETIMEDOUT") {
+      console.warn(`[callOpenAI]: Request timed out after ${timeoutMs / 1000}s.`);
     } else {
-      console.error("[callOpenRouter Failure]:", err.message);
+      console.error("[callOpenAI Failure]:", err.message);
     }
     return null;
   }
 }
 
 /**
- * Image analysis via OpenRouter Vision
+ * Image analysis via OpenAI Vision
  */
 async function analyzeImage(fileOrPath, mimeTypeArg) {
   const localPath = typeof fileOrPath === "object" ? fileOrPath.localPath : fileOrPath;
@@ -112,10 +102,10 @@ async function analyzeImage(fileOrPath, mimeTypeArg) {
   const imageBuffer = await fs.readFile(localPath);
   const base64 = imageBuffer.toString("base64");
 
-  // Force a multimodal vision model for OpenRouter
-  const visionModel = process.env.OPENROUTER_VISION_MODEL || "openrouter/free";
+  // Use a vision-capable model (gpt-4o-mini natively supports vision)
+  const visionModel = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
 
-  const rawResponse = await callOpenRouter(
+  const rawResponse = await callOpenAI(
     [
       {
         role: "user",
@@ -152,7 +142,7 @@ Return ONLY valid JSON in this exact structure without markdown formatting:
   );
 
   if (!rawResponse) {
-    throw new Error("OpenRouter Vision API returned an empty or timed-out response.");
+    throw new Error("OpenAI Vision API returned an empty or timed-out response.");
   }
 
   const jsonText = cleanJsonResponse(rawResponse);
@@ -161,5 +151,5 @@ Return ONLY valid JSON in this exact structure without markdown formatting:
 
 module.exports = {
   analyzeImage,
-  callOpenRouter,
+  callOpenAI,
 };

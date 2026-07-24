@@ -2,156 +2,201 @@ const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { Task, Issue, Discussion } = require("../models");
 const { getDashboard } = require("../services/dashboard");
-const { createSlackClient, listChannels, syncFromSlack } = require("../services/slackSync");
+const {
+  createSlackClient,
+  listChannels,
+  syncFromSlack,
+} = require("../services/slackSync");
 const { parseMessage } = require("../agent/parser");
-const { callOpenRouter } = require("../ai/gemini");
 const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
 const { sendDailyStandupBriefings } = require("../config/scheduler.js");
+const { callOpenAI } = require(".././ai/openai.js");
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
-router.get("/discussions/daily-summary", async (req, res) => {
-  try {
-    const getTodayStr = () => {
-      const d = new Date();
-      return d.toISOString().split("T")[0];
-    };
+  router.get("/discussions/daily-summary", async (req, res) => {
+    try {
+      const getTodayStr = () => {
+        return new Date().toISOString().split("T")[0];
+      };
 
-    const targetDateStr = req.query.date
-      ? String(req.query.date).split("T")[0].trim()
-      : getTodayStr();
+      const requestedDateStr = req.query.date
+        ? String(req.query.date).split("T")[0].trim()
+        : getTodayStr();
 
-    const forceRefresh = req.query.forceRefresh === "true";
+      const forceRefresh = req.query.forceRefresh === "true";
 
-    // 1. Instant Cache Lookup (Returns cached results in <5ms)
-    if (!forceRefresh) {
-      const cachedDoc = await DailySummary.findOne({ date: targetDateStr }).lean();
-      if (cachedDoc && cachedDoc.summary) {
-        console.log(`[DailySummary] ⚡ Serving lightning-fast cache for: ${targetDateStr}`);
-        return res.json({
-          date: targetDateStr,
-          summary: cachedDoc.summary,
-          tasks_count: cachedDoc.tasks_count || 0,
-          issues_count: cachedDoc.issues_count || 0,
-          discussions_count: 0,
-          cached: true,
-          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-        });
-      }
-    }
-
-    console.log(`[DailySummary] ⚡ Generating instant summary for: ${targetDateStr}`);
-
-    const [year, month, day] = targetDateStr.split("-").map(Number);
-    if (!year || !month || !day) {
-      return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-    }
-
-    const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-    const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-
-    // 2. Fetch Tasks and Issues using lean queries for maximum speed
-    const [tasks, issues] = await Promise.all([
-      Task.find(
-        {
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["TODO", "PROCESSING", "BLOCKED"] } },
-          ],
-        },
-        "title status priority blocked_reason"
-      ).lean().catch(() => []),
-
-      Issue.find(
-        {
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { status: { $in: ["OPEN", "HOLD", "RESOLVED"] } },
-          ],
-        },
-        "title status priority blocked_reason"
-      ).lean().catch(() => []),
-    ]);
-
-    // 3. Filter noise / break entries
-    const ignoreList = ["go for break", "break", "test"];
-    const filteredTasks = tasks.filter(
-      (t) => !ignoreList.some((term) => (t.title || "").toLowerCase().includes(term))
-    );
-
-    // 4. Deduplicate tasks
-    const uniqueTasks = Object.values(
-      filteredTasks.reduce((acc, t) => {
-        const key = (t.title || "").toLowerCase().trim();
-        if (!acc[key]) {
-          acc[key] = {
-            title: t.title,
-            status: t.status || "TODO",
-            priority: t.priority || "MEDIUM",
-            blocked_reason: t.blocked_reason || null,
-          };
+      // 1. Instant Cache Lookup
+      if (!forceRefresh) {
+        const cachedDoc = await DailySummary.findOne({
+          date: requestedDateStr,
+        }).lean();
+        if (cachedDoc && cachedDoc.summary) {
+          console.log(
+            `[DailySummary] ⚡ Serving cache for: ${requestedDateStr}`,
+          );
+          res.setHeader(
+            "Cache-Control",
+            "no-store, no-cache, must-revalidate, proxy-revalidate",
+          );
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+          return res.json({
+            date: requestedDateStr,
+            summary: cachedDoc.summary,
+            tasks_count: cachedDoc.tasks_count || 0,
+            issues_count: cachedDoc.issues_count || 0,
+            cached: true,
+            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+          });
         }
-        return acc;
-      }, {})
-    );
+      }
 
-    // 5. Build clean markdown bullet points instantly in code (No LLM delay)
-    const taskBullets = uniqueTasks.length > 0
-      ? uniqueTasks
-          .map((t) => {
-            let line = `• **${t.title}** [Status: ${t.status} | Priority: ${t.priority}]`;
-            if (t.status === "BLOCKED" || t.blocked_reason) {
-              line += ` - 🚨 *Blocker:* ${t.blocked_reason || "Reason pending"}`;
-            }
-            return line;
-          })
-          .join("\n")
-      : "• No active tasks recorded for this date.";
+      console.log(
+        `[DailySummary] 🤖 Generating 2-section summary for (${requestedDateStr}) using OpenAI...`,
+      );
 
-    const issueBullets = issues.length > 0
-      ? issues
-          .map((i) => {
-            let line = `• **${i.title}** [Status: ${i.status || "HOLD"} | Priority: ${i.priority || "HIGH"}]`;
-            if (i.blocked_reason) {
-              line += ` - ⚠️ *Reason:* ${i.blocked_reason}`;
-            }
-            return line;
-          })
-          .join("\n")
-      : "• No issues or bugs reported for this date.";
+      const [reqYear, reqMonth, reqDay] = requestedDateStr
+        .split("-")
+        .map(Number);
+      if (!reqYear || !reqMonth || !reqDay) {
+        return res
+          .status(400)
+          .json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+      }
 
-    const summaryText = `📌 **Tasks Summary**\n${taskBullets}\n\n🚨 **Issues & Bugs Summary**\n${issueBullets}`;
+      const requestedDateObj = new Date(reqYear, reqMonth - 1, reqDay);
+      const yesterdayObj = new Date(requestedDateObj);
+      yesterdayObj.setDate(yesterdayObj.getDate() - 1);
 
-    // 6. Save directly to cache collection
-    const updatedDoc = await DailySummary.findOneAndUpdate(
-      { date: targetDateStr },
-      {
+      const yesterdayStr = yesterdayObj.toISOString().split("T")[0];
+      const [yYear, yMonth, yDay] = yesterdayStr.split("-").map(Number);
+
+      const startOfDay = new Date(yYear, yMonth - 1, yDay, 0, 0, 0, 0);
+      const endOfDay = new Date(yYear, yMonth - 1, yDay, 23, 59, 59, 999);
+
+      // 2. Fetch Tasks and Issues strictly from yesterday
+      const [tasks, issues] = await Promise.all([
+        Task.find(
+          {
+            $or: [
+              { created_time: { $gte: startOfDay, $lte: endOfDay } },
+              { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+              { due_date: { $gte: startOfDay, $lte: endOfDay } },
+            ],
+          },
+          "title status priority blocked_reason",
+        )
+          .lean()
+          .catch(() => []),
+
+        Issue.find(
+          {
+            $or: [
+              { created_time: { $gte: startOfDay, $lte: endOfDay } },
+              { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+            ],
+          },
+          "title status priority blocked_reason",
+        )
+          .lean()
+          .catch(() => []),
+      ]);
+
+      let summaryText = "";
+
+      if (!tasks.length && !issues.length) {
+        summaryText = `📌 **Tasks Summary**\n• No tasks recorded for yesterday (${yesterdayStr}).\n\n🚨 **Issues & Bugs Summary**\n• No issues recorded for yesterday (${yesterdayStr}).`;
+      } else {
+        // 3. Summarize with OpenAI into 2 sections only
+        const prompt = `
+You are an AI Engineering Manager. Summarize the engineering activity that happened yesterday (${yesterdayStr}) into a clean, structured report.
+
+Format each item using multiple lines strictly like this:
+• **Task/Issue Title**
+  - Status: [Status] | Priority: [Priority]
+  - Blocker/Details: [Reason or None]
+
+Create EXACTLY two sections and nothing else:
+
+📌 **Tasks Summary**
+(List each task with title on the first line, status/priority on the next line, and blocker on the following line)
+
+🚨 **Issues & Bugs Summary**
+(List each issue with title on the first line, status/priority on the next line)
+
+Data from Yesterday (${yesterdayStr}):
+Tasks: ${JSON.stringify(tasks.map((t) => ({ title: t.title, status: t.status, priority: t.priority, blocker: t.blocked_reason })))}
+Issues: ${JSON.stringify(issues.map((i) => ({ title: i.title, status: i.status, priority: i.priority })))}
+`;
+
+        summaryText = await callOpenAI([{ role: "user", content: prompt }], {
+          maxTokens: 400,
+          temperature: 0.1,
+        });
+
+        if (!summaryText) {
+          const taskBullets =
+            tasks.length > 0
+              ? tasks
+                  .map(
+                    (t) =>
+                      `• **${t.title}** [Status: ${t.status || "TODO"} | Priority: ${t.priority || "MEDIUM"}]${t.blocked_reason ? ` - 🚨 ${t.blocked_reason}` : ""}`,
+                  )
+                  .join("\n")
+              : "• No tasks logged yesterday.";
+
+          const issueBullets =
+            issues.length > 0
+              ? issues
+                  .map(
+                    (i) =>
+                      `• **${i.title}** [Status: ${i.status || "HOLD"} | Priority: ${i.priority || "HIGH"}]`,
+                  )
+                  .join("\n")
+              : "• No issues logged yesterday.";
+
+          summaryText = `📌 **Tasks Summary**\n${taskBullets}\n\n🚨 **Issues & Bugs Summary**\n${issueBullets}`;
+        }
+      }
+
+      // 4. Save to DB under requested date
+      const updatedDoc = await DailySummary.findOneAndUpdate(
+        { date: requestedDateStr },
+        {
+          summary: summaryText,
+          tasks_count: tasks.length,
+          issues_count: issues.length,
+          discussions_count: 0,
+          is_stale: false,
+        },
+        { upsert: true, returnDocument: "after" },
+      );
+
+      // Prevent browser caching on freshly generated responses as well
+      res.setHeader(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate, proxy-revalidate",
+      );
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      return res.json({
+        date: requestedDateStr,
         summary: summaryText,
-        tasks_count: uniqueTasks.length,
+        tasks_count: tasks.length,
         issues_count: issues.length,
-        discussions_count: 0,
-        is_stale: false,
-      },
-      { upsert: true, returnDocument: 'after' }
-    );
+        cached: false,
+        last_updated_at: updatedDoc.updatedAt || new Date(),
+      });
+    } catch (err) {
+      console.error("[daily-summary route error]:", err);
+      res.status(500).json({ error: "Failed to generate daily summary" });
+    }
+  });
 
-    return res.json({
-      date: targetDateStr,
-      summary: summaryText,
-      tasks_count: uniqueTasks.length,
-      issues_count: issues.length,
-      cached: false,
-      last_updated_at: updatedDoc.updatedAt || new Date(),
-    });
-  } catch (err) {
-    console.error("[daily-summary route error]:", err);
-    res.status(500).json({ error: "Failed to generate summary points" });
-  }
-});
   router.get("/health", (_req, res) => {
     res.json({
       ok: true,
@@ -247,7 +292,10 @@ router.get("/discussions/daily-summary", async (req, res) => {
 
   router.all("/slack/standup-briefing", async (req, res) => {
     try {
-      const { team, userId, hours, meetingTime } = { ...req.query, ...req.body };
+      const { team, userId, hours, meetingTime } = {
+        ...req.query,
+        ...req.body,
+      };
 
       const result = await sendDailyStandupBriefings({
         team,
@@ -267,7 +315,11 @@ router.get("/discussions/daily-summary", async (req, res) => {
       const query = {
         $or: [
           { task_id: req.params.id },
-          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+          {
+            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+              ? req.params.id
+              : null,
+          },
         ],
       };
       const task = await Task.findOne(query).lean();
@@ -314,15 +366,20 @@ router.get("/discussions/daily-summary", async (req, res) => {
       const query = {
         $or: [
           { task_id: req.params.id },
-          { _id: req.params.id.match(/^[0-9a-fA-F]{24}$/) ? req.params.id : null },
+          {
+            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+              ? req.params.id
+              : null,
+          },
         ],
       };
 
       const updatedTask = await Task.findOneAndUpdate(query, updateData, {
-        returnDocument: 'after',
+        returnDocument: "after",
       });
 
-      if (!updatedTask) return res.status(404).json({ error: "Task not found" });
+      if (!updatedTask)
+        return res.status(404).json({ error: "Task not found" });
       res.json(updatedTask);
     } catch (err) {
       next(err);
@@ -363,7 +420,6 @@ router.get("/discussions/daily-summary", async (req, res) => {
     }
   });
 
-
   router.post(
     "/parse",
     body("text").isString().notEmpty(),
@@ -393,7 +449,7 @@ router.get("/discussions/daily-summary", async (req, res) => {
       } catch (err) {
         next(err);
       }
-    }
+    },
   );
 
   router.post(
@@ -426,7 +482,7 @@ router.get("/discussions/daily-summary", async (req, res) => {
       } catch (err) {
         next(err);
       }
-    }
+    },
   );
 
   return router;

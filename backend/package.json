@@ -39,6 +39,7 @@
     "multer": "^2.2.0",
     "node-cache": "^5.1.2",
     "node-cron": "^4.6.0",
+    "openai": "^6.49.0",
     "pdf-parse": "^2.4.5",
     "socket.io": "^4.8.3",
     "unzipper": "^0.12.5",
