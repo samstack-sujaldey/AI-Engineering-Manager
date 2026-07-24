@@ -39,30 +39,20 @@ import { PageHeaderComponent } from '../shared/page-header';
           </div>
         </div>
 
-        <!-- Two-Section Display Grid -->
-        <div class="sections-grid" *ngIf="!isLoading; else loadingState">
+        <!-- Single Card MOM Display Container -->
+        <div class="single-section-view" *ngIf="!isLoading; else loadingState">
           
-          <!-- Section 1: Tasks Summary -->
           <div class="summary-card-section">
-            <div class="section-card-header tasks-header">
-              <h3>📌 Tasks Summary</h3>
-              <span class="count-badge">{{ taskCount }}</span>
+            <div class="section-card-header mom-header">
+              <h3>📝 Stand-up Minutes of Meeting (MOM)</h3>
+              <div class="badge-group">
+                <span class="count-badge tasks-badge">Tasks: {{ taskCount }}</span>
+                <span class="count-badge issues-badge">Issues: {{ issueCount }}</span>
+              </div>
             </div>
-            <!-- Pass $event explicitly here -->
-            <div class="section-card-body" (click)="handleItemClick($event)">
-              <div class="formatted-points" [innerHTML]="tasksHtml"></div>
-            </div>
-          </div>
 
-          <!-- Section 2: Issues & Bugs Summary -->
-          <div class="summary-card-section">
-            <div class="section-card-header issues-header">
-              <h3>🚨 Issues & Bugs Summary</h3>
-              <span class="count-badge">{{ issueCount }}</span>
-            </div>
-            <!-- Pass $event explicitly here -->
             <div class="section-card-body" (click)="handleItemClick($event)">
-              <div class="formatted-points" [innerHTML]="issuesHtml"></div>
+              <div class="formatted-points mom-body-content" [innerHTML]="summaryHtml"></div>
             </div>
           </div>
 
@@ -188,10 +178,9 @@ import { PageHeaderComponent } from '../shared/page-header';
       cursor: pointer;
     }
 
-    .sections-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-      gap: 20px;
+    .single-section-view {
+      display: flex;
+      flex-direction: column;
       flex: 1;
     }
 
@@ -202,6 +191,7 @@ import { PageHeaderComponent } from '../shared/page-header';
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      flex: 1;
     }
 
     .section-card-header {
@@ -213,44 +203,53 @@ import { PageHeaderComponent } from '../shared/page-header';
       font-size: 14px;
     }
 
-    .tasks-header {
+    .mom-header {
       background: #f0edff;
       color: #5b4fcf;
       border-bottom: 1px solid #e2dbfc;
     }
 
-    .issues-header {
-      background: #ffeaea;
-      color: #c0392b;
-      border-bottom: 1px solid #fcdada;
-    }
-
     .section-card-header h3 {
       margin: 0;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 700;
     }
 
+    .badge-group {
+      display: flex;
+      gap: 8px;
+    }
+
     .count-badge {
-      background: rgba(0, 0, 0, 0.08);
-      padding: 2px 8px;
+      padding: 2px 10px;
       border-radius: 12px;
       font-size: 12px;
+      font-weight: 600;
+    }
+
+    .tasks-badge {
+      background: rgba(91, 79, 207, 0.12);
+      color: #5b4fcf;
+    }
+
+    .issues-badge {
+      background: rgba(192, 57, 43, 0.12);
+      color: #c0392b;
     }
 
     .section-card-body {
-      padding: 16px;
-      font-size: 13.5px;
+      padding: 20px;
+      font-size: 14px;
       line-height: 1.8;
-      color: #333;
+      color: #2c3e50;
       flex: 1;
       overflow-y: auto;
-      max-height: 480px;
+      max-height: 600px;
     }
 
     .formatted-points ::ng-deep strong {
       color: #1a1a2e;
-      font-weight: 600;
+      font-weight: 700;
     }
 
     /* Interactive Clickable Blocker Tag */
@@ -433,8 +432,7 @@ export class StandupSummaryComponent implements OnInit {
   selectedDate: string = '';
   formattedDateDisplay: string = '';
 
-  tasksHtml: string = '';
-  issuesHtml: string = '';
+  summaryHtml: string = '';
   taskCount: number = 0;
   issueCount: number = 0;
   lastSyncTime: Date | null = null;
@@ -481,14 +479,14 @@ export class StandupSummaryComponent implements OnInit {
   fetchSummaryForDate(dateStr: string): void {
     this.isLoading = true;
     this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
-    this.cdRef.detectChanges(); // 👈 Immediate UI refresh for spinner
+    this.cdRef.detectChanges();
 
     const timestamp = new Date().getTime();
     const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}&_t=${timestamp}`;
 
     this.http.get<any>(url).subscribe({
       next: (res) => {
-        this.parseSummaryIntoSections(res.summary);
+        this.summaryHtml = this.formatSectionContent(res.summary);
         this.taskCount = res.tasks_count || 0;
         this.issueCount = res.issues_count || 0;
         
@@ -499,42 +497,26 @@ export class StandupSummaryComponent implements OnInit {
         }
 
         this.isLoading = false;
-        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for data
+        this.cdRef.detectChanges();
       },
       error: (err) => {
         console.error('Failed to fetch summary:', err);
-        this.tasksHtml = '<em>Unable to load tasks for this date.</em>';
-        this.issuesHtml = '<em>Unable to load issues for this date.</em>';
+        this.summaryHtml = '<em>Unable to load stand-up summary for this date.</em>';
         this.isLoading = false;
-        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for error
+        this.cdRef.detectChanges();
       }
     });
   }
 
-  parseSummaryIntoSections(fullText: string): void {
-    if (!fullText) {
-      this.tasksHtml = 'No tasks recorded.';
-      this.issuesHtml = 'No issues recorded.';
-      return;
-    }
-
-    const taskMatch = fullText.match(/📌\s*\*\*Tasks Summary\*\*([\s\S]*?)(?=🚨\s*\*\*Issues\s*&\s*Bugs\s*Summary\*\*|$)/i);
-    const issueMatch = fullText.match(/🚨\s*\*\*Issues\s*&\s*Bugs\s*Summary\*\*([\s\S]*)$/i);
-
-    const rawTasks = taskMatch ? taskMatch[1] : 'No tasks recorded.';
-    const rawIssues = issueMatch ? issueMatch[1] : 'No issues recorded.';
-
-    this.tasksHtml = this.formatSectionContent(rawTasks);
-    this.issuesHtml = this.formatSectionContent(rawIssues);
-  }
-
   formatSectionContent(text: string): string {
+    if (!text) return '<em>No summary available.</em>';
+
     return text
       .trim()
-      .replace(/^- /gm, '• ')
-      .replace(/^\s{2,}- /gm, '&nbsp;&nbsp;&nbsp;&nbsp;↳ ')
+      .replace(/^[-*] /gm, '• ')
+      .replace(/^\s{2,}[-*] /gm, '&nbsp;&nbsp;&nbsp;&nbsp;↳ ')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Transforms Blocker text into a clickable tag
+      // Transforms Blocker text into an interactive tag
       .replace(/(?:🚨|Blocker:?)\s*(.*?)(?=\n|<br\/>|$)/gi, (match, reason) => {
         const cleanReason = reason.replace(/[*_]/g, '').trim();
         return `<span class="blocked-tag-clickable" data-reason="${cleanReason}">🚨 Blocker Details</span>`;
@@ -542,7 +524,6 @@ export class StandupSummaryComponent implements OnInit {
       .replace(/\n/g, '<br/>');
   }
 
-  // Safely handles click events for blocked items inside the summary cards
   handleItemClick(event: MouseEvent): void {
     if (!event || !event.target) return;
 

@@ -40,7 +40,7 @@ async function invalidateDailySummary(dateStr = null) {
 async function regenerateSummaryInBackground(targetDateStr) {
   try {
     const targetDate = targetDateStr || getYesterdayDateString();
-    const [year, month, day] = target.split('-').map(Number);
+    const [year, month, day] = targetDate.split('-').map(Number);
     const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
     const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
@@ -109,7 +109,7 @@ Issues: ${JSON.stringify(formattedIssues)}
           issues_count: issues.length,
           is_stale: false,
         },
-        { upsert: true, returnDocument: 'after' } // Fixed deprecation warning
+        { upsert: true, returnDocument: 'after' }
       );
       console.log(`[AI Summary] Updated and cached for yesterday (${targetDate})`);
     }
