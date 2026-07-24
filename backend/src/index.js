@@ -190,16 +190,45 @@ async function main() {
       const slackErr = err?.data?.error || err.message;
       console.error(
         `[slack] Failed to start (${slackErr}). API will keep running without Slack. ` +
-          "Fix tokens in backend/.env: SLACK_BOT_TOKEN (xoxb-…), SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (xapp-…)."
+        "Fix tokens in backend/.env: SLACK_BOT_TOKEN (xoxb-…), SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (xapp-…)."
       );
       if (slackErr === "invalid_auth") {
         console.error(
           "[slack] invalid_auth usually means the bot token was revoked, regenerated, or copied incorrectly. " +
-            "Reinstall the app to the workspace and copy the Bot User OAuth Token from OAuth & Permissions."
+          "Reinstall the app to the workspace and copy the Bot User OAuth Token from OAuth & Permissions."
         );
       }
     }
   }
+
+  // 🟢 Get All Slack Channels for Dropdown
+  app.get('/api/slack/channels', async (req, res) => {
+    try {
+      const slackRes = await slackClient.conversations.list({
+        types: 'public_channel,private_channel',
+        exclude_archived: true,
+        limit: 100,
+      });
+
+      const channels = (slackRes.channels || []).map((ch) => ({
+        id: ch.id,
+        name: ch.name,
+        is_private: ch.is_private,
+      }));
+
+      return res.json({
+        success: true,
+        channels,
+      });
+    } catch (error) {
+      console.error('[channels endpoint error]', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch Slack channels',
+        channels: [],
+      });
+    }
+  });
 
   startReminderScheduler(notificationService);
   await cleanupCompletedWork().catch((err) =>
