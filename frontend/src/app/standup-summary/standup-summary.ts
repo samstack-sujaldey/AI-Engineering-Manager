@@ -48,7 +48,8 @@ import { PageHeaderComponent } from '../shared/page-header';
               <h3>📌 Tasks Summary</h3>
               <span class="count-badge">{{ taskCount }}</span>
             </div>
-            <div class="section-card-body">
+            <!-- Pass $event explicitly here -->
+            <div class="section-card-body" (click)="handleItemClick($event)">
               <div class="formatted-points" [innerHTML]="tasksHtml"></div>
             </div>
           </div>
@@ -59,7 +60,8 @@ import { PageHeaderComponent } from '../shared/page-header';
               <h3>🚨 Issues & Bugs Summary</h3>
               <span class="count-badge">{{ issueCount }}</span>
             </div>
-            <div class="section-card-body">
+            <!-- Pass $event explicitly here -->
+            <div class="section-card-body" (click)="handleItemClick($event)">
               <div class="formatted-points" [innerHTML]="issuesHtml"></div>
             </div>
           </div>
@@ -73,6 +75,39 @@ import { PageHeaderComponent } from '../shared/page-header';
           </div>
         </ng-template>
 
+      </div>
+    </div>
+
+    <!-- BLOCKED REASON MODAL OVERLAY -->
+    <div class="modal-overlay" *ngIf="selectedBlockedTask" (click)="closeModal()">
+      <div class="modal-content" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon">🚨</span>
+            <h2 class="modal-title">Blocked Task Details</h2>
+          </div>
+          <button class="close-btn" (click)="closeModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="info-group">
+            <h3 class="info-label">Task Title</h3>
+            <p class="info-value">{{ selectedBlockedTask.title }}</p>
+          </div>
+
+          <div class="info-group">
+            <h3 class="info-label">Blocker Reason</h3>
+            <div class="reason-box">
+              <p class="reason-text">
+                {{ selectedBlockedTask.blocked_reason || 'No specific blocker reason logged. Awaiting update in Slack.' }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-primary" (click)="closeModal()">Close</button>
+        </div>
       </div>
     </div>
   `,
@@ -91,7 +126,6 @@ import { PageHeaderComponent } from '../shared/page-header';
       flex-direction: column;
     }
 
-    /* Top Control Header */
     .control-header {
       display: flex;
       align-items: center;
@@ -154,7 +188,6 @@ import { PageHeaderComponent } from '../shared/page-header';
       cursor: pointer;
     }
 
-    /* Two-Section Grid Layout */
     .sections-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
@@ -208,7 +241,7 @@ import { PageHeaderComponent } from '../shared/page-header';
     .section-card-body {
       padding: 16px;
       font-size: 13.5px;
-      line-height: 1.6;
+      line-height: 1.8;
       color: #333;
       flex: 1;
       overflow-y: auto;
@@ -220,7 +253,26 @@ import { PageHeaderComponent } from '../shared/page-header';
       font-weight: 600;
     }
 
-    /* Loading Spinner */
+    /* Interactive Clickable Blocker Tag */
+    .formatted-points ::ng-deep .blocked-tag-clickable {
+      cursor: pointer;
+      color: #c0392b;
+      background: #ffeaea;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: 6px;
+      transition: background 0.2s ease;
+    }
+
+    .formatted-points ::ng-deep .blocked-tag-clickable:hover {
+      background: #ffd3d3;
+    }
+
     .loading-box {
       display: flex;
       flex-direction: column;
@@ -245,12 +297,140 @@ import { PageHeaderComponent } from '../shared/page-header';
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+
+    /* Modal Styles */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      backdrop-filter: blur(2px);
+    }
+
+    .modal-content {
+      background: #ffffff;
+      border-radius: 10px;
+      width: 100%;
+      max-width: 450px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      animation: slideIn 0.2s ease-out forwards;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(15px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 24px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .modal-title-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .alert-icon { font-size: 18px; }
+
+    .modal-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #1a1a2e;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      font-size: 24px;
+      color: #999;
+      cursor: pointer;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+
+    .close-btn:hover { color: #333; }
+
+    .modal-body { padding: 24px; }
+
+    .info-group { margin-bottom: 20px; }
+    .info-group:last-child { margin-bottom: 0; }
+
+    .info-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 0 0 6px 0;
+    }
+
+    .info-value {
+      margin: 0;
+      font-size: 14px;
+      color: #333;
+      font-weight: 500;
+    }
+
+    .reason-box {
+      background: #fff9f9;
+      border: 1px solid #ffeaea;
+      border-radius: 6px;
+      padding: 12px 16px;
+    }
+
+    .reason-text {
+      margin: 0;
+      color: #c0392b;
+      font-size: 13.5px;
+      line-height: 1.5;
+    }
+
+    .modal-footer {
+      padding: 16px 24px;
+      background: #fafafa;
+      border-top: 1px solid #f0f0f0;
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .btn-primary {
+      background: #1a1a2e;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-primary:hover { background: #2a2a4a; }
   `]
 })
 export class StandupSummaryComponent implements OnInit {
   private apiUrl = 'http://localhost:4000/api';
 
-  selectedDate: string = ''; // YYYY-MM-DD
+  selectedDate: string = '';
   formattedDateDisplay: string = '';
 
   tasksHtml: string = '';
@@ -261,6 +441,8 @@ export class StandupSummaryComponent implements OnInit {
 
   isLoading: boolean = false;
   loadingMessage: string = '';
+
+  selectedBlockedTask: { title: string; blocked_reason: string } | null = null;
 
   constructor(private http: HttpClient, private cdRef: ChangeDetectorRef) {}
 
@@ -299,9 +481,10 @@ export class StandupSummaryComponent implements OnInit {
   fetchSummaryForDate(dateStr: string): void {
     this.isLoading = true;
     this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
-    this.cdRef.detectChanges();
+    this.cdRef.detectChanges(); // 👈 Immediate UI refresh for spinner
 
-    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}`;
+    const timestamp = new Date().getTime();
+    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}&_t=${timestamp}`;
 
     this.http.get<any>(url).subscribe({
       next: (res) => {
@@ -316,14 +499,14 @@ export class StandupSummaryComponent implements OnInit {
         }
 
         this.isLoading = false;
-        this.cdRef.detectChanges();
+        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for data
       },
       error: (err) => {
         console.error('Failed to fetch summary:', err);
         this.tasksHtml = '<em>Unable to load tasks for this date.</em>';
         this.issuesHtml = '<em>Unable to load issues for this date.</em>';
         this.isLoading = false;
-        this.cdRef.detectChanges();
+        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for error
       }
     });
   }
@@ -349,8 +532,40 @@ export class StandupSummaryComponent implements OnInit {
     return text
       .trim()
       .replace(/^- /gm, '• ')
-      .replace(/^\s{2,}- /gm, '&nbsp;&nbsp;&nbsp;&nbsp;↳ ') // Indent sub-lines nicely
+      .replace(/^\s{2,}- /gm, '&nbsp;&nbsp;&nbsp;&nbsp;↳ ')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      // Transforms Blocker text into a clickable tag
+      .replace(/(?:🚨|Blocker:?)\s*(.*?)(?=\n|<br\/>|$)/gi, (match, reason) => {
+        const cleanReason = reason.replace(/[*_]/g, '').trim();
+        return `<span class="blocked-tag-clickable" data-reason="${cleanReason}">🚨 Blocker Details</span>`;
+      })
       .replace(/\n/g, '<br/>');
+  }
+
+  // Safely handles click events for blocked items inside the summary cards
+  handleItemClick(event: MouseEvent): void {
+    if (!event || !event.target) return;
+
+    const target = event.target as HTMLElement;
+    const blockedBadge = target.closest('.blocked-tag-clickable');
+
+    if (blockedBadge) {
+      const reason = blockedBadge.getAttribute('data-reason') || 'No reason provided yet. Awaiting reply in Slack.';
+      
+      const lineText = blockedBadge.parentElement?.textContent || 'Blocked Item';
+      const titleMatch = lineText.match(/•\s*(.*?)(?=\[|$)/) || lineText.match(/^(.*?)(?=\[|$)/);
+      const title = titleMatch ? titleMatch[1].trim() : 'Blocked Task';
+
+      this.selectedBlockedTask = {
+        title: title,
+        blocked_reason: reason
+      };
+      this.cdRef.detectChanges();
+    }
+  }
+
+  closeModal(): void {
+    this.selectedBlockedTask = null;
+    this.cdRef.detectChanges();
   }
 }
