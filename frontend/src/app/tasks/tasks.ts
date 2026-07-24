@@ -55,7 +55,10 @@ import { HttpClient } from '@angular/common/http';
                 <div class="task-category">{{ task.description || 'General Task' }}</div>
               </td>
               <td class="assignee-cell">
-                <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(task.owner))">
+                <div
+                  class="avatar-sm"
+                  [style.background]="getAvatarColor(getPersonName(task.owner))"
+                >
                   {{ getInitials(getPersonName(task.owner)) }}
                 </div>
                 <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
@@ -203,8 +206,8 @@ import { HttpClient } from '@angular/common/http';
         overflow: hidden;
       }
       .assignee-cell {
-        display: flex;
         align-items: center;
+        white-space: nowrap;
         gap: 8px;
       }
       .avatar-sm {
@@ -214,11 +217,13 @@ import { HttpClient } from '@angular/common/http';
         color: white;
         font-size: 11px;
         font-weight: 700;
-        display: flex;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
         flex-shrink: 0;
         text-transform: uppercase;
+        vertical-align: middle; /* Aligns with text */
+        margin-right: 8px;
       }
       .assignee-name {
         font-size: 13px;
@@ -445,10 +450,8 @@ export class TasksComponent implements OnInit {
     const list = tasks || this.tasks;
     if (!list) return [];
     return list.filter((task) => {
-      const matchStatus =
-        this.statusFilter === 'all' || task.status === this.statusFilter;
-      const matchPriority =
-        this.priorityFilter === 'all' || task.priority === this.priorityFilter;
+      const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
+      const matchPriority = this.priorityFilter === 'all' || task.priority === this.priorityFilter;
       return matchStatus && matchPriority;
     });
   }
@@ -468,7 +471,10 @@ export class TasksComponent implements OnInit {
     const trimmed = String(value).trim();
     if (!trimmed) return '';
     if (trimmed.includes('@')) {
-      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+      return trimmed
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .trim();
     }
     return trimmed.replace(/[._-]+/g, ' ').trim();
   }
@@ -485,8 +491,7 @@ export class TasksComponent implements OnInit {
     if (!name || name === 'Unassigned') return '#888';
     const colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60'];
     let hash = 0;
-    for (let i = 0; i < name.length; i++)
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
   }
 
