@@ -1,6 +1,7 @@
 const DailySummary = require('../models/DailySummary');
 const { callOpenRouter } = require('../ai/openai');
 const { Task, Issue } = require('../models');
+const { normalizePersonName } = require('../agent/parser');
 
 let debounceTimer = null;
 
@@ -40,7 +41,7 @@ async function invalidateDailySummary(dateStr = null) {
 async function regenerateSummaryInBackground(targetDateStr) {
   try {
     const targetDate = targetDateStr || getYesterdayDateString();
-    const [year, month, day] = target.split('-').map(Number);
+    const [year, month, day] = targetDate.split('-').map(Number);
     const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
     const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
@@ -63,20 +64,28 @@ async function regenerateSummaryInBackground(targetDateStr) {
     ]);
 
     // Format tasks with assigned team member and current status
-    const formattedTasks = tasks.map(t => ({
-      title: t.title,
-      status: t.status,
-      assigned_to: t.assigned_to?.name || t.owner?.name || 'Unassigned',
-      blocked_reason: t.blocked_reason || null
-    }));
+    const formattedTasks = tasks.map(t => {
+      const assignee = t.assigned_to || t.owner || {};
+      const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      return {
+        title: t.title,
+        status: t.status,
+        assigned_to: normalizePersonName(rawName),
+        blocked_reason: t.blocked_reason || null
+      };
+    });
 
     // Format issues with assigned team member and priority/status
-    const formattedIssues = issues.map(i => ({
-      title: i.title,
-      status: i.status,
-      priority: i.priority,
-      assigned_to: i.assigned_to?.name || i.owner?.name || 'Unassigned'
-    }));
+    const formattedIssues = issues.map(i => {
+      const assignee = i.assigned_to || i.owner || {};
+      const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      return {
+        title: i.title,
+        status: i.status,
+        priority: i.priority,
+        assigned_to: normalizePersonName(rawName)
+      };
+    });
 
     const prompt = `
 Generate an engineering daily summary for Yesterday (${targetDate}):

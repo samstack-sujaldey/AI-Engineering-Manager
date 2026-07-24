@@ -47,6 +47,17 @@ async function getDashboard() {
     (t) => t.awaiting_acknowledgement && t.awaiting_acknowledgement.user && !t.awaiting_acknowledgement.acknowledged
   );
 
+  const normalizeUserRef = (user) => {
+    if (!user) return user;
+    const name = normalizePersonName(user.name || user.display_name || user.real_name || '');
+    const displayName = normalizePersonName(user.display_name || user.real_name || user.name || '');
+    return {
+      ...user,
+      name: name || user.name || '',
+      display_name: displayName || user.display_name || user.name || '',
+    };
+  };
+
   const ownerWorkload = {};
   for (const t of tasks) {
     if (t.status === 'COMPLETED') continue;
@@ -70,17 +81,6 @@ async function getDashboard() {
     }
     ownerWorkload[key].issues += 1;
   }
-
-  const normalizeUserRef = (user) => {
-    if (!user) return user;
-    const name = normalizePersonName(user.name || user.display_name || user.real_name || '');
-    const displayName = normalizePersonName(user.display_name || user.real_name || user.name || '');
-    return {
-      ...user,
-      name: name || user.name || '',
-      display_name: displayName || user.display_name || user.name || '',
-    };
-  };
 
   const toTaskView = (t) => ({
     id: t.task_id,
