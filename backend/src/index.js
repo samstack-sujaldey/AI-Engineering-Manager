@@ -117,9 +117,8 @@ async function main() {
           };
 
           const existingWork = await findWorkByMessageTs(msg.ts);
-          const existingDiscussion = await Discussion.findOne({ slack_message_ts: msg.ts }).lean();
-          if (existingWork.task || existingWork.issue || existingDiscussion) {
-            console.log(`[pipeline] Skipping already processed message: ${msg.ts}`);
+          if (existingWork.task || existingWork.issue) {
+            console.log(`[pipeline] Skipping already processed message (task/issue exists): ${msg.ts}`);
             continue;
           }
 
