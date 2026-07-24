@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { PageHeaderComponent } from '../shared/page-header';
+import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-standup-summary',
@@ -24,19 +25,19 @@ import { PageHeaderComponent } from '../shared/page-header';
             </span>
           </div>
 
-          <div class="header-right">
-            <!-- Calendar Picker -->
-            <div class="calendar-picker-wrapper">
-              <label for="summaryDate">Select Date:</label>
-              <input
-                type="date"
-                id="summaryDate"
-                [(ngModel)]="selectedDate"
-                (change)="onDateChange()"
-                class="calendar-input"
-              />
-            </div>
-          </div>
+           <div class="header-right">
+             <!-- Calendar Picker -->
+             <div class="calendar-picker-wrapper">
+               <label for="summaryDate">Select Date:</label>
+               <input
+                 type="date"
+                 id="summaryDate"
+                 [(ngModel)]="selectedDate"
+                 (change)="onDateChange()"
+                 class="calendar-input"
+               />
+             </div>
+           </div>
         </div>
 
         <!-- Two-Section Display Grid -->
@@ -444,7 +445,7 @@ export class StandupSummaryComponent implements OnInit {
 
   selectedBlockedTask: { title: string; blocked_reason: string } | null = null;
 
-  constructor(private http: HttpClient, private cdRef: ChangeDetectorRef) {}
+  constructor(private http: HttpClient, private cdRef: ChangeDetectorRef, private dashService: DashboardService) {}
 
   ngOnInit(): void {
     this.setDefaultToToday();
@@ -481,10 +482,16 @@ export class StandupSummaryComponent implements OnInit {
   fetchSummaryForDate(dateStr: string): void {
     this.isLoading = true;
     this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
-    this.cdRef.detectChanges(); // 👈 Immediate UI refresh for spinner
+    this.cdRef.detectChanges();
 
     const timestamp = new Date().getTime();
-    const url = `${this.apiUrl}/discussions/daily-summary?date=${dateStr}&_t=${timestamp}`;
+    const params = new URLSearchParams();
+    params.set('date', dateStr);
+    const activeChannel = this.dashService.activeChannelId();
+    if (activeChannel) params.set('channel', activeChannel);
+    params.set('_t', String(timestamp));
+
+    const url = `${this.apiUrl}/discussions/daily-summary?${params.toString()}`;
 
     this.http.get<any>(url).subscribe({
       next: (res) => {
@@ -499,14 +506,14 @@ export class StandupSummaryComponent implements OnInit {
         }
 
         this.isLoading = false;
-        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for data
+        this.cdRef.detectChanges();
       },
       error: (err) => {
         console.error('Failed to fetch summary:', err);
         this.tasksHtml = '<em>Unable to load tasks for this date.</em>';
         this.issuesHtml = '<em>Unable to load issues for this date.</em>';
         this.isLoading = false;
-        this.cdRef.detectChanges(); // 👈 Immediate UI refresh for error
+        this.cdRef.detectChanges();
       }
     });
   }

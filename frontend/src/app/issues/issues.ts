@@ -1,7 +1,9 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service'; // Adjust path if needed
 
 @Component({
@@ -26,11 +28,17 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
           <option value="MEDIUM">Medium</option>
           <option value="LOW">Low</option>
         </select>
+        <input
+          type="date"
+          class="filter-select"
+          [(ngModel)]="dateFilter"
+          (change)="loadIssues()"
+        />
       </div>
 
-      <div *ngIf="dashService.data()?.issues as issues">
+      <div *ngIf="!loading">
         <!-- Stats -->
-        <div class="issue-stats">
+        <div class="issue-stats" *ngIf="issues.length > 0">
           <div class="issue-stat-card">
             <div class="stat-label">Total Issues</div>
             <div class="stat-value">{{ issues.length }}</div>
@@ -312,11 +320,38 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class IssuesComponent {
+export class IssuesComponent implements OnInit {
   dashService = inject(DashboardService);
+  http = inject(HttpClient);
 
+  issues: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
+  dateFilter = '';
+  loading = false;
+
+  ngOnInit() {
+    this.loadIssues();
+  }
+
+  async loadIssues() {
+    this.loading = true;
+    try {
+      const params: any = {};
+      if (this.statusFilter !== 'all') params.status = this.statusFilter;
+      if (this.priorityFilter !== 'all') params.priority = this.priorityFilter;
+      const activeChannel = this.dashService.activeChannelId();
+      if (activeChannel) params.channel = activeChannel;
+      if (this.dateFilter) params.date = this.dateFilter;
+
+      this.issues = await firstValueFrom(this.http.get('/api/issues', { params })) as any[] || [];
+    } catch (err) {
+      console.error('Failed to load issues:', err);
+      this.issues = [];
+    } finally {
+      this.loading = false;
+    }
+  }
 
   filteredIssues(issues: any[]): any[] {
     if (!issues) return [];

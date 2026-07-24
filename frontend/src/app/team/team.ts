@@ -41,16 +41,6 @@ interface DayActivity {
           <h2 class="squad-title">{{ selectedChannelName }} Team</h2>
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
-
-        <div class="select-wrapper">
-          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
-            <option value="all">All Channels</option>
-            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
-          </select>
-        </div>
       </div>
 
       <!-- Members Grid -->
@@ -384,6 +374,7 @@ export class TeamComponent implements OnInit {
   members: TeamMember[] = [];
   allTasks: any[] = [];
   weeklyActivity: DayActivity[] = [];
+  teams: any[] = [];
 
   ngOnInit() {
     this.initData();
@@ -410,45 +401,143 @@ export class TeamComponent implements OnInit {
 
   async loadTeamData() {
     try {
-      const res: any = await firstValueFrom(this.http.get('/api/tasks'));
-      const tasks = Array.isArray(res) ? res : (res?.data || res?.tasks || []);
-      this.allTasks = tasks;
+      const activeChannel = this.dashService.activeChannelId();
+      this.selectedChannelId = activeChannel || 'all';
+      this.updateSelectedChannelName();
 
-      this.populateChannelsFromTasks();
-      this.processTasksIntoMembers();
+      if (this.selectedChannelId !== 'all') {
+        const tasksList = await firstValueFrom(this.http.get<any[]>('/api/tasks', { params: { channel: this.selectedChannelId } })).catch(() => []) as any[];
+        const discussionsList = await firstValueFrom(this.http.get<any[]>('/api/discussions', { params: { channel: this.selectedChannelId } })).catch(() => []) as any[];
+
+        const activeNames = new Set<string>();
+
+        for (const t of tasksList) {
+          const rawAssignee = t.assigned_to?.name || t.assigned_to || t.owner?.name || t.owner || t.assignee;
+          const assigneeName = this.extractStringName(rawAssignee);
+          if (assigneeName && assigneeName !== 'Unassigned') activeNames.add(assigneeName);
+
+          const rawReporter = t.reporter?.name || t.reporter;
+          const reporterName = this.extractStringName(rawReporter);
+          if (reporterName && reporterName !== 'Unassigned') activeNames.add(reporterName);
+        }
+
+        for (const d of discussionsList) {
+          const authorName = this.extractStringName(d.author || d.sender);
+          if (authorName && authorName !== 'Unassigned') activeNames.add(authorName);
+        }
+
+        this.members = [...activeNames].map((name: string) => {
+          const nameParts = name.trim().split(/\s+/);
+          const initials = nameParts.length > 1
+            ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
+            : name.substring(0, 2).toUpperCase();
+          const colors = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
+          const hash = [...name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+          return {
+            name,
+            role: 'Developer',
+            initials: initials || 'UN',
+            color: colors[Math.abs(hash) % colors.length],
+            current: 0,
+            blocked: 0,
+            doneToday: 0
+          };
+        });
+      } else {
+        const teamsRes: any = await firstValueFrom(this.http.get('/api/teams'));
+        this.teams = Array.isArray(teamsRes) ? teamsRes : (teamsRes?.teams || teamsRes?.data || []);
+
+        const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
+        const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
+        let colorIndex = 0;
+
+        for (const team of this.teams) {
+          for (const m of team.members || []) {
+            const name = this.extractStringName(m);
+            if (!memberMap.has(name)) {
+              memberMap.set(name, {
+                current: 0,
+                blocked: 0,
+                doneToday: 0,
+                role: 'Developer'
+              });
+            }
+          }
+        }
+
+        this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
+          const nameParts = name.trim().split(/\s+/);
+          const initials = nameParts.length > 1
+            ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
+            : name.substring(0, 2).toUpperCase();
+
+          return {
+            name,
+            role: stats.role,
+            initials: initials || 'UN',
+            color: colorPalette[colorIndex++ % colorPalette.length],
+            current: stats.current,
+            blocked: stats.blocked,
+            doneToday: stats.doneToday
+          };
+        });
+      }
+
+      await this.loadTasksForChannel();
     } catch (err) {
-      console.error('Failed to load tasks for team:', err);
+      console.error('Failed to load team data:', err);
     }
   }
 
-  private populateChannelsFromTasks() {
-    const existingIds = new Set(this.channels.map(c => c.id));
-    const existingNames = new Set(this.channels.map(c => c.name.toLowerCase()));
+  private mapMember(m: any): TeamMember {
+    const name = this.extractStringName(m);
+    const nameParts = name.trim().split(/\s+/);
+    const initials = nameParts.length > 1
+      ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
+      : name.substring(0, 2).toUpperCase();
+    const colors = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
+    const hash = [...name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    return {
+      name,
+      role: 'Developer',
+      initials: initials || 'UN',
+      color: colors[Math.abs(hash) % colors.length],
+      current: 0,
+      blocked: 0,
+      doneToday: 0
+    };
+  }
 
-    for (const t of this.allTasks) {
-      const cId = t.channel_id || t.slack_channel_id || t.channelId || (typeof t.channel === 'object' ? t.channel?.id : null);
-      let cName = typeof t.channel === 'string' ? t.channel : (t.channel_name || t.channel?.name || '');
-      cName = cName.replace(/^#/, '').trim();
-
-      if (cId && !existingIds.has(cId)) {
-        this.channels.push({ id: cId, name: cName || cId });
-        existingIds.add(cId);
-        if (cName) existingNames.add(cName.toLowerCase());
-      } else if (cName && !existingNames.has(cName.toLowerCase())) {
-        this.channels.push({ id: cName.toLowerCase(), name: cName });
-        existingNames.add(cName.toLowerCase());
+  async loadTasksForChannel() {
+    try {
+      const params: any = {};
+      if (this.selectedChannelId !== 'all') {
+        params.channel = this.selectedChannelId;
       }
+
+      const res: any = await firstValueFrom(this.http.get('/api/tasks', { params }));
+      this.allTasks = Array.isArray(res) ? res : (res?.data || res?.tasks || []);
+
+      this.processTasksIntoMembers();
+    } catch (err) {
+      console.error('Failed to load tasks for team workload:', err);
+      this.allTasks = [];
+      this.processTasksIntoMembers();
     }
   }
 
   onChannelChange() {
+    this.updateSelectedChannelName();
+    this.loadTeamData();
+  }
+
+  private updateSelectedChannelName() {
     if (this.selectedChannelId === 'all') {
       this.selectedChannelName = 'All Channels';
     } else {
       const found = this.channels.find(c => c.id === this.selectedChannelId);
       this.selectedChannelName = found ? `#${found.name}` : 'Channel';
     }
-    this.processTasksIntoMembers();
   }
 
   private extractStringName(input: any): string {
@@ -505,6 +594,15 @@ export class TeamComponent implements OnInit {
       weeklyDataMap.set(label, { current: 0, blocked: 0, completed: 0, total: 0 });
     }
 
+    const baseMembers = this.selectedChannelId === 'all'
+      ? (this.teams || []).flatMap((team: any) => team.members || [])
+      : (this.teams.find((t: any) => t.channel_id === this.selectedChannelId)?.members || []);
+
+    for (const m of baseMembers) {
+      const name = this.extractStringName(m);
+      memberMap.set(name, { current: 0, blocked: 0, doneToday: 0, role: 'Developer' });
+    }
+
     for (const task of filteredTasks) {
       const rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
       const assigneeName = this.extractStringName(rawAssignee);
@@ -514,7 +612,7 @@ export class TeamComponent implements OnInit {
           current: 0,
           blocked: 0,
           doneToday: 0,
-          role: (typeof task.assigned_to === 'object' && task.assigned_to?.role) ? task.assigned_to.role : 'Developer'
+          role: 'Developer'
         });
       }
 
@@ -565,7 +663,6 @@ export class TeamComponent implements OnInit {
       completed: stats.completed
     }));
 
-    // 🟢 Triggers Angular Change Detection immediately once data is ready
     this.cdr.detectChanges();
   }
 

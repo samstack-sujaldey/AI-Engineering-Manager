@@ -2,8 +2,9 @@ import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
-import { DashboardService } from '../services/dashboard.service'; // Adjust path
 import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
+import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
 @Component({
   selector: 'app-tasks',
@@ -15,23 +16,29 @@ import { HttpClient } from '@angular/common/http';
       searchPlaceholder="Search tasks, PRs, or team..."
     ></app-page-header>
 
-    <div class="tasks-body">
-      <div class="filters-row">
-        <select class="filter-select" [(ngModel)]="statusFilter">
-          <option value="all">Status: All</option>
-          <option value="TODO">To Do</option>
-          <option value="PROCESSING">In Progress</option>
-          <option value="COMPLETED">Completed</option>
-          <option value="BLOCKED">Blocked</option>
-        </select>
-        <select class="filter-select" [(ngModel)]="priorityFilter">
-          <option value="all">Priority: All</option>
-          <option value="LOW">Low</option>
-          <option value="MEDIUM">Medium</option>
-          <option value="HIGH">High</option>
-          <option value="URGENT">Urgent</option>
-        </select>
-      </div>
+      <div class="tasks-body">
+        <div class="filters-row">
+          <select class="filter-select" [(ngModel)]="statusFilter">
+            <option value="all">Status: All</option>
+            <option value="TODO">To Do</option>
+            <option value="PROCESSING">In Progress</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="BLOCKED">Blocked</option>
+          </select>
+          <select class="filter-select" [(ngModel)]="priorityFilter">
+            <option value="all">Priority: All</option>
+            <option value="LOW">Low</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
+            <option value="URGENT">Urgent</option>
+          </select>
+          <input
+            type="date"
+            class="filter-select"
+            [(ngModel)]="dateFilter"
+            (change)="loadTasks()"
+          />
+        </div>
 
       <div class="tasks-table-card">
         <table class="tasks-table">
@@ -425,18 +432,32 @@ export class TasksComponent implements OnInit {
   tasks: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
+  dateFilter = '';
 
   selectedBlockedTask: any = null;
 
   ngOnInit() {
+    this.setDefaultDate();
     this.loadTasks();
+  }
+
+  private setDefaultDate() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.dateFilter = `${year}-${month}-${day}`;
   }
 
   async loadTasks() {
     try {
-      const tasks: any = (await this.http.get('/api/tasks').toPromise()) || [];
+      const params: any = {};
+      const activeChannel = this.dashService.activeChannelId();
+      if (activeChannel) params.channel = activeChannel;
+      if (this.dateFilter) params.date = this.dateFilter;
 
-      // Filter out completed tasks so they never show up on the Task page view
+      const tasks: any = (await this.http.get('/api/tasks', { params }).toPromise()) || [];
+
       this.tasks = tasks.filter((t: any) => {
         const status = (t.status || '').toLowerCase();
         return status !== 'done' && status !== 'completed';

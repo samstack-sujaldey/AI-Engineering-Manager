@@ -33,20 +33,42 @@ export class DashboardService {
   readonly error = signal<string | null>(null);
   readonly live = signal(false);
   readonly syncInfo = signal<string | null>(null);
+  readonly activeChannelId = signal<string | null>(null);
+
+  constructor() {
+    const stored = localStorage.getItem('active_channel_id');
+    if (stored) this.activeChannelId.set(stored);
+  }
 
   async load(): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     try {
-      const data = await firstValueFrom(
-        this.http.get<DashboardData>(`${environment.apiUrl}/dashboard`),
-      );
+      const channel = this.activeChannelId();
+      const url = channel
+        ? `${environment.apiUrl}/dashboard?channel=${encodeURIComponent(channel)}`
+        : `${environment.apiUrl}/dashboard`;
+      const data = await firstValueFrom(this.http.get<DashboardData>(url));
       this.data.set(data);
     } catch (err: any) {
       this.error.set(err.message || 'Failed to load dashboard data from backend.');
     } finally {
       this.loading.set(false);
     }
+  }
+
+  setActiveChannel(channelId: string | null) {
+    this.activeChannelId.set(channelId);
+    if (channelId) {
+      localStorage.setItem('active_channel_id', channelId);
+    } else {
+      localStorage.removeItem('active_channel_id');
+    }
+  }
+
+  clearActiveChannel() {
+    this.activeChannelId.set(null);
+    localStorage.removeItem('active_channel_id');
   }
 
   async refresh(channels?: string[]): Promise<void> {
