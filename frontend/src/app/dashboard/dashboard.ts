@@ -59,10 +59,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
             <div class="standup-entry" *ngFor="let disc of data.discussion_timeline.slice(0, 3)">
               <div class="standup-text">{{ disc.content }}</div>
-              <div class="standup-meta">
-                <span class="slack-badge">{{ disc.author?.name || 'User' }}</span>
-                <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
-              </div>
+               <div class="standup-meta">
+                 <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
+                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
+               </div>
             </div>
 
             <div
@@ -118,7 +118,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                     {{ getInitials(w.name) }}
                   </div>
                   <div>
-                    <div class="member-name">{{ w.name || 'Unassigned' }}</div>
+                    <div class="member-name">{{ displayName({name: w.name}) || 'Unassigned' }}</div>
                     <div class="member-role">Developer</div>
                   </div>
                 </td>

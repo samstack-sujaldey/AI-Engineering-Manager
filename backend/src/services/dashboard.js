@@ -50,8 +50,9 @@ async function getDashboard() {
   const ownerWorkload = {};
   for (const t of tasks) {
     if (t.status === 'COMPLETED') continue;
-    const key = t.assigned_to?.id || t.assigned_to?.name || 'Unassigned';
-    const label = t.assigned_to?.name || t.assigned_to?.display_name || 'Unassigned';
+    const normalizedAssignee = normalizeUserRef(t.assigned_to || {});
+    const key = normalizedAssignee.id || normalizedAssignee.name || 'Unassigned';
+    const label = normalizedAssignee.display_name || normalizedAssignee.name || 'Unassigned';
     if (!ownerWorkload[key]) {
       ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
@@ -61,8 +62,9 @@ async function getDashboard() {
   }
   for (const i of issues) {
     if (i.status === 'COMPLETED') continue;
-    const key = i.assigned_to?.id || i.assigned_to?.name || 'Unassigned';
-    const label = i.assigned_to?.name || i.assigned_to?.display_name || 'Unassigned';
+    const normalizedAssignee = normalizeUserRef(i.assigned_to || {});
+    const key = normalizedAssignee.id || normalizedAssignee.name || 'Unassigned';
+    const label = normalizedAssignee.display_name || normalizedAssignee.name || 'Unassigned';
     if (!ownerWorkload[key]) {
       ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
