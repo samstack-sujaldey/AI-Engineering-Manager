@@ -5,4 +5,5 @@ module.exports = {
   Notification: require('./Notification'),
   Activity: require('./Activity'),
   DailySummary: require('./DailySummary'),
+  Team: require('./Team'),
 };

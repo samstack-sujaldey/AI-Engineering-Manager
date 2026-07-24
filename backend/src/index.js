@@ -14,7 +14,7 @@ const { createApiRouter } = require("./routes/api");
 const { NotificationService } = require("./services/notifications");
 const { MessageProcessor } = require("./services/messageProcessor");
 const { findWorkByMessageTs } = require("./services/similarity");
-const { Discussion } = require("./models");
+const { Discussion, Team } = require("./models");
 const { createSlackApp } = require("./slack/app");
 const { startReminderScheduler } = require("./jobs/reminders");
 
@@ -116,7 +116,7 @@ async function main() {
             display_name: msg.user,
           };
 
-          const existingWork = await findWorkByMessageTs(msg.ts);
+          const existingWork = await findWorkByMessageTs(msg.ts, channelId);
           if (existingWork.task || existingWork.issue) {
             console.log(`[pipeline] Skipping already processed message (task/issue exists): ${msg.ts}`);
             continue;
@@ -156,6 +156,35 @@ async function main() {
       console.log(
         `[pipeline complete] Extracted Tasks: ${tasks.length} | Issues: ${issues.length} | Discussions: ${discussions.length}`
       );
+
+      try {
+        const members = Object.values(userDirectory).map((u) => ({
+          id: u.id || "",
+          name: u.name || "",
+          display_name: u.display_name || u.real_name || u.name || "",
+          real_name: u.real_name || u.name || "",
+          email: u.email || "",
+        }));
+
+        const teamId = `team_${channelId}`;
+        await Team.findOneAndUpdate(
+          { channel_id: channelId },
+          {
+            team_id: teamId,
+            channel_id: channelId,
+            channel_name: req.body?.channel_name || channelId,
+            workspace_id: req.body?.workspace_id || "",
+            team: req.body?.team || "",
+            members,
+            member_count: members.length,
+            last_synced_at: new Date(),
+          },
+          { upsert: true, new: true }
+        );
+        console.log(`[pipeline] Team synced for channel: ${channelId} (${members.length} members)`);
+      } catch (teamErr) {
+        console.warn(`[pipeline warning] Failed to sync team:`, teamErr.message);
+      }
 
       return res.json({
         success: true,

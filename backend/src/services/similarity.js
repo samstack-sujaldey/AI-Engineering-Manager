@@ -94,12 +94,14 @@ async function findWorkByThread(thread, channel) {
 	return { task, issue };
 }
 
-async function findWorkByMessageTs(messageTs) {
-	if (!messageTs) return { task: null, issue: null };
-	let [task, issue] = await Promise.all([
-		Task.findOne({ slack_message_ts: messageTs }).lean(),
-		Issue.findOne({ slack_message_ts: messageTs }).lean(),
-	]);
+async function findWorkByMessageTs(messageTs, channel) {
+ 	if (!messageTs) return { task: null, issue: null };
+ 	const filter = { slack_message_ts: messageTs };
+ 	if (channel) filter.channel = channel;
+ 	let [task, issue] = await Promise.all([
+ 		Task.findOne(filter).lean(),
+ 		Issue.findOne(filter).lean(),
+ 	]);
 
 	if (!task && !issue) {
 		const notif = await Notification.findOne({

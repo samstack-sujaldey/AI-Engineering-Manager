@@ -65,7 +65,7 @@ async function buildDirectory(client, text, cache) {
 }
 
 async function alreadyProcessed(messageTs) {
-  const { task, issue } = await findWorkByMessageTs(messageTs);
+  const { task, issue } = await findWorkByMessageTs(messageTs, channel?.id || channel);
   if (task || issue) return { skipped: true, type: task ? 'TASK_MATCH' : 'ISSUE_MATCH' };
   
   const discussion = await Discussion.findOne({ slack_message_ts: messageTs }).lean();

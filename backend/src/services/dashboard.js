@@ -2,8 +2,13 @@ const { Task, Issue, Discussion, Activity, Notification } = require('../models')
 const { isOverdue } = require('../utils/helpers');
 const { normalizePersonName } = require('../agent/parser');
 
-async function getDashboard() {
+async function getDashboard(channel = null) {
   const now = new Date();
+
+  const taskFilter = channel ? { channel } : {};
+  const issueFilter = channel ? { channel } : {};
+  const discussionFilter = channel ? { channel } : {};
+  const activityFilter = channel ? { channel } : {};
 
   const [
     tasks,
@@ -14,10 +19,10 @@ async function getDashboard() {
     taskStats,
     issueStats,
   ] = await Promise.all([
-    Task.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Issue.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Discussion.find().sort({ timestamp: -1 }).limit(100).lean(),
-    Activity.find().sort({ created_at: -1 }).limit(50).lean(),
+    Task.find(taskFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Issue.find(issueFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Discussion.find(discussionFilter).sort({ timestamp: -1 }).limit(100).lean(),
+    Activity.find(activityFilter).sort({ created_at: -1 }).limit(50).lean(),
     Notification.find({
       status: { $in: ['PENDING', 'SENT'] },
       type: {

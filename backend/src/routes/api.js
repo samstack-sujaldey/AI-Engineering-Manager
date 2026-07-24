@@ -1,6 +1,6 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
-const { Task, Issue, Discussion } = require("../models");
+const { Task, Issue, Discussion, Team } = require("../models");
 const { getDashboard } = require("../services/dashboard");
 const {
   createSlackClient,
@@ -17,78 +17,80 @@ function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
   router.get("/discussions/daily-summary", async (req, res) => {
-  try {
-    // 1. Get requested date string safely (YYYY-MM-DD)
-    const getTodayStr = () => {
-      const d = new Date();
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    };
+    try {
+      const getTodayStr = () => {
+        const d = new Date();
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      };
 
-    const requestedDateStr = req.query.date
-      ? String(req.query.date).split("T")[0].trim()
-      : getTodayStr();
+      const requestedDateStr = req.query.date
+        ? String(req.query.date).split("T")[0].trim()
+        : getTodayStr();
 
-    const forceRefresh = req.query.forceRefresh === "true";
+      const forceRefresh = req.query.forceRefresh === "true";
+      const channel = req.query.channel || null;
 
-    // 2. Cache Lookup
-    if (!forceRefresh) {
-      const cachedDoc = await DailySummary.findOne({
-        date: requestedDateStr,
-      }).lean();
-      if (cachedDoc && cachedDoc.summary) {
-        console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}`);
-        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-        res.setHeader("Pragma", "no-cache");
-        res.setHeader("Expires", "0");
-        return res.json({
-          date: requestedDateStr,
-          summary: cachedDoc.summary,
-          tasks_count: cachedDoc.tasks_count || 0,
-          issues_count: cachedDoc.issues_count || 0,
-          cached: true,
-          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-        });
+      const cacheKey = channel ? { date: requestedDateStr, channel } : { date: requestedDateStr };
+
+      if (!forceRefresh) {
+        const cachedDoc = await DailySummary.findOne(cacheKey).lean();
+        if (cachedDoc && cachedDoc.summary) {
+          console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}${channel ? ` (${channel})` : ''}`);
+          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+          return res.json({
+            date: requestedDateStr,
+            channel: channel || null,
+            summary: cachedDoc.summary,
+            tasks_count: cachedDoc.tasks_count || 0,
+            issues_count: cachedDoc.issues_count || 0,
+            cached: true,
+            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+          });
+        }
       }
-    }
 
-    console.log(`[DailySummary] 🤖 Generating summary for (${requestedDateStr})...`);
+      console.log(`[DailySummary] 🤖 Generating summary for (${requestedDateStr})${channel ? ` (${channel})` : ''}...`);
 
-    // 3. Parse date strictly without timezone shifting or subtracting extra days
-    const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
-    if (!reqYear || !reqMonth || !reqDay) {
-      return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-    }
+      const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
+      if (!reqYear || !reqMonth || !reqDay) {
+        return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+      }
 
-    // Set local start and end of the requested day
-    const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
-    const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
+      const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
+      const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
 
-    // 4. Query DB for tasks and issues strictly within the requested day
-    const [tasks, issues] = await Promise.all([
-      Task.find(
-        {
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            { due_date: { $gte: startOfDay, $lte: endOfDay } },
-          ],
-        },
-        "title status priority blocked_reason"
-      ).lean().catch(() => []),
+      const taskBaseFilter = {
+        $or: [
+          { created_time: { $gte: startOfDay, $lte: endOfDay } },
+          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+          { due_date: { $gte: startOfDay, $lte: endOfDay } },
+        ],
+      };
+      const issueBaseFilter = {
+        $or: [
+          { created_time: { $gte: startOfDay, $lte: endOfDay } },
+          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+        ],
+      };
 
-      Issue.find(
-        {
-          $or: [
-            { created_time: { $gte: startOfDay, $lte: endOfDay } },
-            { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-          ],
-        },
-        "title status priority blocked_reason"
-      ).lean().catch(() => []),
-    ]);
+      if (channel) {
+        taskBaseFilter.channel = channel;
+        issueBaseFilter.channel = channel;
+      }
+
+      const [tasks, issues] = await Promise.all([
+        Task.find(taskBaseFilter, "title status priority blocked_reason")
+          .lean()
+          .catch(() => []),
+        Issue.find(issueBaseFilter, "title status priority blocked_reason")
+          .lean()
+          .catch(() => []),
+      ]);
 
     let summaryText = "";
 
@@ -131,7 +133,7 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
 
     // 5. Save to DB under requestedDateStr
     const updatedDoc = await DailySummary.findOneAndUpdate(
-      { date: requestedDateStr },
+      cacheKey,
       {
         summary: summaryText,
         tasks_count: tasks.length,
@@ -148,6 +150,7 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
 
     return res.json({
       date: requestedDateStr,
+      channel: channel || null,
       summary: summaryText,
       tasks_count: tasks.length,
       issues_count: issues.length,
@@ -168,9 +171,10 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
     });
   });
 
-  router.get("/dashboard", async (_req, res, next) => {
+  router.get("/dashboard", async (req, res, next) => {
     try {
-      const data = await getDashboard();
+      const channel = req.query.channel || null;
+      const data = await getDashboard(channel);
       res.json(data);
     } catch (err) {
       next(err);
@@ -238,6 +242,25 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
       }
 
       if (req.query.priority) filter.priority = req.query.priority;
+
+      if (req.query.channel) {
+        filter.channel = req.query.channel;
+      }
+
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+            { due_date: { $gte: start, $lte: end } },
+          ];
+        }
+      }
 
       if (req.query.assignee) {
         filter.$or = [
@@ -354,6 +377,22 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
       const filter = {};
       if (req.query.status) filter.status = req.query.status;
       if (req.query.priority) filter.priority = req.query.priority;
+      if (req.query.channel) filter.channel = req.query.channel;
+
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+          ];
+        }
+      }
+
       const issues = await Issue.find(filter).sort({ updated_time: -1 }).lean();
       res.json(issues);
     } catch (err) {
@@ -371,13 +410,41 @@ Issues: ${JSON.stringify(issues.map(i => ({ title: i.title, status: i.status, pr
     }
   });
 
-  router.get("/discussions", async (_req, res, next) => {
+  router.get("/discussions", async (req, res, next) => {
     try {
-      const discussions = await Discussion.find()
+      const filter = {};
+      if (req.query.channel) filter.channel = req.query.channel;
+
+      const discussions = await Discussion.find(filter)
         .sort({ timestamp: -1 })
         .limit(200)
         .lean();
       res.json(discussions);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/teams", async (req, res, next) => {
+    try {
+      const channelId = req.query.channelId;
+      const filter = {};
+      if (channelId) filter.channel_id = channelId;
+
+      const teams = await Team.find(filter)
+        .sort({ updated_time: -1 })
+        .lean();
+      res.json(teams);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/teams/channel/:channelId", async (req, res, next) => {
+    try {
+      const team = await Team.findOne({ channel_id: req.params.channelId }).lean();
+      if (!team) return res.status(404).json({ error: "Team not found for channel" });
+      res.json(team);
     } catch (err) {
       next(err);
     }
