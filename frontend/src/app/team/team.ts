@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -376,6 +376,7 @@ interface DayActivity {
 export class TeamComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
+  private cdr = inject(ChangeDetectorRef);
 
   selectedChannelId = 'all';
   selectedChannelName = 'All Channels';
@@ -384,8 +385,11 @@ export class TeamComponent implements OnInit {
   allTasks: any[] = [];
   weeklyActivity: DayActivity[] = [];
 
-  async ngOnInit() {
-    // Synchronous execution ensures channels load first so initial channel mapping works
+  ngOnInit() {
+    this.initData();
+  }
+
+  async initData() {
     await this.fetchChannels();
     await this.loadTeamData();
   }
@@ -393,23 +397,47 @@ export class TeamComponent implements OnInit {
   async fetchChannels() {
     try {
       const res: any = await firstValueFrom(this.http.get('/api/slack/channels'));
-      const rawChannels = res?.channels || (Array.isArray(res) ? res : []);
+      const rawChannels = res?.channels || (Array.isArray(res) ? res : res?.data || []);
+      
       this.channels = rawChannels.map((c: any) => ({
         id: c.id || c.channel_id,
-        name: (c.name || c.channel_name || 'channel').replace(/^#/, '')
+        name: (c.name || c.channel_name || 'channel').replace(/^#/, '').trim()
       }));
     } catch (err) {
-      console.error('Failed to load channels:', err);
+      console.error('Failed to load channels API, falling back to task channel extraction:', err);
     }
   }
 
   async loadTeamData() {
     try {
-      const tasks: any = (await firstValueFrom(this.http.get('/api/tasks'))) || [];
-      this.allTasks = Array.isArray(tasks) ? tasks : [];
+      const res: any = await firstValueFrom(this.http.get('/api/tasks'));
+      const tasks = Array.isArray(res) ? res : (res?.data || res?.tasks || []);
+      this.allTasks = tasks;
+
+      this.populateChannelsFromTasks();
       this.processTasksIntoMembers();
     } catch (err) {
       console.error('Failed to load tasks for team:', err);
+    }
+  }
+
+  private populateChannelsFromTasks() {
+    const existingIds = new Set(this.channels.map(c => c.id));
+    const existingNames = new Set(this.channels.map(c => c.name.toLowerCase()));
+
+    for (const t of this.allTasks) {
+      const cId = t.channel_id || t.slack_channel_id || t.channelId || (typeof t.channel === 'object' ? t.channel?.id : null);
+      let cName = typeof t.channel === 'string' ? t.channel : (t.channel_name || t.channel?.name || '');
+      cName = cName.replace(/^#/, '').trim();
+
+      if (cId && !existingIds.has(cId)) {
+        this.channels.push({ id: cId, name: cName || cId });
+        existingIds.add(cId);
+        if (cName) existingNames.add(cName.toLowerCase());
+      } else if (cName && !existingNames.has(cName.toLowerCase())) {
+        this.channels.push({ id: cName.toLowerCase(), name: cName });
+        existingNames.add(cName.toLowerCase());
+      }
     }
   }
 
@@ -425,27 +453,43 @@ export class TeamComponent implements OnInit {
 
   private extractStringName(input: any): string {
     if (!input) return 'Unassigned';
-    if (typeof input === 'string') return input.trim();
-    if (typeof input === 'object') {
-      return (input.name || input.display_name || input.real_name || 'Unassigned').trim();
+    let raw = '';
+    if (typeof input === 'string') raw = input;
+    else if (typeof input === 'object') {
+      raw = input.display_name || input.real_name || input.name || 'Unassigned';
+    } else {
+      raw = String(input);
     }
-    return String(input).trim();
+
+    raw = raw.trim();
+    if (raw.startsWith('<@') && raw.endsWith('>')) {
+      raw = raw.slice(2, -1);
+    }
+    if (raw.includes('@') && !raw.startsWith('<')) {
+      raw = raw.split('@')[0].replace(/[._-]+/g, ' ');
+    }
+    return raw.charAt(0).toUpperCase() + raw.slice(1) || 'Unassigned';
   }
 
   processTasksIntoMembers() {
     const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
-    const colorPalette = ['#f59e0b', '#ef4444', '#10b981', '#6366f1', '#8b5cf6', '#3b82f6'];
+    const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
     let colorIndex = 0;
 
-    const rawSearchName = this.selectedChannelName.replace(/^#/, '');
+    const selectedChanObj = this.channels.find(c => c.id === this.selectedChannelId);
+    const targetId = this.selectedChannelId;
+    const targetName = selectedChanObj ? selectedChanObj.name.toLowerCase() : '';
 
-    // Filter tasks accurately across all channel fields
     const filteredTasks = this.selectedChannelId === 'all'
       ? this.allTasks
       : this.allTasks.filter(t => {
-          const chanId = t.channel_id || t.slack_channel_id;
-          const chanName = (t.channel || t.channel_name || '').replace(/^#/, '');
-          return chanId === this.selectedChannelId || chanName === rawSearchName;
+          const chanId = t.channel_id || t.slack_channel_id || t.channelId || (typeof t.channel === 'object' ? t.channel?.id : null);
+          let chanName = typeof t.channel === 'string' ? t.channel : (t.channel_name || t.channel?.name || '');
+          chanName = chanName.replace(/^#/, '').trim().toLowerCase();
+
+          return (chanId && chanId === targetId) ||
+                 (targetName && chanName === targetName) ||
+                 (chanName && chanName === targetId.toLowerCase());
         });
 
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -517,6 +561,9 @@ export class TeamComponent implements OnInit {
       blocked: stats.blocked,
       completed: stats.completed
     }));
+
+    // 🟢 Triggers Angular Change Detection immediately once data is ready
+    this.cdr.detectChanges();
   }
 
   getDayPercentageNumber(day: DayActivity, type: 'current' | 'blocked' | 'completed'): number {
