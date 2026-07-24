@@ -466,9 +466,12 @@ export class TeamComponent implements OnInit {
       raw = raw.slice(2, -1);
     }
     if (raw.includes('@') && !raw.startsWith('<')) {
-      raw = raw.split('@')[0].replace(/[._-]+/g, ' ');
+      raw = raw.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    } else {
+      raw = raw.replace(/[._-]+/g, ' ').trim();
     }
-    return raw.charAt(0).toUpperCase() + raw.slice(1) || 'Unassigned';
+    const normalized = raw || 'Unassigned';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
   processTasksIntoMembers() {

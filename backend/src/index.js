@@ -13,6 +13,8 @@ const config = require("./config");
 const { createApiRouter } = require("./routes/api");
 const { NotificationService } = require("./services/notifications");
 const { MessageProcessor } = require("./services/messageProcessor");
+const { findWorkByMessageTs } = require("./services/similarity");
+const { Discussion } = require("./models");
 const { createSlackApp } = require("./slack/app");
 const { startReminderScheduler } = require("./jobs/reminders");
 
@@ -62,7 +64,7 @@ async function main() {
               id: u.id,
               name: u.name,
               real_name: u.profile?.real_name || u.real_name || u.name,
-              display_name: u.profile?.display_name || u.name || u.real_name,
+              display_name: u.profile?.display_name || u.profile?.real_name || u.real_name || u.name,
             };
           });
         }
@@ -94,7 +96,7 @@ async function main() {
       } while (cursor && rawMessages.length < targetLimit);
 
       const userMessages = rawMessages
-        .filter((m) => m.text && m.text.trim().length > 0 && !m.subtype && !m.bot_id)
+        .filter((m) => m.text && m.text.trim().length > 0 && (!m.subtype || m.subtype === "file_share") && !m.bot_id)
         .reverse();
 
       console.log(
@@ -107,9 +109,23 @@ async function main() {
 
       for (const msg of userMessages) {
         try {
+          const sender = userDirectory[msg.user] || {
+            id: msg.user,
+            name: msg.user,
+            real_name: msg.user,
+            display_name: msg.user,
+          };
+
+          const existingWork = await findWorkByMessageTs(msg.ts);
+          const existingDiscussion = await Discussion.findOne({ slack_message_ts: msg.ts }).lean();
+          if (existingWork.task || existingWork.issue || existingDiscussion) {
+            console.log(`[pipeline] Skipping already processed message: ${msg.ts}`);
+            continue;
+          }
+
           const rawPayload = {
             text: msg.text,
-            sender: msg.user,
+            sender,
             channel: channelId,
             thread_id: msg.thread_ts || msg.ts,
             message_ts: msg.ts,
