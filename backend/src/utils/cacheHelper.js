@@ -1,5 +1,5 @@
 const DailySummary = require('../models/DailySummary');
-const { callOpenRouter } = require('../ai/openai');
+const { callOpenAi, callOpenAI } = require('../ai/openai');
 const { Task, Issue } = require('../models');
 
 let debounceTimer = null;
@@ -95,7 +95,7 @@ Tasks: ${JSON.stringify(formattedTasks)}
 Issues: ${JSON.stringify(formattedIssues)}
 `;
 
-    const summaryText = await callOpenRouter(
+    const summaryText = await callOpenAI(
       [{ role: 'user', content: prompt }],
       { maxTokens: 400, temperature: 0.1 }
     );
