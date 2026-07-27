@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit ,ChangeDetectorRef } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -16,12 +16,12 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     <div class="issues-body">
       <!-- Filters -->
       <div class="filters-row">
-        <select class="filter-select" [(ngModel)]="statusFilter">
+        <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadIssues()">
           <option value="all">Status: All</option>
           <option value="HOLD">Hold</option>
           <option value="RESOLVED">Resolved</option>
         </select>
-        <select class="filter-select" [(ngModel)]="priorityFilter">
+        <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadIssues()">
           <option value="all">Priority: All</option>
           <option value="URGENT">Urgent</option>
           <option value="HIGH">High</option>
@@ -32,7 +32,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
           type="date"
           class="filter-select"
           [(ngModel)]="dateFilter"
-          (change)="loadIssues()"
+          (change)="loadIssuesOnFilterChange()"
         />
       </div>
 
@@ -323,6 +323,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 export class IssuesComponent implements OnInit {
   dashService = inject(DashboardService);
   http = inject(HttpClient);
+  private cdr = inject(ChangeDetectorRef);
 
   issues: any[] = [];
   statusFilter = 'all';
@@ -331,7 +332,20 @@ export class IssuesComponent implements OnInit {
   loading = false;
 
   ngOnInit() {
-    this.loadIssues();
+    this.initializeAndLoadIssues();
+  }
+
+  private setDefaultDate() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.dateFilter = `${year}-${month}-${day}`;
+  }
+
+  private async initializeAndLoadIssues() {
+    this.setDefaultDate();
+    await this.loadIssues();
   }
 
   async loadIssues() {
@@ -345,12 +359,18 @@ export class IssuesComponent implements OnInit {
       if (this.dateFilter) params.date = this.dateFilter;
 
       this.issues = await firstValueFrom(this.http.get('/api/issues', { params })) as any[] || [];
+      this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load issues:', err);
       this.issues = [];
     } finally {
       this.loading = false;
+      this.cdr.detectChanges();
     }
+  }
+
+  loadIssuesOnFilterChange() {
+    this.loadIssues();
   }
 
   filteredIssues(issues: any[]): any[] {
