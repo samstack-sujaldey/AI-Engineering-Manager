@@ -107,7 +107,7 @@ class MessageProcessor {
     const textHash = hashText(text);
 
     if (is_edit && message_ts) {
-      const byMsg = await findWorkByMessageTs(message_ts);
+      const byMsg = await findWorkByMessageTs(message_ts, channel);
       existing_task = byMsg.task;
       existing_issue = byMsg.issue;
 

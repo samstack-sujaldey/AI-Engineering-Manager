@@ -1,6 +1,7 @@
 const DailySummary = require('../models/DailySummary');
-const { callOpenAi, callOpenAI } = require('../ai/openai');
+const { callOpenAI } = require('../ai/openai');
 const { Task, Issue } = require('../models');
+const { normalizePersonName } = require('../agent/parser');
 
 let debounceTimer = null;
 
@@ -63,20 +64,28 @@ async function regenerateSummaryInBackground(targetDateStr) {
     ]);
 
     // Format tasks with assigned team member and current status
-    const formattedTasks = tasks.map(t => ({
-      title: t.title,
-      status: t.status,
-      assigned_to: t.assigned_to?.name || t.owner?.name || 'Unassigned',
-      blocked_reason: t.blocked_reason || null
-    }));
+    const formattedTasks = tasks.map(t => {
+      const assignee = t.assigned_to || t.owner || {};
+      const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      return {
+        title: t.title,
+        status: t.status,
+        assigned_to: normalizePersonName(rawName),
+        blocked_reason: t.blocked_reason || null
+      };
+    });
 
     // Format issues with assigned team member and priority/status
-    const formattedIssues = issues.map(i => ({
-      title: i.title,
-      status: i.status,
-      priority: i.priority,
-      assigned_to: i.assigned_to?.name || i.owner?.name || 'Unassigned'
-    }));
+    const formattedIssues = issues.map(i => {
+      const assignee = i.assigned_to || i.owner || {};
+      const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      return {
+        title: i.title,
+        status: i.status,
+        priority: i.priority,
+        assigned_to: normalizePersonName(rawName)
+      };
+    });
 
     const prompt = `
 Generate an engineering daily summary for Yesterday (${targetDate}):

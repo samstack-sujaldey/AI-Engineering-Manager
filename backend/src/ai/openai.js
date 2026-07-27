@@ -105,14 +105,15 @@ async function analyzeImage(fileOrPath, mimeTypeArg) {
   // Use a vision-capable model (gpt-4o-mini natively supports vision)
   const visionModel = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
 
-  const rawResponse = await callOpenAI(
-    [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `You are analyzing an image attachment uploaded in a Slack conversation.
+  try {
+    const rawResponse = await callOpenAI(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `You are analyzing an image attachment uploaded in a Slack conversation.
 
 Return ONLY valid JSON in this exact structure without markdown formatting:
 {
@@ -125,28 +126,42 @@ Return ONLY valid JSON in this exact structure without markdown formatting:
   "importantEntities": [],
   "confidence": 0.9
 }`,
-          },
-          {
-            type: "image_url",
-            image_url: { url: `data:${mimeType};base64,${base64}` },
-          },
-        ],
+            },
+            {
+              type: "image_url",
+              image_url: { url: `data:${mimeType};base64,${base64}` },
+            },
+          ],
+        },
+      ],
+      {
+        maxTokens: 500,
+        temperature: 0.2,
+        timeoutMs: 25000,
+        model: visionModel,
       },
-    ],
-    {
-      maxTokens: 500,
-      temperature: 0.2,
-      timeoutMs: 25000,
-      model: visionModel,
-    },
-  );
+    );
 
-  if (!rawResponse) {
-    throw new Error("OpenAI Vision API returned an empty or timed-out response.");
+    if (!rawResponse) {
+      throw new Error("OpenAI Vision API returned an empty or timed-out response.");
+    }
+
+    const jsonText = cleanJsonResponse(rawResponse);
+    return JSON.parse(jsonText);
+  } catch (err) {
+    console.warn(`[analyzeImage] Skipping image analysis for ${localPath}:`, err.message);
+    return {
+      summary: "Image attachment (image analysis skipped)",
+      text: "",
+      containsCode: false,
+      containsError: false,
+      containsUI: false,
+      containsDiagram: false,
+      importantEntities: [],
+      confidence: 0.5,
+      skipped: true,
+    };
   }
-
-  const jsonText = cleanJsonResponse(rawResponse);
-  return JSON.parse(jsonText);
 }
 
 module.exports = {

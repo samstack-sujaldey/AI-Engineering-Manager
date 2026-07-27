@@ -1,6 +1,6 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
-const { Task, Issue, Discussion } = require("../models");
+const { Task, Issue, Discussion, Team } = require("../models");
 const { getDashboard } = require("../services/dashboard");
 const {
   createSlackClient,
@@ -16,9 +16,9 @@ const { callOpenAI } = require(".././ai/openai.js");
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
+  // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   router.get("/discussions/daily-summary", async (req, res) => {
     try {
-      // 1. Get requested date string safely (YYYY-MM-DD)
       const getTodayStr = () => {
         const d = new Date();
         const year = d.getFullYear();
@@ -32,19 +32,21 @@ function createApiRouter({ messageProcessor }) {
         : getTodayStr();
 
       const forceRefresh = req.query.forceRefresh === "true";
+      const channel = req.query.channel || null;
 
-      // 2. Cache Lookup
+      const cacheKey = channel ? { date: requestedDateStr, channel } : { date: requestedDateStr };
+
+      // 1. Cache Lookup
       if (!forceRefresh) {
-        const cachedDoc = await DailySummary.findOne({
-          date: requestedDateStr,
-        }).lean();
+        const cachedDoc = await DailySummary.findOne(cacheKey).lean();
         if (cachedDoc && cachedDoc.summary) {
-          console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}`);
+          console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}${channel ? ` (${channel})` : ''}`);
           res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
           res.setHeader("Pragma", "no-cache");
           res.setHeader("Expires", "0");
           return res.json({
             date: requestedDateStr,
+            channel: channel || null,
             summary: cachedDoc.summary,
             tasks_count: cachedDoc.tasks_count || 0,
             issues_count: cachedDoc.issues_count || 0,
@@ -54,44 +56,47 @@ function createApiRouter({ messageProcessor }) {
         }
       }
 
-      console.log(`[DailySummary] 🤖 Generating summary for (${requestedDateStr})...`);
+      console.log(`[DailySummary] 🤖 Generating MOM summary for (${requestedDateStr})${channel ? ` (${channel})` : ''}...`);
 
-      // 3. Parse date strictly without timezone shifting
+      // 2. Parse Date
       const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
       if (!reqYear || !reqMonth || !reqDay) {
         return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
       }
 
-      // Set local start and end of the requested day
       const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
       const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
 
-      // 4. Query DB for tasks and issues strictly within the requested day
-      const [tasks, issues] = await Promise.all([
-        Task.find(
-          {
-            $or: [
-              { created_time: { $gte: startOfDay, $lte: endOfDay } },
-              { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-              { due_date: { $gte: startOfDay, $lte: endOfDay } },
-            ],
-          },
-          "title status priority blocked_reason"
-        ).lean().catch(() => []),
+      // 3. Construct Channel Filters
+      const taskBaseFilter = {
+        $or: [
+          { created_time: { $gte: startOfDay, $lte: endOfDay } },
+          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+          { due_date: { $gte: startOfDay, $lte: endOfDay } },
+        ],
+      };
+      const issueBaseFilter = {
+        $or: [
+          { created_time: { $gte: startOfDay, $lte: endOfDay } },
+          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+        ],
+      };
 
-        Issue.find(
-          {
-            $or: [
-              { created_time: { $gte: startOfDay, $lte: endOfDay } },
-              { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-            ],
-          },
-          "title status priority blocked_reason"
-        ).lean().catch(() => []),
+      if (channel) {
+        taskBaseFilter.channel = channel;
+        issueBaseFilter.channel = channel;
+      }
+
+      const [tasks, issues] = await Promise.all([
+        Task.find(taskBaseFilter, "title status priority blocked_reason assigned_to owner")
+          .lean()
+          .catch(() => []),
+        Issue.find(issueBaseFilter, "title status priority blocked_reason assigned_to owner")
+          .lean()
+          .catch(() => []),
       ]);
 
-      // Present Members: everyone who has any task/issue activity today,
-      // deduplicated, in the exact "Present Members: A, B, C" format requested.
+      // 4. Calculate Present Members
       const memberNames = [];
       const seenNames = new Set();
       const addMember = (name) => {
@@ -103,10 +108,6 @@ function createApiRouter({ messageProcessor }) {
       for (const t of tasks) addMember(t.assigned_to?.name || t.owner?.name);
       for (const i of issues) addMember(i.assigned_to?.name || i.owner?.name);
       const presentMembers = memberNames.join(", ") || "—";
-
-      // Standup duration isn't tracked anywhere in the data — using a fixed
-      // default. Override with STANDUP_DURATION in .env if you want a
-      // different value, or wire this up to something real later.
       const duration = process.env.STANDUP_DURATION || "15 Minutes";
 
       const momHeader =
@@ -124,7 +125,7 @@ function createApiRouter({ messageProcessor }) {
         const prompt = `
 You are an AI Engineering Manager writing a Stand-up Minutes of Meeting (MOM) for ${requestedDateStr}.
 
-Format the output EXACTLY like this template (keep this exact structure and header — do not add or remove header lines):
+Format the output EXACTLY like this template:
 
 Hi Everyone, please find Today Stand-up MOM
 Date: ${requestedDateStr}
@@ -142,8 +143,8 @@ Team-wise Task Updates
 INSTRUCTIONS:
 1. Group strictly by team member — one section per name listed in "Present Members" above, in that order. Wrap each member's name in ** ** exactly as shown, on its own line.
 2. Write each bullet as a natural sentence, not a mechanical field dump.
-3. If an item has a blocked reason, give it its OWN separate bullet line starting with "🚨" followed directly by a natural description of the blocker (e.g. "🚨 Currently blocked on the API integration, waiting on review from Aryan.") — don't mix it into another bullet's sentence, and don't add the word "Blocker" since the 🚨 already marks it.
-4. Do not invent work that isn't in the data below — only phrase what's given more naturally, don't add facts.
+3. If an item has a blocked reason, give it its OWN separate bullet line starting with "🚨" followed directly by a natural description of the blocker — don't mix it into another bullet's sentence.
+4. Do not invent work that isn't in the data below.
 5. Skip a member's section entirely if they have no activity today.
 
 Data for ${requestedDateStr}:
@@ -157,7 +158,6 @@ Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.own
         });
 
         if (!summaryText) {
-          // Deterministic fallback, grouped by member, matching the same header.
           const byMember = {};
           const pushItem = (name, line) => {
             const key = name || "Unassigned";
@@ -187,9 +187,9 @@ Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.own
         }
       }
 
-      // 5. Save to DB under requestedDateStr
+      // 5. Save to DB under cacheKey
       const updatedDoc = await DailySummary.findOneAndUpdate(
-        { date: requestedDateStr },
+        cacheKey,
         {
           summary: summaryText,
           tasks_count: tasks.length,
@@ -206,6 +206,7 @@ Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.own
 
       return res.json({
         date: requestedDateStr,
+        channel: channel || null,
         summary: summaryText,
         tasks_count: tasks.length,
         issues_count: issues.length,
@@ -303,7 +304,6 @@ Instructions:
 
       const parsedData = typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
 
-      // Construct MOM-style markdown string
       let formattedText = `Hi Everyone, please find Today Stand-up MOM\n\n`;
       formattedText += `Date: ${parsedData.metadata.date}\n`;
       formattedText += `Duration: ${parsedData.metadata.duration}\n`;
@@ -318,7 +318,6 @@ Instructions:
         formattedText += `\n`;
       });
 
-      // Upsert into DailySummary
       const updatedDoc = await DailySummary.findOneAndUpdate(
         { date: parsedData.metadata.date },
         {
@@ -352,9 +351,10 @@ Instructions:
     });
   });
 
-  router.get("/dashboard", async (_req, res, next) => {
+  router.get("/dashboard", async (req, res, next) => {
     try {
-      const data = await getDashboard();
+      const channel = req.query.channel || null;
+      const data = await getDashboard(channel);
       res.json(data);
     } catch (err) {
       next(err);
@@ -422,6 +422,25 @@ Instructions:
       }
 
       if (req.query.priority) filter.priority = req.query.priority;
+
+      if (req.query.channel) {
+        filter.channel = req.query.channel;
+      }
+
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+            { due_date: { $gte: start, $lte: end } },
+          ];
+        }
+      }
 
       if (req.query.assignee) {
         filter.$or = [
@@ -538,6 +557,22 @@ Instructions:
       const filter = {};
       if (req.query.status) filter.status = req.query.status;
       if (req.query.priority) filter.priority = req.query.priority;
+      if (req.query.channel) filter.channel = req.query.channel;
+
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+          ];
+        }
+      }
+
       const issues = await Issue.find(filter).sort({ updated_time: -1 }).lean();
       res.json(issues);
     } catch (err) {
@@ -555,13 +590,41 @@ Instructions:
     }
   });
 
-  router.get("/discussions", async (_req, res, next) => {
+  router.get("/discussions", async (req, res, next) => {
     try {
-      const discussions = await Discussion.find()
+      const filter = {};
+      if (req.query.channel) filter.channel = req.query.channel;
+
+      const discussions = await Discussion.find(filter)
         .sort({ timestamp: -1 })
         .limit(200)
         .lean();
       res.json(discussions);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/teams", async (req, res, next) => {
+    try {
+      const channelId = req.query.channelId;
+      const filter = {};
+      if (channelId) filter.channel_id = channelId;
+
+      const teams = await Team.find(filter)
+        .sort({ updated_time: -1 })
+        .lean();
+      res.json(teams);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/teams/channel/:channelId", async (req, res, next) => {
+    try {
+      const team = await Team.findOne({ channel_id: req.params.channelId }).lean();
+      if (!team) return res.status(404).json({ error: "Team not found for channel" });
+      res.json(team);
     } catch (err) {
       next(err);
     }

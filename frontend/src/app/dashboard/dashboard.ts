@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { PageHeaderComponent } from '../shared/page-header';
@@ -402,8 +402,12 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class DashboardComponent {
+export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
+
+  ngOnInit() {
+    this.dashService.load();
+  }
 
   countStatus(tasks: any[], status: string): number {
     if (!tasks) return 0;

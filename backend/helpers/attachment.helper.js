@@ -249,10 +249,8 @@ async function analyzeImage(file) {
       EXTRACTION_TIMEOUT
     );
 
-    // 3. Store result in Cache
     attachmentCache.set(cacheKey, result);
 
-    // 4. Immediately delete local temporary disk file
     await fs.unlink(file.localPath).catch(() => {});
 
     return {
@@ -263,9 +261,25 @@ async function analyzeImage(file) {
       error: null,
     };
   } catch (err) {
-    // Ensure file is deleted even if vision call fails
     await fs.unlink(file.localPath).catch(() => {});
-    throw err;
+    console.warn(`[analyzeImage] Skipping image analysis for ${file.fileName}:`, err.message);
+    return {
+      extracted: true,
+      type: "IMAGE",
+      content: {
+        summary: "Image attachment (image analysis skipped)",
+        text: "",
+        containsCode: false,
+        containsError: false,
+        containsUI: false,
+        containsDiagram: false,
+        importantEntities: [],
+        confidence: 0.5,
+        skipped: true,
+      },
+      metadata: { fileName: file.fileName, cached: false, skipped: true },
+      error: null,
+    };
   }
 }
 

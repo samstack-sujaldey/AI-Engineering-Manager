@@ -2,7 +2,7 @@ const { Task, Issue, Discussion, Activity, Notification } = require('../models')
 const { isOverdue } = require('../utils/helpers');
 const { normalizePersonName } = require('../agent/parser');
 
-async function getDashboard() {
+async function getDashboard(channel = null) {
   const now = new Date();
   const normalizeUserRef = (user) => {
     if (!user) return user;
@@ -15,6 +15,11 @@ async function getDashboard() {
     };
   };
 
+  const taskFilter = channel ? { channel } : {};
+  const issueFilter = channel ? { channel } : {};
+  const discussionFilter = channel ? { channel } : {};
+  const activityFilter = channel ? { channel } : {};
+
   const [
     tasks,
     issues,
@@ -24,10 +29,10 @@ async function getDashboard() {
     taskStats,
     issueStats,
   ] = await Promise.all([
-    Task.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Issue.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Discussion.find().sort({ timestamp: -1 }).limit(100).lean(),
-    Activity.find().sort({ created_at: -1 }).limit(50).lean(),
+    Task.find(taskFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Issue.find(issueFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Discussion.find(discussionFilter).sort({ timestamp: -1 }).limit(100).lean(),
+    Activity.find(activityFilter).sort({ created_at: -1 }).limit(50).lean(),
     Notification.find({
       status: { $in: ['PENDING', 'SENT'] },
       type: {
@@ -56,6 +61,17 @@ async function getDashboard() {
   const waiting_acknowledgement = tasks.filter(
     (t) => t.awaiting_acknowledgement && t.awaiting_acknowledgement.user && !t.awaiting_acknowledgement.acknowledged
   );
+
+  const normalizeUserRef = (user) => {
+    if (!user) return user;
+    const name = normalizePersonName(user.name || user.display_name || user.real_name || '');
+    const displayName = normalizePersonName(user.display_name || user.real_name || user.name || '');
+    return {
+      ...user,
+      name: name || user.name || '',
+      display_name: displayName || user.display_name || user.name || '',
+    };
+  };
 
   const ownerWorkload = {};
   for (const t of tasks) {

@@ -1,4 +1,5 @@
 import { Component, OnInit, inject, ChangeDetectorRef } from '@angular/core';
+import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { DashboardService } from '../services/dashboard.service';
 import { HttpClient } from '@angular/common/http';
@@ -44,7 +45,7 @@ interface SyncSummary {
 @Component({
   selector: 'app-integrations',
   standalone: true,
-  imports: [PageHeaderComponent],
+  imports: [CommonModule, PageHeaderComponent],
   template: `
     <app-page-header
       title="Integrations"
@@ -79,43 +80,36 @@ interface SyncSummary {
               </tr>
             </thead>
             <tbody>
-              @for (channel of channels; track channel.id) {
-                <tr>
-                  <td class="channel-name">#{{ channel.name ? channel.name.replace('#', '') : channel.id }}</td>
-                  <td>{{ channel.members }}</td>
-                  <td class="channel-status">{{ channel.status }}</td>
-                  <td class="action-cell">
-                    <button
-                      class="run-pipeline-btn"
-                      (click)="runPipeline(channel)"
-                      [disabled]="loadingChannelId === channel.id"
-                    >
-                      {{ loadingChannelId === channel.id ? 'Syncing...' : 'Run Pipeline' }}
-                    </button>
-                  </td>
-                </tr>
-              }
+              <tr *ngFor="let channel of channels">
+                <td class="channel-name">#{{ channel.name ? channel.name.replace('#', '') : channel.id }}</td>
+                <td>{{ channel.members }}</td>
+                <td class="channel-status">{{ channel.status }}</td>
+                <td class="action-cell">
+                  <button
+                    class="run-pipeline-btn"
+                    (click)="runPipeline(channel)"
+                    [disabled]="loadingChannelId === channel.id"
+                  >
+                    {{ loadingChannelId === channel.id ? 'Syncing...' : 'Run Pipeline' }}
+                  </button>
+                </td>
+              </tr>
 
-              @if (channels.length === 0) {
-                <tr>
-                  <td colspan="4" style="text-align: center; color: #888; padding: 20px;">
-                    No channels found. Click "Refresh" to load channels.
-                  </td>
-                </tr>
-              }
+              <tr *ngIf="channels.length === 0">
+                <td colspan="4" style="text-align: center; color: #888; padding: 20px;">
+                  No channels found. Click "Refresh" to load channels.
+                </td>
+              </tr>
             </tbody>
           </table>
 
           <!-- Legacy / Global Sync Info -->
-          @if (dashService.syncInfo()) {
-            <div style="margin-top: 15px; color: #27ae60; font-size: 13px;">
-              {{ dashService.syncInfo() }}
-            </div>
-          }
+          <div *ngIf="dashService.syncInfo()" style="margin-top: 15px; color: #27ae60; font-size: 13px;">
+            {{ dashService.syncInfo() }}
+          </div>
 
           <!-- 🟢 Success Extraction Summary Banner -->
-          @if (lastSyncSummary) {
-            <div class="pipeline-success-bar">
+          <div *ngIf="lastSyncSummary" class="pipeline-success-bar">
               <span class="green-dot"></span>
               <div class="summary-text">
                 <strong>Pipeline completed for {{ lastSyncedChannelName ? '#' + lastSyncedChannelName : 'channel' }}!</strong>
@@ -128,15 +122,12 @@ interface SyncSummary {
               </div>
               <button class="close-summary-btn" (click)="lastSyncSummary = null">✕</button>
             </div>
-          }
 
           <!-- ⚠️ Error Banner (If API Fails) -->
-          @if (errorMessage) {
-            <div class="pipeline-error-bar">
+          <div *ngIf="errorMessage" class="pipeline-error-bar">
               <span>⚠️ <strong>Error for #{{ lastSyncedChannelName }}:</strong> {{ errorMessage }}</span>
               <button class="close-summary-btn" (click)="errorMessage = null">✕</button>
             </div>
-          }
         </div>
       </div>
     </div>
@@ -376,13 +367,12 @@ export class IntegrationsComponent implements OnInit {
       console.log('=== SLACK PIPELINE RAW RESPONSE ===', summary);
 
       this.lastSyncSummary = summary;
+      this.dashService.setActiveChannel(channel.id);
 
-      // Trigger app-wide dashboard data reload
-      const service: any = this.dashService;
-      if (typeof service.refreshData === 'function') {
-        service.refreshData();
-      } else if (typeof service.fetchData === 'function') {
-        service.fetchData();
+      try {
+        await this.dashService.load();
+      } catch (err) {
+        console.error('Failed to reload dashboard after pipeline:', err);
       }
 
     } catch (err: any) {
