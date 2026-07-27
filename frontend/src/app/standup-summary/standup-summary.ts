@@ -450,13 +450,21 @@ export class StandupSummaryComponent implements OnInit {
   }
 
   setDefaultToToday(): void {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
+    // Use the global selected date from DashboardService if available
+    const globalDate = this.dashService.getSelectedDate();
+    if (globalDate) {
+      this.selectedDate = globalDate;
+    } else {
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      this.selectedDate = `${year}-${month}-${day}`;
+    }
 
-    this.selectedDate = `${year}-${month}-${day}`;
-    this.updateFormattedDateDisplay(today);
+    const [year, month, day] = this.selectedDate.split('-').map(Number);
+    const dateObj = new Date(year, month - 1, day);
+    this.updateFormattedDateDisplay(dateObj);
     
     this.fetchSummaryForDate(this.selectedDate);
   }
@@ -468,6 +476,8 @@ export class StandupSummaryComponent implements OnInit {
     const dateObj = new Date(year, month - 1, day);
 
     this.updateFormattedDateDisplay(dateObj);
+    // Sync with global date in DashboardService
+    this.dashService.setSelectedDate(this.selectedDate);
     this.fetchSummaryForDate(this.selectedDate);
   }
 

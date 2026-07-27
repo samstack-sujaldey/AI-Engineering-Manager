@@ -32,7 +32,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
           type="date"
           class="filter-select"
           [(ngModel)]="dateFilter"
-          (change)="loadIssuesOnFilterChange()"
+          (change)="onDateFilterChange()"
         />
       </div>
 
@@ -336,11 +336,16 @@ export class IssuesComponent implements OnInit {
   }
 
   private setDefaultDate() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    this.dateFilter = `${year}-${month}-${day}`;
+    // Use the global selected date from DashboardService
+    this.dateFilter = this.dashService.getSelectedDate();
+    if (!this.dateFilter) {
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      this.dateFilter = `${year}-${month}-${day}`;
+      this.dashService.setSelectedDate(this.dateFilter);
+    }
   }
 
   private async initializeAndLoadIssues() {
@@ -367,6 +372,14 @@ export class IssuesComponent implements OnInit {
       this.loading = false;
       this.cdr.detectChanges();
     }
+  }
+
+  onDateFilterChange() {
+    // Sync with global date in DashboardService
+    if (this.dateFilter) {
+      this.dashService.setSelectedDate(this.dateFilter);
+    }
+    this.loadIssues();
   }
 
   loadIssuesOnFilterChange() {

@@ -35,6 +35,7 @@ export class DashboardService {
   readonly syncInfo = signal<string | null>(null);
   readonly activeChannelId = signal<string | null>(null);
   readonly selectedChannel = signal<string | null>(null);
+  readonly selectedDate = signal<string>(''); // New: Store selected date
 
   constructor() {
     const stored = localStorage.getItem('active_channel_id');
@@ -42,6 +43,17 @@ export class DashboardService {
       this.activeChannelId.set(stored);
       this.selectedChannel.set(stored);
     }
+    
+    // Initialize selectedDate to today
+    this.initializeDefaultDate();
+  }
+
+  private initializeDefaultDate(): void {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.selectedDate.set(`${year}-${month}-${day}`);
   }
 
   // 🟢 Helper used by TeamComponent and other views to format channel-filtered URLs
@@ -67,9 +79,16 @@ export class DashboardService {
     this.error.set(null);
     try {
       const channel = this.activeChannelId();
-      const url = channel && channel !== 'all'
-        ? `${environment.apiUrl}/dashboard?channel=${encodeURIComponent(channel)}`
+      const date = this.selectedDate();
+      
+      const params = new URLSearchParams();
+      if (date) params.append('date', date);
+      if (channel && channel !== 'all') params.append('channel', channel);
+      
+      const url = params.toString() 
+        ? `${environment.apiUrl}/dashboard?${params.toString()}`
         : `${environment.apiUrl}/dashboard`;
+      
       const data = await firstValueFrom(this.http.get<DashboardData>(url));
       this.data.set(data);
     } catch (err: any) {
@@ -77,6 +96,14 @@ export class DashboardService {
     } finally {
       this.loading.set(false);
     }
+  }
+
+  setSelectedDate(date: string): void {
+    this.selectedDate.set(date);
+  }
+
+  getSelectedDate(): string {
+    return this.selectedDate();
   }
 
   setActiveChannel(channelId: string | null) {

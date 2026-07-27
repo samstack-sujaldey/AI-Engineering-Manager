@@ -1,7 +1,7 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { Task, Issue, Discussion, Team } = require("../models");
-const { getDashboard } = require("../services/dashboard");
+const { getDashboard, getDashboardForDate } = require("../services/dashboard");
 const {
   createSlackClient,
   listChannels,
@@ -354,7 +354,12 @@ Instructions:
   router.get("/dashboard", async (req, res, next) => {
     try {
       const channel = req.query.channel || null;
-      const data = await getDashboard(channel);
+      const dateStr = req.query.date ? String(req.query.date).split("T")[0].trim() : null;
+      
+      // Use new date-aware function if date is provided, otherwise use legacy function
+      const data = dateStr 
+        ? await getDashboardForDate(dateStr, channel)
+        : await getDashboard(channel);
       res.json(data);
     } catch (err) {
       next(err);

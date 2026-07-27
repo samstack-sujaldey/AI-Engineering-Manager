@@ -1,22 +1,35 @@
 import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
+import { FormsModule } from '@angular/forms';
 import { PageHeaderComponent } from '../shared/page-header';
 import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
 @Component({
   selector: 'app-dashboard',
-  imports: [CommonModule, RouterLink, PageHeaderComponent],
+  imports: [CommonModule, RouterLink, PageHeaderComponent, FormsModule],
   providers: [DatePipe],
   template: `
     <app-page-header title="Dashboard" searchPlaceholder="Search tasks, teams, or summaries...">
-      <button
-        class="refresh-btn"
-        (click)="dashService.refresh()"
-        [disabled]="dashService.loading()"
-      >
-        {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
-      </button>
+      <div class="header-controls">
+        <div class="date-picker-wrapper">
+          <label for="dashboardDate">Date:</label>
+          <input
+            type="date"
+            id="dashboardDate"
+            [(ngModel)]="currentDate"
+            (change)="onDateChange()"
+            class="date-input"
+          />
+        </div>
+        <button
+          class="refresh-btn"
+          (click)="dashService.refresh()"
+          [disabled]="dashService.loading()"
+        >
+          {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
+        </button>
+      </div>
     </app-page-header>
 
     <div class="dashboard-body">
@@ -143,6 +156,39 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
   `,
   styles: [
     `
+      .header-controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .date-picker-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .date-picker-wrapper label {
+        font-size: 13px;
+        color: #666;
+        font-weight: 500;
+        margin: 0;
+      }
+      .date-input {
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+        color: #333;
+        background: white;
+        cursor: pointer;
+        outline: none;
+      }
+      .date-input:hover {
+        border-color: #5b4fcf;
+      }
+      .date-input:focus {
+        border-color: #5b4fcf;
+        box-shadow: 0 0 0 2px rgba(91, 79, 207, 0.1);
+      }
       .dashboard-body {
         padding: 24px 32px;
         display: flex;
@@ -404,9 +450,27 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 })
 export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
+  currentDate: string = '';
 
   ngOnInit() {
+    // Initialize date to today
+    this.setDateToToday();
     this.dashService.load();
+  }
+
+  private setDateToToday(): void {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.currentDate = `${year}-${month}-${day}`;
+  }
+
+  onDateChange(): void {
+    if (this.currentDate) {
+      this.dashService.setSelectedDate(this.currentDate);
+      this.dashService.load();
+    }
   }
 
   countStatus(tasks: any[], status: string): number {

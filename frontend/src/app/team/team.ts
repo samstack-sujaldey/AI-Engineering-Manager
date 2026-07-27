@@ -42,14 +42,27 @@ interface DayActivity {
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
 
-        <div class="select-wrapper">
-          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
-            <option value="all">All Channels</option>
-            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
-          </select>
+        <div class="controls-group">
+          <div class="select-wrapper">
+            <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
+              <option value="all">All Channels</option>
+              <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
+            </select>
+          </div>
+
+          <div class="date-picker-wrapper-team">
+            <label for="teamDate">Date:</label>
+            <input
+              type="date"
+              id="teamDate"
+              [(ngModel)]="selectedDate"
+              (change)="onDateChange()"
+              class="date-input-team"
+            />
+          </div>
         </div>
       </div>
 
@@ -155,6 +168,11 @@ interface DayActivity {
       color: #64748b;
       margin: 0;
     }
+    .controls-group {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
     .select-wrapper {
       position: relative;
       display: flex;
@@ -182,6 +200,34 @@ interface DayActivity {
     }
     .team-filter-select:hover {
       border-color: #cbd5e1;
+    }
+    .date-picker-wrapper-team {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .date-picker-wrapper-team label {
+      font-size: 13px;
+      color: #666;
+      font-weight: 500;
+      margin: 0;
+    }
+    .date-input-team {
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      color: #333;
+      background: white;
+      cursor: pointer;
+      outline: none;
+    }
+    .date-input-team:hover {
+      border-color: #5b4fcf;
+    }
+    .date-input-team:focus {
+      border-color: #5b4fcf;
+      box-shadow: 0 0 0 2px rgba(91, 79, 207, 0.1);
     }
     .members-grid {
       display: flex;
@@ -380,6 +426,7 @@ export class TeamComponent implements OnInit {
 
   selectedChannelId = 'all';
   selectedChannelName = 'All Channels';
+  selectedDate: string = '';
   channels: Channel[] = [];
   members: TeamMember[] = [];
   allTasks: any[] = [];
@@ -387,6 +434,7 @@ export class TeamComponent implements OnInit {
   teams: any[] = [];
 
   constructor() {
+    this.initializeDefaultDate();
     effect(() => {
       const globalChannel = this.dashService.selectedChannel();
       if (!globalChannel) {
@@ -401,6 +449,14 @@ export class TeamComponent implements OnInit {
       }
       this.loadTeamData();
     });
+  }
+
+  private initializeDefaultDate(): void {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.selectedDate = `${year}-${month}-${day}`;
   }
 
   ngOnInit() {
@@ -441,7 +497,14 @@ export class TeamComponent implements OnInit {
 
   async loadTasksForChannel() {
     try {
-      const url = this.dashService.getFilteredUrl('/tasks');
+      let url = this.dashService.getFilteredUrl('/tasks');
+      
+      // Add date parameter if date is selected
+      if (this.selectedDate) {
+        const separator = url.includes('?') ? '&' : '?';
+        url = `${url}${separator}date=${encodeURIComponent(this.selectedDate)}`;
+      }
+
       const res: any = await firstValueFrom(this.http.get(url));
       this.allTasks = Array.isArray(res) ? res : (res?.data || res?.tasks || []);
 
@@ -450,6 +513,12 @@ export class TeamComponent implements OnInit {
       console.error('Failed to load tasks for team workload:', err);
       this.allTasks = [];
       this.processTasksIntoMembers();
+    }
+  }
+
+  onDateChange(): void {
+    if (this.selectedDate) {
+      this.loadTeamData();
     }
   }
 
