@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -41,6 +41,16 @@ interface DayActivity {
           <h2 class="squad-title">{{ selectedChannelName }} Team</h2>
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
+
+        <div class="select-wrapper">
+          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
+            <option value="all">All Channels</option>
+            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
+          </select>
+        </div>
       </div>
 
       <!-- Members Grid -->
@@ -75,7 +85,7 @@ interface DayActivity {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M17 21v-2a4 4 0 00-2-2H8a4 4 0 00-2 2v2M12 11a4 4 0 100-8 4 4 0 000 8z"></path>
           </svg>
-          <p class="no-members-title">No team activity found for this channel</p>
+          <p class="no-members-title">No human team members found for this channel</p>
           <p class="no-members-desc">Select "All Channels" or choose another channel from the dropdown above.</p>
         </div>
       </div>
@@ -376,6 +386,23 @@ export class TeamComponent implements OnInit {
   weeklyActivity: DayActivity[] = [];
   teams: any[] = [];
 
+  constructor() {
+    effect(() => {
+      const globalChannel = this.dashService.selectedChannel();
+      if (!globalChannel) {
+        this.selectedChannelId = 'all';
+        this.selectedChannelName = 'All Channels';
+      } else {
+        const found = this.channels.find(
+          c => c.id === globalChannel || c.name.toLowerCase() === globalChannel.toLowerCase()
+        );
+        this.selectedChannelId = found ? found.id : globalChannel;
+        this.selectedChannelName = found ? `#${found.name}` : `#${globalChannel}`;
+      }
+      this.loadTeamData();
+    });
+  }
+
   ngOnInit() {
     this.initData();
   }
@@ -395,93 +422,16 @@ export class TeamComponent implements OnInit {
         name: (c.name || c.channel_name || 'channel').replace(/^#/, '').trim()
       }));
     } catch (err) {
-      console.error('Failed to load channels API, falling back to task channel extraction:', err);
+      console.error('Failed to load channels API:', err);
     }
   }
 
   async loadTeamData() {
     try {
-      const activeChannel = this.dashService.activeChannelId();
-      this.selectedChannelId = activeChannel || 'all';
       this.updateSelectedChannelName();
 
-      if (this.selectedChannelId !== 'all') {
-        const tasksList = await firstValueFrom(this.http.get<any[]>('/api/tasks', { params: { channel: this.selectedChannelId } })).catch(() => []) as any[];
-        const discussionsList = await firstValueFrom(this.http.get<any[]>('/api/discussions', { params: { channel: this.selectedChannelId } })).catch(() => []) as any[];
-
-        const activeNames = new Set<string>();
-
-        for (const t of tasksList) {
-          const rawAssignee = t.assigned_to?.name || t.assigned_to || t.owner?.name || t.owner || t.assignee;
-          const assigneeName = this.extractStringName(rawAssignee);
-          if (assigneeName && assigneeName !== 'Unassigned') activeNames.add(assigneeName);
-
-          const rawReporter = t.reporter?.name || t.reporter;
-          const reporterName = this.extractStringName(rawReporter);
-          if (reporterName && reporterName !== 'Unassigned') activeNames.add(reporterName);
-        }
-
-        for (const d of discussionsList) {
-          const authorName = this.extractStringName(d.author || d.sender);
-          if (authorName && authorName !== 'Unassigned') activeNames.add(authorName);
-        }
-
-        this.members = [...activeNames].map((name: string) => {
-          const nameParts = name.trim().split(/\s+/);
-          const initials = nameParts.length > 1
-            ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
-            : name.substring(0, 2).toUpperCase();
-          const colors = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
-          const hash = [...name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-          return {
-            name,
-            role: 'Developer',
-            initials: initials || 'UN',
-            color: colors[Math.abs(hash) % colors.length],
-            current: 0,
-            blocked: 0,
-            doneToday: 0
-          };
-        });
-      } else {
-        const teamsRes: any = await firstValueFrom(this.http.get('/api/teams'));
-        this.teams = Array.isArray(teamsRes) ? teamsRes : (teamsRes?.teams || teamsRes?.data || []);
-
-        const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
-        const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
-        let colorIndex = 0;
-
-        for (const team of this.teams) {
-          for (const m of team.members || []) {
-            const name = this.extractStringName(m);
-            if (!memberMap.has(name)) {
-              memberMap.set(name, {
-                current: 0,
-                blocked: 0,
-                doneToday: 0,
-                role: 'Developer'
-              });
-            }
-          }
-        }
-
-        this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
-          const nameParts = name.trim().split(/\s+/);
-          const initials = nameParts.length > 1
-            ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
-            : name.substring(0, 2).toUpperCase();
-
-          return {
-            name,
-            role: stats.role,
-            initials: initials || 'UN',
-            color: colorPalette[colorIndex++ % colorPalette.length],
-            current: stats.current,
-            blocked: stats.blocked,
-            doneToday: stats.doneToday
-          };
-        });
-      }
+      const teamsRes: any = await firstValueFrom(this.http.get('/api/teams')).catch(() => []);
+      this.teams = Array.isArray(teamsRes) ? teamsRes : (teamsRes?.teams || teamsRes?.data || []);
 
       await this.loadTasksForChannel();
     } catch (err) {
@@ -489,33 +439,10 @@ export class TeamComponent implements OnInit {
     }
   }
 
-  private mapMember(m: any): TeamMember {
-    const name = this.extractStringName(m);
-    const nameParts = name.trim().split(/\s+/);
-    const initials = nameParts.length > 1
-      ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
-      : name.substring(0, 2).toUpperCase();
-    const colors = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
-    const hash = [...name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-    return {
-      name,
-      role: 'Developer',
-      initials: initials || 'UN',
-      color: colors[Math.abs(hash) % colors.length],
-      current: 0,
-      blocked: 0,
-      doneToday: 0
-    };
-  }
-
   async loadTasksForChannel() {
     try {
-      const params: any = {};
-      if (this.selectedChannelId !== 'all') {
-        params.channel = this.selectedChannelId;
-      }
-
-      const res: any = await firstValueFrom(this.http.get('/api/tasks', { params }));
+      const url = this.dashService.getFilteredUrl('/tasks');
+      const res: any = await firstValueFrom(this.http.get(url));
       this.allTasks = Array.isArray(res) ? res : (res?.data || res?.tasks || []);
 
       this.processTasksIntoMembers();
@@ -527,6 +454,12 @@ export class TeamComponent implements OnInit {
   }
 
   onChannelChange() {
+    if (this.selectedChannelId === 'all') {
+      this.dashService.setChannel(null);
+    } else {
+      const found = this.channels.find(c => c.id === this.selectedChannelId);
+      this.dashService.setChannel(found ? found.name : this.selectedChannelId);
+    }
     this.updateSelectedChannelName();
     this.loadTeamData();
   }
@@ -540,17 +473,40 @@ export class TeamComponent implements OnInit {
     }
   }
 
+  private isBotUser(m: any): boolean {
+    if (!m) return true;
+    const rawId = (m.id || '').toLowerCase();
+    const rawName = (
+      typeof m === 'string'
+        ? m
+        : (m.real_name || m.display_name || m.name || '')
+    ).toLowerCase();
+
+    return (
+      rawId === 'uslackbot' ||
+      rawName.includes('github') ||
+      rawName.includes('jira') ||
+      rawName.includes('jirabot') ||
+      rawName.includes('slackbot') ||
+      rawName.includes('ai_engineering') ||
+      rawName.includes('bot') ||
+      rawName === 'unknown'
+    );
+  }
+
   private extractStringName(input: any): string {
-    if (!input) return 'Unassigned';
+    if (!input || this.isBotUser(input)) return 'Unassigned';
+    
     let raw = '';
     if (typeof input === 'string') raw = input;
     else if (typeof input === 'object') {
-      raw = input.display_name || input.real_name || input.name || 'Unassigned';
+      raw = input.real_name || input.display_name || input.name || 'Unassigned';
     } else {
       raw = String(input);
     }
 
     raw = raw.trim();
+
     if (raw.startsWith('<@') && raw.endsWith('>')) {
       raw = raw.slice(2, -1);
     }
@@ -559,6 +515,7 @@ export class TeamComponent implements OnInit {
     } else {
       raw = raw.replace(/[._-]+/g, ' ').trim();
     }
+
     const normalized = raw || 'Unassigned';
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
@@ -572,10 +529,33 @@ export class TeamComponent implements OnInit {
     const targetId = this.selectedChannelId;
     const targetName = selectedChanObj ? selectedChanObj.name.toLowerCase() : '';
 
+    // 1. Seed members strictly from Team collection for the active channel
+    const baseMembers = this.selectedChannelId === 'all'
+      ? (this.teams || []).flatMap((team: any) => team.members || [])
+      : (this.teams.find((t: any) => 
+          t.channel_id === this.selectedChannelId || 
+          t.channel_name?.replace(/^#/, '').toLowerCase() === targetName
+        )?.members || []);
+
+    for (const m of baseMembers) {
+      if (this.isBotUser(m)) continue; // Skip bot users
+
+      const name = this.extractStringName(m);
+      if (name && name !== 'Unassigned') {
+        memberMap.set(name, { 
+          current: 0, 
+          blocked: 0, 
+          doneToday: 0, 
+          role: m.role || 'Developer' 
+        });
+      }
+    }
+
+    // 2. Filter tasks matching the selected channel
     const filteredTasks = this.selectedChannelId === 'all'
       ? this.allTasks
       : this.allTasks.filter(t => {
-          const chanId = t.channel_id || t.slack_channel_id || t.channelId || (typeof t.channel === 'object' ? t.channel?.id : null);
+          const chanId = t.channel_id || t.slack_channel_id || t.channelId || (typeof t.channel === 'object' ? t.channel?.id : t.channel);
           let chanName = typeof t.channel === 'string' ? t.channel : (t.channel_name || t.channel?.name || '');
           chanName = chanName.replace(/^#/, '').trim().toLowerCase();
 
@@ -594,27 +574,13 @@ export class TeamComponent implements OnInit {
       weeklyDataMap.set(label, { current: 0, blocked: 0, completed: 0, total: 0 });
     }
 
-    const baseMembers = this.selectedChannelId === 'all'
-      ? (this.teams || []).flatMap((team: any) => team.members || [])
-      : (this.teams.find((t: any) => t.channel_id === this.selectedChannelId)?.members || []);
-
-    for (const m of baseMembers) {
-      const name = this.extractStringName(m);
-      memberMap.set(name, { current: 0, blocked: 0, doneToday: 0, role: 'Developer' });
-    }
-
+    // 3. Update stats ONLY for seeded channel members
     for (const task of filteredTasks) {
       const rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
       const assigneeName = this.extractStringName(rawAssignee);
 
-      if (!memberMap.has(assigneeName)) {
-        memberMap.set(assigneeName, {
-          current: 0,
-          blocked: 0,
-          doneToday: 0,
-          role: 'Developer'
-        });
-      }
+      // Do NOT dynamically create a card if the person is not a channel member or is a bot
+      if (!memberMap.has(assigneeName)) continue;
 
       const data = memberMap.get(assigneeName)!;
       const status = (task.status || '').toLowerCase();
@@ -639,6 +605,7 @@ export class TeamComponent implements OnInit {
       }
     }
 
+    // 4. Render only human channel members
     this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
       const nameParts = name.trim().split(/\s+/);
       const initials = nameParts.length > 1

@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
-const { Task, Issue, Discussion, Activity } = require("../models");
+const { Task, Issue, Discussion, Activity, Team } = require("../models");
 const {
   parseMessage,
   detectStatus,
@@ -85,7 +85,7 @@ class MessageProcessor {
   }
 
   async process(raw, options = {}) {
-    const {
+    let {
       text = "",
       sender,
       channel = "",
@@ -99,6 +99,26 @@ class MessageProcessor {
       local_attachments = [],
     } = raw;
     const { quiet = false } = options;
+
+    // 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
+    if (!team && channel) {
+      try {
+        const cleanChan = channel.replace(/^#/, '').trim();
+        const teamDoc = await Team.findOne({
+          $or: [
+            { channel_id: cleanChan },
+            { channel_name: new RegExp(`^#?${cleanChan}$`, 'i') },
+            { team_id: cleanChan }
+          ]
+        }).lean();
+
+        if (teamDoc) {
+          team = teamDoc.channel_name || teamDoc.team_id || teamDoc.team || "";
+        }
+      } catch (e) {
+        console.warn("[MessageProcessor] Team lookup warning:", e.message);
+      }
+    }
 
     let existing_task = null;
     let existing_issue = null;
@@ -437,12 +457,25 @@ class MessageProcessor {
     const taskId = newId("tsk");
     const dueDate = t.due_date ? new Date(t.due_date) : null;
 
+    // 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+    const resolvedOwner =
+      parsed.owner && (parsed.owner.id || parsed.owner.name)
+        ? parsed.owner
+        : senderRef && (senderRef.id || senderRef.name)
+        ? senderRef
+        : { id: "", name: "Unassigned" };
+
+    const resolvedAssignee =
+      parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)
+        ? parsed.assigned_to
+        : resolvedOwner;
+
     const doc = await Task.create({
       task_id: taskId,
       title: t.title,
       description: t.description || ctx.text,
-      owner: parsed.owner || { id: "", name: "Unassigned" },
-      assigned_to: parsed.assigned_to || { id: "", name: "Unassigned" },
+      owner: resolvedOwner,
+      assigned_to: resolvedAssignee,
       assigned_by: parsed.assigned_by || senderRef,
       reporter: parsed.reporter || senderRef,
       created_by: senderRef,
@@ -549,8 +582,8 @@ class MessageProcessor {
 
     if (t.title && !ctx.existing_task) doc.title = t.title;
     if (t.description) doc.description = t.description;
-    if (parsed.owner) doc.owner = parsed.owner;
-    if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+    if (parsed.owner && (parsed.owner.id || parsed.owner.name)) doc.owner = parsed.owner;
+    if (parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)) doc.assigned_to = parsed.assigned_to;
     if (parsed.assigned_by) doc.assigned_by = parsed.assigned_by;
     if (parsed.mentioned_users?.length) {
       doc.mentioned_users = mergeUsers(doc.mentioned_users, parsed.mentioned_users);
@@ -706,13 +739,26 @@ class MessageProcessor {
     const i = parsed.issue || {};
     const issueId = newId("iss");
 
+    // 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+    const resolvedOwner =
+      parsed.owner && (parsed.owner.id || parsed.owner.name)
+        ? parsed.owner
+        : senderRef && (senderRef.id || senderRef.name)
+        ? senderRef
+        : { id: "", name: "Unassigned" };
+
+    const resolvedAssignee =
+      parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)
+        ? parsed.assigned_to
+        : resolvedOwner;
+
     const doc = await Issue.create({
       issue_id: issueId,
       title: i.title,
       description: i.description || ctx.text,
       reporter: parsed.reporter || senderRef,
-      owner: parsed.owner || { id: "", name: "Unassigned" },
-      assigned_to: parsed.assigned_to || { id: "", name: "Unassigned" },
+      owner: resolvedOwner,
+      assigned_to: resolvedAssignee,
       assigned_by: parsed.assigned_by || senderRef,
       created_by: senderRef,
       last_updated_by: senderRef,
@@ -770,8 +816,8 @@ class MessageProcessor {
     const updates = parsed.updates || {};
 
     if (i.description) doc.description = i.description;
-    if (parsed.owner) doc.owner = parsed.owner;
-    if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+    if (parsed.owner && (parsed.owner.id || parsed.owner.name)) doc.owner = parsed.owner;
+    if (parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)) doc.assigned_to = parsed.assigned_to;
     if (parsed.mentioned_users?.length) {
       doc.mentioned_users = mergeUsers(doc.mentioned_users, parsed.mentioned_users);
     }
