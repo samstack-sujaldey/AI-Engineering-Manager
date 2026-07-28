@@ -1,10 +1,10 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
-import { DashboardService } from '../services/dashboard.service'; // Adjust path
+import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-tasks',
@@ -18,14 +18,14 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
       <div class="tasks-body">
         <div class="filters-row">
-          <select class="filter-select" [(ngModel)]="statusFilter">
+          <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadTasks()">
             <option value="all">Status: All</option>
             <option value="TODO">To Do</option>
             <option value="PROCESSING">In Progress</option>
             <option value="COMPLETED">Completed</option>
             <option value="BLOCKED">Blocked</option>
           </select>
-          <select class="filter-select" [(ngModel)]="priorityFilter">
+          <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadTasks()">
             <option value="all">Priority: All</option>
             <option value="LOW">Low</option>
             <option value="MEDIUM">Medium</option>
@@ -35,8 +35,8 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
           <input
             type="date"
             class="filter-select"
-            [(ngModel)]="dateFilter"
-            (change)="loadTasks()"
+            [value]="dashService.selectedDate()"
+            (change)="onDateChange($event)"
           />
         </div>
 
@@ -229,7 +229,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         justify-content: center;
         flex-shrink: 0;
         text-transform: uppercase;
-        vertical-align: middle; /* Aligns with text */
+        vertical-align: middle;
         margin-right: 8px;
       }
       .assignee-name {
@@ -428,25 +428,29 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 export class TasksComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
+  private cdr = inject(ChangeDetectorRef);
 
   tasks: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  dateFilter = '';
 
   selectedBlockedTask: any = null;
 
+  constructor() {
+    effect(() => {
+      this.loadTasks();
+    });
+  }
+
   ngOnInit() {
-    this.setDefaultDate();
     this.loadTasks();
   }
 
-  private setDefaultDate() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    this.dateFilter = `${year}-${month}-${day}`;
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+    }
   }
 
   async loadTasks() {
@@ -454,7 +458,7 @@ export class TasksComponent implements OnInit {
       const params: any = {};
       const activeChannel = this.dashService.activeChannelId();
       if (activeChannel) params.channel = activeChannel;
-      if (this.dateFilter) params.date = this.dateFilter;
+      params.date = this.dashService.selectedDate();
 
       const tasks: any = (await this.http.get('/api/tasks', { params }).toPromise()) || [];
 
@@ -462,6 +466,7 @@ export class TasksComponent implements OnInit {
         const status = (t.status || '').toLowerCase();
         return status !== 'done' && status !== 'completed';
       });
+      this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load tasks:', err);
     }

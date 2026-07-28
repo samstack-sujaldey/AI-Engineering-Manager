@@ -21,6 +21,15 @@ export interface DashboardData {
   owner_workload: any[];
   pending_notifications: any[];
   generated_at: string;
+  date?: string;
+}
+
+function getTodayStr(): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -35,27 +44,41 @@ export class DashboardService {
   readonly syncInfo = signal<string | null>(null);
   readonly activeChannelId = signal<string | null>(null);
   readonly selectedChannel = signal<string | null>(null);
+  readonly selectedDate = signal<string>(getTodayStr());
 
   constructor() {
-    const stored = localStorage.getItem('active_channel_id');
-    if (stored) {
-      this.activeChannelId.set(stored);
-      this.selectedChannel.set(stored);
+    const storedChannel = localStorage.getItem('active_channel_id');
+    if (storedChannel) {
+      this.activeChannelId.set(storedChannel);
+      this.selectedChannel.set(storedChannel);
+    }
+    const storedDate = localStorage.getItem('selected_date');
+    if (storedDate) {
+      this.selectedDate.set(storedDate);
     }
   }
 
-  // 🟢 Helper used by TeamComponent and other views to format channel-filtered URLs
+  setSelectedDate(date: string): void {
+    this.selectedDate.set(date);
+    if (date) {
+      localStorage.setItem('selected_date', date);
+    } else {
+      localStorage.removeItem('selected_date');
+    }
+  }
+
   getFilteredUrl(path: string): string {
     const baseUrl = `${environment.apiUrl}${path.startsWith('/') ? path : '/' + path}`;
     const channel = this.activeChannelId();
-    if (!channel || channel === 'all') {
-      return baseUrl;
-    }
+    const date = this.selectedDate();
+    const parts: string[] = [];
+    if (date) parts.push(`date=${encodeURIComponent(date)}`);
+    if (channel && channel !== 'all') parts.push(`channel=${encodeURIComponent(channel)}`);
+    if (parts.length === 0) return baseUrl;
     const separator = baseUrl.includes('?') ? '&' : '?';
-    return `${baseUrl}${separator}channel=${encodeURIComponent(channel)}`;
+    return `${baseUrl}${separator}${parts.join('&')}`;
   }
 
-  // 🟢 Synchronize both channel signals
   setChannel(channel: string | null): void {
     const cleanChan = channel === 'all' ? null : channel;
     this.selectedChannel.set(cleanChan);
@@ -66,10 +89,11 @@ export class DashboardService {
     this.loading.set(true);
     this.error.set(null);
     try {
+      const date = this.selectedDate();
       const channel = this.activeChannelId();
-      const url = channel && channel !== 'all'
-        ? `${environment.apiUrl}/dashboard?channel=${encodeURIComponent(channel)}`
-        : `${environment.apiUrl}/dashboard`;
+      const url = date
+        ? `${environment.apiUrl}/dashboard/for-date?date=${encodeURIComponent(date)}${channel && channel !== 'all' ? `&channel=${encodeURIComponent(channel)}` : ''}`
+        : `${environment.apiUrl}/dashboard${channel && channel !== 'all' ? `?channel=${encodeURIComponent(channel)}` : ''}`;
       const data = await firstValueFrom(this.http.get<DashboardData>(url));
       this.data.set(data);
     } catch (err: any) {
@@ -135,7 +159,6 @@ export class DashboardService {
     this.socket.on('connect', () => this.live.set(true));
     this.socket.on('disconnect', () => this.live.set(false));
 
-    // Auto-fetch data whenever the backend processes a new message
     this.socket.on('dashboard:update', (payload: any) => {
       if (payload?.action === 'SLACK_SYNC') return;
       this.load();

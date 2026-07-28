@@ -1,10 +1,10 @@
-import { Component, inject, OnInit ,ChangeDetectorRef } from '@angular/core';
+import { Component, inject, OnInit ,ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
-import { DashboardService } from '../services/dashboard.service'; // Adjust path if needed
+import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-issues',
@@ -31,8 +31,8 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         <input
           type="date"
           class="filter-select"
-          [(ngModel)]="dateFilter"
-          (change)="loadIssuesOnFilterChange()"
+          [value]="dashService.selectedDate()"
+          (change)="onDateChange($event)"
         />
       </div>
 
@@ -223,7 +223,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         margin-top: 2px;
         display: -webkit-box;
         -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
+        -webkit-line-orient: vertical;
         overflow: hidden;
       }
 
@@ -328,24 +328,24 @@ export class IssuesComponent implements OnInit {
   issues: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  dateFilter = '';
   loading = false;
 
+  constructor() {
+    effect(() => {
+      const globalDate = this.dashService.selectedDate();
+      this.loadIssues();
+    });
+  }
+
   ngOnInit() {
-    this.initializeAndLoadIssues();
+    this.loadIssues();
   }
 
-  private setDefaultDate() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    this.dateFilter = `${year}-${month}-${day}`;
-  }
-
-  private async initializeAndLoadIssues() {
-    this.setDefaultDate();
-    await this.loadIssues();
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+    }
   }
 
   async loadIssues() {
@@ -356,7 +356,7 @@ export class IssuesComponent implements OnInit {
       if (this.priorityFilter !== 'all') params.priority = this.priorityFilter;
       const activeChannel = this.dashService.activeChannelId();
       if (activeChannel) params.channel = activeChannel;
-      if (this.dateFilter) params.date = this.dateFilter;
+      params.date = this.dashService.selectedDate();
 
       this.issues = await firstValueFrom(this.http.get('/api/issues', { params })) as any[] || [];
       this.cdr.detectChanges();
@@ -367,10 +367,6 @@ export class IssuesComponent implements OnInit {
       this.loading = false;
       this.cdr.detectChanges();
     }
-  }
-
-  loadIssuesOnFilterChange() {
-    this.loadIssues();
   }
 
   filteredIssues(issues: any[]): any[] {

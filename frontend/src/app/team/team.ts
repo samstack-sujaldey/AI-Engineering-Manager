@@ -42,14 +42,26 @@ interface DayActivity {
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
 
-        <div class="select-wrapper">
-          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
-            <option value="all">All Channels</option>
-            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
-          </select>
+        <div class="team-controls">
+          <div class="date-picker-wrapper">
+            <label for="teamDate">Date:</label>
+            <input
+              type="date"
+              id="teamDate"
+              [value]="dashService.selectedDate()"
+              (change)="onDateChange($event)"
+              class="team-date-input"
+            />
+          </div>
+          <div class="select-wrapper">
+            <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
+              <option value="all">All Channels</option>
+              <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -143,6 +155,32 @@ interface DayActivity {
       display: flex;
       align-items: center;
       justify-content: space-between;
+    }
+    .team-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .date-picker-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #333;
+      font-weight: 500;
+    }
+    .date-picker-wrapper label {
+      white-space: nowrap;
+    }
+    .team-date-input {
+      border: 1px solid #5b4fcf;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      color: #1a1a2e;
+      outline: none;
+      background: #fafafd;
+      cursor: pointer;
     }
     .squad-title {
       font-size: 18px;
@@ -389,6 +427,7 @@ export class TeamComponent implements OnInit {
   constructor() {
     effect(() => {
       const globalChannel = this.dashService.selectedChannel();
+      const globalDate = this.dashService.selectedDate();
       if (!globalChannel) {
         this.selectedChannelId = 'all';
         this.selectedChannelName = 'All Channels';
@@ -497,6 +536,14 @@ export class TeamComponent implements OnInit {
     this.loadTeamData();
   }
 
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+      this.loadTeamData();
+    }
+  }
+
   private updateSelectedChannelName() {
     if (this.selectedChannelId === 'all') {
       this.selectedChannelName = 'All Channels';
@@ -600,8 +647,11 @@ export class TeamComponent implements OnInit {
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyDataMap = new Map<string, { current: number; blocked: number; completed: number; total: number }>();
 
+    const selectedDateStr = this.dashService.selectedDate();
+    const selectedDate = selectedDateStr ? new Date(selectedDateStr + 'T00:00:00') : new Date();
+
     for (let i = 6; i >= 0; i--) {
-      const d = new Date();
+      const d = new Date(selectedDate);
       d.setDate(d.getDate() - i);
       const label = dayNames[d.getDay()];
       weeklyDataMap.set(label, { current: 0, blocked: 0, completed: 0, total: 0 });
