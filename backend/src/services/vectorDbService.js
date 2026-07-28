@@ -1,21 +1,30 @@
 const { ChromaClient } = require("chromadb");
 
+// 1. Create a dummy embedding function to bypass the default-embed crash
+const dummyEmbeddingFunction = {
+	generate: async (texts) => {
+		return texts.map(() => []);
+	},
+};
+
 class VectorDbService {
 	constructor() {
-		// 1. Tell the app where the Docker container is running
-		this.client = new ChromaClient({ path: "http://localhost:8000" });
-
-		// 2. This is like your MongoDB "Collection" name
+		// 2. Fix deprecation warning by using host and port instead of 'path'
+		this.client = new ChromaClient({
+			host: "localhost",
+			port: 8000,
+			ssl: false,
+		});
 		this.collectionName = "slack_chat_history";
 		this.collection = null;
 	}
 
-	// 3. This runs when your server starts up
 	async init() {
 		try {
-			// It looks for the collection, and creates it if it's your first time booting up
+			// 3. Pass the dummy function when getting/creating the collection
 			this.collection = await this.client.getOrCreateCollection({
 				name: this.collectionName,
+				embeddingFunction: dummyEmbeddingFunction,
 			});
 			console.log("✅ Vector DB Connected & Collection Ready");
 		} catch (error) {
@@ -23,20 +32,25 @@ class VectorDbService {
 		}
 	}
 
-	/**
-	 * SAVING DATA (Your friend calls this after OpenAI makes the vector)
-	 */
-	async saveMessage({ messageId, threadId, text, vectorArray }) {
+	async saveMessage({
+		messageId,
+		threadId,
+		text,
+		vectorArray,
+		senderId,
+		senderName,
+	}) {
 		if (!this.collection) throw new Error("Vector DB not initialized!");
 
 		await this.collection.add({
-			ids: [messageId], // Unique Slack message TS
-			embeddings: [vectorArray], // The massive array of numbers from OpenAI
-			documents: [text], // The actual readable text
+			ids: [messageId],
+			embeddings: [vectorArray], // We provide our OpenAI vectors manually
+			documents: [text],
 			metadatas: [
 				{
-					// Extra tags so we can filter by thread or date later
 					thread_id: threadId,
+					sender_id: senderId || "unknown",
+					sender_name: senderName || "Unknown",
 					timestamp: Date.now(),
 				},
 			],
@@ -45,27 +59,21 @@ class VectorDbService {
 		console.log(`[Vector DB] Saved message: ${messageId}`);
 	}
 
-	/**
-	 * SEARCHING DATA (Your friend calls this to find similar past issues)
-	 */
 	async searchSimilarIssues(queryVectorArray) {
 		if (!this.collection) throw new Error("Vector DB not initialized!");
 
-		// Only search the last 30 days of data
 		const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
 
 		const results = await this.collection.query({
-			queryEmbeddings: [queryVectorArray], // The numbers for the NEW issue
-			nResults: 3, // Return the top 3 closest matches
+			queryEmbeddings: [queryVectorArray],
+			nResults: 3,
 			where: {
-				timestamp: { $gte: thirtyDaysAgo }, // The 30-day filter
+				timestamp: { $gte: thirtyDaysAgo },
 			},
 		});
 
-		// Returns an object containing the matching text and IDs
 		return results;
 	}
 }
 
-// Export a single instance so the whole app shares the same connection
 module.exports = new VectorDbService();

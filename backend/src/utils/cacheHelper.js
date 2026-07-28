@@ -1,5 +1,5 @@
 const DailySummary = require('../models/DailySummary');
-const { callOpenAI } = require('../ai/openai');
+const { callOpenAI} = require('../ai/openai');
 const { Task, Issue } = require('../models');
 const { normalizePersonName } = require('../agent/parser');
 
