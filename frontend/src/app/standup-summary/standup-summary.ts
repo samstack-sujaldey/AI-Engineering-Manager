@@ -25,24 +25,23 @@ import { DashboardService } from '../services/dashboard.service';
             </span>
           </div>
 
-           <div class="header-right">
-             <!-- Calendar Picker -->
-             <div class="calendar-picker-wrapper">
-               <label for="summaryDate">Select Date:</label>
-               <input
-                 type="date"
-                 id="summaryDate"
-                 [(ngModel)]="selectedDate"
-                 (change)="onDateChange()"
-                 class="calendar-input"
-               />
-             </div>
-           </div>
+          <div class="header-right">
+            <!-- Calendar Picker -->
+            <div class="calendar-picker-wrapper">
+              <label for="summaryDate">Select Date:</label>
+              <input
+                type="date"
+                id="summaryDate"
+                [(ngModel)]="selectedDate"
+                (change)="onDateChange()"
+                class="calendar-input"
+              />
+            </div>
+          </div>
         </div>
 
         <!-- Single Card MOM Display Container -->
         <div class="single-section-view" *ngIf="!isLoading; else loadingState">
-          
           <div class="summary-card-section">
             <div class="section-card-header mom-header">
               <h3>📝 Stand-up Minutes of Meeting (MOM)</h3>
@@ -56,7 +55,6 @@ import { DashboardService } from '../services/dashboard.service';
               <div class="formatted-points mom-body-content" [innerHTML]="summaryHtml"></div>
             </div>
           </div>
-
         </div>
 
         <ng-template #loadingState>
@@ -124,8 +122,6 @@ import { DashboardService } from '../services/dashboard.service';
     .issues-badge { background: rgba(192, 57, 43, 0.12); color: #c0392b; }
     .section-card-body { padding: 20px; font-size: 14px; line-height: 1.8; color: #2c3e50; flex: 1; overflow-y: auto; max-height: 600px; }
 
-    /* Remove the ng-deep strong style since we are stripping bolding out anyway */
-
     /* Interactive Clickable Blocker Tag */
     .formatted-points ::ng-deep .blocked-tag-clickable {
       cursor: pointer;
@@ -184,12 +180,20 @@ export class StandupSummaryComponent implements OnInit {
 
   selectedBlockedTask: { title: string; blocked_reason: string } | null = null;
 
-  constructor(private http: HttpClient, private cdRef: ChangeDetectorRef, private dashService: DashboardService) {}
+  constructor(
+    private http: HttpClient,
+    private cdRef: ChangeDetectorRef,
+    private dashService: DashboardService
+  ) {}
 
   ngOnInit(): void {
     this.setDefaultToToday();
   }
 
+  /**
+   * 🟢 Defaults to TODAY'S raw date (e.g. "2026-07-28").
+   * The backend receives this date and converts it to yesterday/Friday.
+   */
   setDefaultToToday(): void {
     const today = new Date();
     const year = today.getFullYear();
@@ -218,14 +222,14 @@ export class StandupSummaryComponent implements OnInit {
     this.formattedDateDisplay = `${dayName}, ${monthDay}`;
   }
 
-  fetchSummaryForDate(dateStr: string): void {
+  fetchSummaryForDate(rawDateStr: string): void {
     this.isLoading = true;
     this.loadingMessage = `Loading summary for ${this.formattedDateDisplay}...`;
     this.cdRef.detectChanges();
 
     const timestamp = new Date().getTime();
     const params = new URLSearchParams();
-    params.set('date', dateStr);
+    params.set('date', rawDateStr); // Send raw date directly
     const activeChannel = this.dashService.activeChannelId();
     if (activeChannel) params.set('channel', activeChannel);
     params.set('_t', String(timestamp));
@@ -234,11 +238,16 @@ export class StandupSummaryComponent implements OnInit {
 
     this.http.get<any>(url).subscribe({
       next: (res) => {
-        // 🟢 Pass the backend string into our strict formatting utility
         this.summaryHtml = this.formatSectionContent(res.summary);
         this.taskCount = res.tasks_count || 0;
         this.issueCount = res.issues_count || 0;
         
+        // 🟢 Update formatted display date to match the target date returned from backend
+        if (res.date) {
+          const [bYear, bMonth, bDay] = res.date.split('-').map(Number);
+          this.updateFormattedDateDisplay(new Date(bYear, bMonth - 1, bDay));
+        }
+
         if (res.last_updated_at) {
           this.lastSyncTime = new Date(res.last_updated_at);
         } else {
@@ -258,32 +267,28 @@ export class StandupSummaryComponent implements OnInit {
   }
 
   /**
-   * 🟢 STRICT FRONTEND ENFORCEMENT
-   * Strips out bolding and bullets while preserving your Blocked Modal logic
+   * 🟢 Strips bolding/bullets and wraps lines in <div> tags for proper line title extraction
    */
   formatSectionContent(text: string): string {
     if (!text) return '<em>No summary available.</em>';
 
     let cleanedText = text
       .trim()
-      // 1. Remove ANY bolding or italics if the AI hallucinated them
       .replace(/\*\*/g, '')
       .replace(/\*/g, '')
-      
-      // 2. Remove any bullet points (-, *, or •) from the start of new lines
       .replace(/^[\s]*[•\-*]\s*/gm, '')
-      
-      // 3. Ensure no more than 2 consecutive line breaks
       .replace(/\n{3,}/g, '\n\n');
 
-    // 4. Transform Blocker text into your interactive tag (Preserves your custom UI feature!)
     cleanedText = cleanedText.replace(/(?:🚨|Blocker:?)\s*(.*?)(?=\n|$)/gi, (match, reason) => {
       const cleanReason = reason.trim();
       return `<span class="blocked-tag-clickable" data-reason="${cleanReason}">🚨 Blocker Details</span>`;
     });
 
-    // 5. Convert standard line breaks to <br/> tags to render in [innerHTML]
-    return cleanedText.replace(/\n/g, '<br/>');
+    // Wrap each line in a <div> block so parentElement isolates only that line
+    return cleanedText
+      .split('\n')
+      .map(line => `<div>${line || '&nbsp;'}</div>`)
+      .join('');
   }
 
   handleItemClick(event: MouseEvent): void {
@@ -296,7 +301,6 @@ export class StandupSummaryComponent implements OnInit {
       const reason = blockedBadge.getAttribute('data-reason') || 'No reason provided yet. Awaiting reply in Slack.';
       
       const lineText = blockedBadge.parentElement?.textContent || 'Blocked Item';
-      // Fallback regex updated to catch text without bullet points
       const titleMatch = lineText.match(/^(.*?)(?=\[|$|🚨)/);
       const title = titleMatch ? titleMatch[1].trim() : 'Blocked Task';
 
