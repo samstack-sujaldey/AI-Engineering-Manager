@@ -169,6 +169,8 @@ export class StandupSummaryComponent implements OnInit {
 
   formattedDateDisplay: string = '';
 
+  selectedDate: string = '';
+
   summaryHtml: string = '';
   taskCount: number = 0;
   issueCount: number = 0;
@@ -205,7 +207,7 @@ export class StandupSummaryComponent implements OnInit {
     this.fetchSummaryForDate(this.selectedDate);
   }
 
-  onDateChange(): void {
+  onDateChange(event: Event): void {
     if (!this.selectedDate) return;
 
     const [year, month, day] = this.selectedDate.split('-').map(Number);
