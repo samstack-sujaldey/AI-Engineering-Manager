@@ -157,6 +157,9 @@ function createSlackApp({
 	}
 
 	async function handleMessage(event, client, { is_edit = false } = {}) {
+		console.log(
+			`[Connect] handleMessage called - channel: ${event.channel}, user: ${event.user}, subtype: ${event.subtype || "none"}, bot_id: ${event.bot_id || "none"}`,
+		);
 		if (event.bot_id || event.subtype === "bot_message") return null;
 
 		const text = event.text || "";
@@ -184,6 +187,21 @@ function createSlackApp({
 		const pendingConnect = connect.getByTarget(event.user);
 		const channelId = event.channel || "";
 
+		console.log(`[DEBUG Lookup] event.user (Sender): ${event.user}`);
+		console.log(`[DEBUG Lookup] pendingConnect found? ${!!pendingConnect}`);
+		if (pendingConnect) {
+			console.log(
+				`[DEBUG Lookup] Expected targetUserId: ${pendingConnect.targetUserId}`,
+			);
+		}
+
+		// 🟢 DEBUG: log all incoming DM events for diagnostics
+		if (channelId.startsWith("D")) {
+			console.log(
+				`[Connect] DM event received - user: ${event.user}, channel: ${channelId}, pendingConnect found: ${!!pendingConnect}, pendingConnect target: ${pendingConnect?.targetUserId}, text: "${text}"`,
+			);
+		}
+
 		// 🟢 1. DM Reply Catch Block (Handles relative time and routes back to thread)
 		if (
 			pendingConnect &&
@@ -191,12 +209,13 @@ function createSlackApp({
 				channelId.startsWith("D")) &&
 			!lowerText.startsWith("connect")
 		) {
-			console.log(`[Connect] Intercepted DM reply from ${event.user}`);
+			console.log(
+				`[Connect] Intercepted DM reply from ${event.user}: "${text}"`,
+			);
 
 			const timeMatch = extractDueDate(text);
 			let minMatch = text.match(/\b(\d+)\s*(?:m|min|mins|minutes?)\b/i);
 
-			// If they just type a number like "10", assume it means minutes
 			if (!minMatch) {
 				const rawNumberMatch = text.trim().match(/^(\d+)$/);
 				if (rawNumberMatch) minMatch = rawNumberMatch;
@@ -220,7 +239,17 @@ function createSlackApp({
 					replyTextToReceiver =
 						"✅ Great! I've let them know you're free to connect right now.";
 					updateTextToThread = `✅ <@${pendingConnect.targetUserId}> is free now and ready to connect!`;
-					connect.updateStatus(event.user, "ACCEPTED", scheduledAt);
+
+					// SAFEGUARD: Don't let a DB failure stop the Slack messages
+					try {
+						connect.updateStatus(
+							event.user,
+							"ACCEPTED",
+							scheduledAt,
+						);
+					} catch (e) {
+						console.error("[Connect] DB update failed:", e.message);
+					}
 				} else {
 					let delayMins = 0;
 					if (minMatch) {
@@ -243,16 +272,24 @@ function createSlackApp({
 						minute: "2-digit",
 					});
 					replyTextToReceiver = `📅 Understood! I've scheduled the connection for *${timeLabel}*. I'll remind both of you then.`;
-
-					// 🟢 EXACT MESSAGE YOU REQUESTED
 					updateTextToThread = `🕒 <@${pendingConnect.targetUserId}> will be free in *${delayMins} minutes* (at ${timeLabel}). Kindly wait, I will notify you again then.`;
-					connect.updateStatus(event.user, "SCHEDULED", scheduledAt);
+
+					// SAFEGUARD
+					try {
+						connect.updateStatus(
+							event.user,
+							"SCHEDULED",
+							scheduledAt,
+						);
+					} catch (e) {
+						console.error("[Connect] DB update failed:", e.message);
+					}
 				}
 
 				const postAt = Math.floor(scheduledAt.getTime() / 1000);
 
+				// 1. Post final confirmation to User A's thread
 				try {
-					// 1. Post the final confirmation BACK TO THE ORIGINAL THREAD
 					if (pendingConnect.channel && pendingConnect.threadTs) {
 						await client.chat.postMessage({
 							channel: pendingConnect.channel,
@@ -260,41 +297,53 @@ function createSlackApp({
 							text: updateTextToThread,
 						});
 					} else {
-						// Fallback: If thread is missing, DM the sender
 						await client.chat.postMessage({
 							channel: pendingConnect.senderId,
 							text: updateTextToThread,
 						});
 					}
+				} catch (err) {
+					console.error(
+						"[Connect] Failed to update User A:",
+						err.message,
+					);
+				}
 
-					// 2. Schedule the reminders to fire when the time is up
-					if (!(isFree && !timeMatch && !minMatch && !hrMatch)) {
+				// 2. Schedule Reminders (Isolated from failures above)
+				if (!(isFree && !timeMatch && !minMatch && !hrMatch)) {
+					try {
+						const safePostAt = Math.max(
+							postAt,
+							Math.floor(Date.now() / 1000) + 65,
+						);
 						await client.chat.scheduleMessage({
 							channel: pendingConnect.senderId,
-							post_at: Math.max(
-								postAt,
-								Math.floor(Date.now() / 1000) + 65,
-							),
+							post_at: safePostAt,
 							text: `🔔 *Reminder:* It's time to connect with <@${pendingConnect.targetUserId}>!`,
 						});
 						await client.chat.scheduleMessage({
 							channel: pendingConnect.targetUserId,
-							post_at: Math.max(
-								postAt,
-								Math.floor(Date.now() / 1000) + 65,
-							),
+							post_at: safePostAt,
 							text: `🔔 *Reminder:* It's time to connect with <@${pendingConnect.senderId}>!`,
 						});
+					} catch (err) {
+						console.error(
+							"[Connect] Scheduling failed:",
+							err.message,
+						);
 					}
+				}
 
-					// 3. Confirm to Nitesh in his DM
+				// 3. Confirm to User B (🟢 Fixed: Now handles thread replies properly)
+				try {
 					await client.chat.postMessage({
 						channel: channelId,
+						thread_ts: event.thread_ts,
 						text: replyTextToReceiver,
 					});
 				} catch (err) {
 					console.error(
-						"[Connect] DM scheduling failed:",
+						"[Connect] Failed to update User B DM:",
 						err.message,
 					);
 				}
@@ -302,7 +351,7 @@ function createSlackApp({
 				connect.remove(event.user);
 				return null;
 			} else {
-				// Fallback: If they type something unreadable, forward it to the thread
+				// Fallback: If they type something unreadable, forward it
 				try {
 					await client.chat.postMessage({
 						channel: pendingConnect.channel,
@@ -311,6 +360,7 @@ function createSlackApp({
 					});
 					await client.chat.postMessage({
 						channel: channelId,
+						thread_ts: event.thread_ts,
 						text: `✅ I've forwarded your reply to the thread.`,
 					});
 				} catch (err) {
@@ -351,6 +401,18 @@ function createSlackApp({
 				let targetUser = mentionedUsers.find(
 					(u) => u.id && u.id !== sender.id,
 				);
+
+				const rawMentionMatch = text.match(/<@([A-Z0-9]+)>/);
+				if (
+					!targetUser &&
+					rawMentionMatch &&
+					rawMentionMatch[1] !== sender.id
+				) {
+					targetUser = {
+						id: rawMentionMatch[1],
+						name: "Mentioned User",
+					};
+				}
 
 				// 🟢 Fallback: Aggressive Plain-Text Name Matching
 				if (!targetUser) {
@@ -456,69 +518,6 @@ function createSlackApp({
 					connect.removeRelatedWorkRequest(event.thread_ts);
 					return null;
 				}
-			}
-		}
-
-		// Thread-based connect flow for related work prompts
-		if (event.thread_ts && event.thread_ts !== event.ts) {
-			const relatedWorkPrompt = connect.getRelatedWorkRequest(
-				event.thread_ts,
-			);
-			if (relatedWorkPrompt && relatedWorkPrompt.relatedUsers?.length) {
-				const replyText = text.trim();
-				const mentionedUsers = extractMentionedUsers(
-					text,
-					user_directory || {},
-				);
-				const isNo =
-					/\bno\b/.test(replyText) && !/\byes\b/.test(replyText);
-				const isYes =
-					/\b(yes|yup|yeah|free|available|now|ready|ok|sure)\b/i.test(
-						replyText,
-					);
-				const hasMention = mentionedUsers.some(
-					(u) => u.id && u.id !== sender.id,
-				);
-
-				if (isNo) {
-					await client.chat.postMessage({
-						channel: event.channel,
-						thread_ts: event.thread_ts,
-						text: "OK, skipping the connect prompt.",
-					});
-				} else if (hasMention) {
-					const targetUser = mentionedUsers.find(
-						(u) => u.id && u.id !== sender.id,
-					);
-					if (targetUser) {
-						await client.chat.postMessage({
-							channel: targetUser.id,
-							text: `🔔 <@${sender.id}> wants to connect with you regarding related work.`,
-						});
-						await client.chat.postMessage({
-							channel: event.channel,
-							thread_ts: event.thread_ts,
-							text: `✅ Notified <@${targetUser.id}> about the connect request.`,
-						});
-					}
-				} else if (isYes) {
-					for (const u of relatedWorkPrompt.relatedUsers) {
-						if (u.id && u.id !== sender.id) {
-							await client.chat.postMessage({
-								channel: u.id,
-								text: `🔔 <@${sender.id}> wants to connect with you regarding related work.`,
-							});
-						}
-					}
-					await client.chat.postMessage({
-						channel: event.channel,
-						thread_ts: event.thread_ts,
-						text: "✅ Notified all related people about the connect request.",
-					});
-				}
-
-				connect.removeRelatedWorkRequest(event.thread_ts);
-				return null;
 			}
 		}
 
@@ -754,6 +753,16 @@ function createSlackApp({
 
 	app.event("message", async ({ event, client }) => {
 		try {
+			// 🟢 DEBUG LOG: Catch everything hitting the bot before filters apply
+			console.log(`\n=== 🚨 INCOMING SLACK EVENT 🚨 ===`);
+			console.log(
+				`User: ${event.user} | Channel: ${event.channel} | Subtype: ${event.subtype || "none"}`,
+			);
+			console.log(
+				`Text: "${event.text || (event.message ? event.message.text : "")}"`,
+			);
+			console.log(`==================================\n`);
+
 			if (event.subtype === "message_changed" && event.message) {
 				await handleMessage(
 					{
@@ -768,7 +777,17 @@ function createSlackApp({
 				return;
 			}
 
-			if (event.subtype && event.subtype !== "file_share") return;
+			// ✅ CORRECTED FILTER:
+			// Only ignore if a subtype explicitly exists AND it is not "file_share".
+			// If subtype is undefined (normal messages), this block is skipped.
+			if (event.subtype && event.subtype !== "file_share") {
+				console.log(
+					`[slack] ⚠️ Ignored event due to subtype: ${event.subtype}`,
+				);
+				return;
+			}
+
+			// This will now successfully trigger for your undefined subtype messages
 			await handleMessage(event, client, { is_edit: false });
 		} catch (err) {
 			console.error("[slack] message handler error:", err);
