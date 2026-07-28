@@ -19,54 +19,61 @@ function createApiRouter({ messageProcessor }) {
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   // Replace GET /discussions/daily-summary in routes/api.js with this:
 
-  router.get("/discussions/daily-summary", async (req, res) => {
-    try {
-      const { getTargetSummaryDate } = require("../jobs/standupScheduler");
-      const requestedDateStr = req.query.date
-        ? String(req.query.date).split("T")[0].trim()
-        : getTargetSummaryDate(new Date());
+router.get("/discussions/daily-summary", async (req, res) => {
+  try {
+    const { getTargetSummaryDate } = require("../jobs/standupScheduler");
 
-      const channel = req.query.channel || null;
-      const cacheKey = channel
-        ? { date: requestedDateStr, channel }
-        : { date: requestedDateStr };
+    // 1. Receive the raw date passed from frontend (or default to today's raw date)
+    const rawDateStr = req.query.date
+      ? String(req.query.date).split("T")[0].trim()
+      : new Date().toISOString().split("T")[0];
 
-      // Strictly fetch from the pre-cached 10:00 AM snapshot
-      const cachedDoc = await DailySummary.findOne(cacheKey).lean();
+    // 2. Convert the raw date to the target business date (Yesterday / Friday on Mondays)
+    const rawDateObj = new Date(rawDateStr);
+    const targetBusinessDateStr = getTargetSummaryDate(rawDateObj);
 
-      res.setHeader(
-        "Cache-Control",
-        "no-store, no-cache, must-revalidate, proxy-revalidate",
-      );
-      res.setHeader("Pragma", "no-cache");
-      res.setHeader("Expires", "0");
+    const channel = req.query.channel ? String(req.query.channel).trim() : null;
 
-      if (cachedDoc && cachedDoc.summary) {
-        return res.json({
-          date: requestedDateStr,
-          channel: channel || null,
-          summary: cachedDoc.summary,
-          tasks_count: cachedDoc.tasks_count || 0,
-          issues_count: cachedDoc.issues_count || 0,
-          cached: true,
-          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-        });
-      }
+    // 3. Query MongoDB for the converted target business date
+    const cacheKey = channel 
+      ? { date: targetBusinessDateStr, channel: channel }
+      : { date: targetBusinessDateStr, $or: [{ channel: null }, { channel: "" }] };
 
+    const cachedDoc = await DailySummary.findOne(cacheKey).lean();
+
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+
+    if (cachedDoc && cachedDoc.summary) {
       return res.json({
-        date: requestedDateStr,
+        raw_date: rawDateStr,
+        date: targetBusinessDateStr,
         channel: channel || null,
-        summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${requestedDateStr}\n• Summary will be available after the 10:00 AM scheduled generation.`,
-        tasks_count: 0,
-        issues_count: 0,
-        cached: false,
-        last_updated_at: new Date(),
+        summary: cachedDoc.summary,
+        tasks_count: cachedDoc.tasks_count || 0,
+        issues_count: cachedDoc.issues_count || 0,
+        cached: true,
+        last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
       });
-    } catch (err) {
-      console.error("[daily-summary route error]:", err);
-      res.status(500).json({ error: "Failed to fetch daily summary cache" });
     }
-  });
+
+    // 4. Return fallback if no pre-cached document exists for that business date
+    return res.json({
+      raw_date: rawDateStr,
+      date: targetBusinessDateStr,
+      channel: channel || null,
+      summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetBusinessDateStr}\nSummary for ${targetBusinessDateStr} is not cached.`,
+      tasks_count: 0,
+      issues_count: 0,
+      cached: false,
+      last_updated_at: new Date(),
+    });
+  } catch (err) {
+    console.error("[daily-summary route error]:", err);
+    res.status(500).json({ error: "Failed to fetch daily summary cache" });
+  }
+});
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
   router.post("/discussions/parse-mom", async (req, res) => {
