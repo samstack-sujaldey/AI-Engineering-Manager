@@ -612,6 +612,88 @@ Instructions:
     }
   });
 
+  router.get("/teams/workload", async (req, res, next) => {
+    try {
+      const channelId = req.query.channelId;
+      const taskFilter = {};
+      const issueFilter = {};
+
+      if (channelId) {
+        taskFilter.channel = channelId;
+        issueFilter.channel = channelId;
+      }
+
+      const [tasks, issues] = await Promise.all([
+        Task.find(taskFilter).lean(),
+        Issue.find(issueFilter).lean(),
+      ]);
+
+      const memberMap = new Map();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const getName = (item) => {
+        const name = item.assigned_to?.name || item.assigned_to || item.owner?.name || item.owner;
+        if (!name || name === 'Unassigned') return null;
+        return typeof name === 'string' ? name : (name.name || name.display_name || 'Unknown');
+      };
+
+      const isToday = (date) => {
+        if (!date) return false;
+        const d = new Date(date);
+        return d >= today;
+      };
+
+      for (const task of tasks) {
+        const name = getName(task);
+        if (!name) continue;
+
+        const status = (task.status || '').toLowerCase();
+        const isBlocked = status === 'blocked' || task.blocked_reason || task.block_reason_pending;
+        const isDone = status === 'completed' || status === 'done';
+        const isCurrent = !isBlocked && !isDone;
+
+        if (!memberMap.has(name)) {
+          memberMap.set(name, { name, current: 0, blocked: 0, doneToday: 0 });
+        }
+        const member = memberMap.get(name);
+
+        if (isBlocked) member.blocked++;
+        else if (isDone) {
+          if (isToday(task.updated_time || task.updatedAt || task.created_time)) {
+            member.doneToday++;
+          }
+        } else if (isCurrent) member.current++;
+      }
+
+      for (const issue of issues) {
+        const name = getName(issue);
+        if (!name) continue;
+
+        const status = (issue.status || '').toLowerCase();
+        const isBlocked = status === 'hold' || issue.blocked_reason || issue.block_reason_pending;
+        const isResolved = status === 'resolved';
+        const isCurrent = !isBlocked && !isResolved;
+
+        if (!memberMap.has(name)) {
+          memberMap.set(name, { name, current: 0, blocked: 0, doneToday: 0 });
+        }
+        const member = memberMap.get(name);
+
+        if (isBlocked) member.blocked++;
+        else if (isResolved) {
+          if (isToday(issue.updated_time || issue.updatedAt || issue.created_time)) {
+            member.doneToday++;
+          }
+        } else if (isCurrent) member.current++;
+      }
+
+      res.json(Array.from(memberMap.values()));
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.post(
     "/parse",
     body("text").isString().notEmpty(),

@@ -2,6 +2,32 @@ const cron = require('node-cron');
 const { Task, Issue } = require('../models');
 const { createSlackClient } = require('../services/slackSync');
 
+async function openDirectMessageChannel(client, slackUserId) {
+  const result = await client.conversations.open({ users: [slackUserId] });
+  return result.channel?.id || slackUserId;
+}
+
+/**
+ * Safely send a briefing to a single user via Slack DM.
+ * Opens an IM conversation first, then delivers the message.
+ */
+async function sendBriefingToUser(client, slackUserId, messageText) {
+  try {
+    const dmChannelId = await openDirectMessageChannel(client, slackUserId);
+
+    await client.chat.postMessage({
+      channel: dmChannelId,
+      text: messageText,
+      mrkdwn: true,
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error(`❌ [Standup Briefing] Failed to deliver to ${slackUserId}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 /**
  * Dynamically send standup briefings based on provided options.
  * @param {Object} options
@@ -160,14 +186,11 @@ async function sendDailyStandupBriefings(options = {}) {
 
       messageText += `👉 _Please sync your updates before starting the meeting._`;
 
-      await client.chat.postMessage({
-        channel: slackUserId,
-        text: messageText,
-        mrkdwn: true,
-      });
-
-      totalDelivered++;
-      console.log(`✅ Standup briefing delivered to ${userData.name} (${slackUserId})`);
+      const deliveryResult = await sendBriefingToUser(client, slackUserId, messageText);
+      if (deliveryResult.success) {
+        totalDelivered++;
+        console.log(`✅ Standup briefing delivered to ${userData.name} (${slackUserId})`);
+      }
     }
 
     return { success: true, count: totalDelivered };
@@ -180,9 +203,15 @@ async function sendDailyStandupBriefings(options = {}) {
 // ⏰ Dynamic Cron Schedule (Defaults to 10:00 AM daily or uses STANDUP_CRON_SCHEDULE from .env)
 const cronSchedule = process.env.STANDUP_CRON_SCHEDULE || '0 10 * * *';
 cron.schedule(cronSchedule, async () => {
-  await sendDailyStandupBriefings();
+  try {
+    await sendDailyStandupBriefings();
+  } catch (error) {
+    console.error('❌ [Cron] Unhandled error in daily standup briefing job:', error.message);
+  }
 });
 
 module.exports = {
   sendDailyStandupBriefings,
+  sendBriefingToUser,
+  openDirectMessageChannel,
 };

@@ -434,8 +434,41 @@ export class TeamComponent implements OnInit {
       this.teams = Array.isArray(teamsRes) ? teamsRes : (teamsRes?.teams || teamsRes?.data || []);
 
       await this.loadTasksForChannel();
+      await this.loadWorkload();
     } catch (err) {
       console.error('Failed to load team data:', err);
+    }
+  }
+
+  async loadWorkload() {
+    try {
+      const url = this.dashService.getFilteredUrl('/teams/workload');
+      const res: any = await firstValueFrom(this.http.get(url));
+      const workload = Array.isArray(res) ? res : (res?.data || res?.members || []);
+
+      const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
+      let colorIndex = 0;
+
+      this.members = workload.map((m: any) => {
+        const nameParts = (m.name || '').trim().split(/\s+/);
+        const initials = nameParts.length > 1
+          ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
+          : (m.name || 'UN').substring(0, 2).toUpperCase();
+
+        return {
+          name: m.name || 'Unknown',
+          role: 'Developer',
+          initials: initials || 'UN',
+          color: colorPalette[colorIndex++ % colorPalette.length],
+          current: m.current || 0,
+          blocked: m.blocked || 0,
+          doneToday: m.doneToday || 0,
+        };
+      });
+
+      this.cdr.detectChanges();
+    } catch (err) {
+      console.error('Failed to load workload:', err);
     }
   }
 
