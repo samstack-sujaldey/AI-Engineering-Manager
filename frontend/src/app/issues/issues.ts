@@ -1,7 +1,9 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit ,ChangeDetectorRef } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service'; // Adjust path if needed
 
 @Component({
@@ -14,23 +16,29 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     <div class="issues-body">
       <!-- Filters -->
       <div class="filters-row">
-        <select class="filter-select" [(ngModel)]="statusFilter">
+        <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadIssues()">
           <option value="all">Status: All</option>
           <option value="HOLD">Hold</option>
           <option value="RESOLVED">Resolved</option>
         </select>
-        <select class="filter-select" [(ngModel)]="priorityFilter">
+        <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadIssues()">
           <option value="all">Priority: All</option>
           <option value="URGENT">Urgent</option>
           <option value="HIGH">High</option>
           <option value="MEDIUM">Medium</option>
           <option value="LOW">Low</option>
         </select>
+        <input
+          type="date"
+          class="filter-select"
+          [(ngModel)]="dateFilter"
+          (change)="loadIssuesOnFilterChange()"
+        />
       </div>
 
-      <div *ngIf="dashService.data()?.issues as issues">
+      <div *ngIf="!loading">
         <!-- Stats -->
-        <div class="issue-stats">
+        <div class="issue-stats" *ngIf="issues.length > 0">
           <div class="issue-stat-card">
             <div class="stat-label">Total Issues</div>
             <div class="stat-value">{{ issues.length }}</div>
@@ -73,14 +81,14 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                   </div>
                 </td>
                 <td class="assignee-cell">
-                  <div class="avatar-sm" [style.background]="getAvatarColor(issue.owner?.name)">
-                    {{ getInitials(issue.owner?.name) }}
+                  <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(issue.owner))">
+                    {{ getInitials(getPersonName(issue.owner)) }}
                   </div>
-                  <span>{{ issue.owner?.name || 'Unassigned' }}</span>
+                  <span>{{ getPersonName(issue.owner) }}</span>
                 </td>
                 <td>
                   <span style="font-size: 13px; color: #555; text-transform: capitalize;">{{
-                    issue.reporter?.name || 'System'
+                    getPersonName(issue.reporter) || 'System'
                   }}</span>
                 </td>
                 <td>
@@ -312,11 +320,58 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class IssuesComponent {
+export class IssuesComponent implements OnInit {
   dashService = inject(DashboardService);
+  http = inject(HttpClient);
+  private cdr = inject(ChangeDetectorRef);
 
+  issues: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
+  dateFilter = '';
+  loading = false;
+
+  ngOnInit() {
+    this.initializeAndLoadIssues();
+  }
+
+  private setDefaultDate() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    this.dateFilter = `${year}-${month}-${day}`;
+  }
+
+  private async initializeAndLoadIssues() {
+    this.setDefaultDate();
+    await this.loadIssues();
+  }
+
+  async loadIssues() {
+    this.loading = true;
+    try {
+      const params: any = {};
+      if (this.statusFilter !== 'all') params.status = this.statusFilter;
+      if (this.priorityFilter !== 'all') params.priority = this.priorityFilter;
+      const activeChannel = this.dashService.activeChannelId();
+      if (activeChannel) params.channel = activeChannel;
+      if (this.dateFilter) params.date = this.dateFilter;
+
+      this.issues = await firstValueFrom(this.http.get('/api/issues', { params })) as any[] || [];
+      this.cdr.detectChanges();
+    } catch (err) {
+      console.error('Failed to load issues:', err);
+      this.issues = [];
+    } finally {
+      this.loading = false;
+      this.cdr.detectChanges();
+    }
+  }
+
+  loadIssuesOnFilterChange() {
+    this.loadIssues();
+  }
 
   filteredIssues(issues: any[]): any[] {
     if (!issues) return [];
@@ -339,6 +394,22 @@ export class IssuesComponent {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : '';
+  }
+
+  getPersonName(user?: any): string {
+    if (!user) return 'Unassigned';
+    const candidate = user.display_name || user.real_name || user.name || '';
+    return this.normalizeName(candidate) || 'Unassigned';
+  }
+
+  private normalizeName(value?: string): string {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) {
+      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    }
+    return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
   getInitials(name?: string): string {

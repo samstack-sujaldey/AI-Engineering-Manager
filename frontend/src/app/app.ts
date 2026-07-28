@@ -44,11 +44,13 @@ import { DashboardService } from './services/dashboard.service';
       </main>
     </div>
   `,
-  styles: [
+   styles: [
     `
       :host {
         display: block;
         min-height: 100vh;
+        caret-color: transparent; /* Hides the blinking text caret globally */
+        user-select: none;        /* Prevents accidental text highlighting */
       }
       .app-container {
         display: flex;
@@ -135,6 +137,12 @@ import { DashboardService } from './services/dashboard.service';
       .main-content {
         flex: 1;
         overflow: auto;
+      }
+
+      /* Re-enable text cursor for actual inputs or text fields if any exist */
+      input, textarea, [contenteditable="true"] {
+        caret-color: auto;
+        user-select: text;
       }
     `,
   ],

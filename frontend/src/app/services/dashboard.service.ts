@@ -33,14 +33,44 @@ export class DashboardService {
   readonly error = signal<string | null>(null);
   readonly live = signal(false);
   readonly syncInfo = signal<string | null>(null);
+  readonly activeChannelId = signal<string | null>(null);
+  readonly selectedChannel = signal<string | null>(null);
+
+  constructor() {
+    const stored = localStorage.getItem('active_channel_id');
+    if (stored) {
+      this.activeChannelId.set(stored);
+      this.selectedChannel.set(stored);
+    }
+  }
+
+  // 🟢 Helper used by TeamComponent and other views to format channel-filtered URLs
+  getFilteredUrl(path: string): string {
+    const baseUrl = `${environment.apiUrl}${path.startsWith('/') ? path : '/' + path}`;
+    const channel = this.activeChannelId();
+    if (!channel || channel === 'all') {
+      return baseUrl;
+    }
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${separator}channel=${encodeURIComponent(channel)}`;
+  }
+
+  // 🟢 Synchronize both channel signals
+  setChannel(channel: string | null): void {
+    const cleanChan = channel === 'all' ? null : channel;
+    this.selectedChannel.set(cleanChan);
+    this.setActiveChannel(cleanChan);
+  }
 
   async load(): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     try {
-      const data = await firstValueFrom(
-        this.http.get<DashboardData>(`${environment.apiUrl}/dashboard`),
-      );
+      const channel = this.activeChannelId();
+      const url = channel && channel !== 'all'
+        ? `${environment.apiUrl}/dashboard?channel=${encodeURIComponent(channel)}`
+        : `${environment.apiUrl}/dashboard`;
+      const data = await firstValueFrom(this.http.get<DashboardData>(url));
       this.data.set(data);
     } catch (err: any) {
       this.error.set(err.message || 'Failed to load dashboard data from backend.');
@@ -49,13 +79,33 @@ export class DashboardService {
     }
   }
 
-  async refresh(): Promise<void> {
+  setActiveChannel(channelId: string | null) {
+    const cleanId = channelId === 'all' ? null : channelId;
+    this.activeChannelId.set(cleanId);
+    this.selectedChannel.set(cleanId);
+
+    if (cleanId) {
+      localStorage.setItem('active_channel_id', cleanId);
+    } else {
+      localStorage.removeItem('active_channel_id');
+    }
+  }
+
+  clearActiveChannel() {
+    this.activeChannelId.set(null);
+    this.selectedChannel.set(null);
+    localStorage.removeItem('active_channel_id');
+  }
+
+  async refresh(channels?: string[]): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     this.syncInfo.set(null);
     try {
       const result = await firstValueFrom(
-        this.http.post<any>(`${environment.apiUrl}/slack/sync`, {}),
+        this.http.post<any>(`${environment.apiUrl}/slack/sync`, {
+          channels: channels?.filter(Boolean) || [],
+        }),
       );
       this.data.set(result.dashboard);
       const s = result.sync;

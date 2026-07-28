@@ -1,8 +1,24 @@
 const { Task, Issue, Discussion, Activity, Notification } = require('../models');
 const { isOverdue } = require('../utils/helpers');
+const { normalizePersonName } = require('../agent/parser');
 
-async function getDashboard() {
+async function getDashboard(channel = null) {
   const now = new Date();
+  const normalizeUserRef = (user) => {
+    if (!user) return user;
+    const name = normalizePersonName(user.name || user.display_name || user.real_name || '');
+    const displayName = normalizePersonName(user.display_name || user.real_name || user.name || '');
+    return {
+      ...user,
+      name: name || user.name || '',
+      display_name: displayName || user.display_name || user.name || '',
+    };
+  };
+
+  const taskFilter = channel ? { channel } : {};
+  const issueFilter = channel ? { channel } : {};
+  const discussionFilter = channel ? { channel } : {};
+  const activityFilter = channel ? { channel } : {};
 
   const [
     tasks,
@@ -13,10 +29,10 @@ async function getDashboard() {
     taskStats,
     issueStats,
   ] = await Promise.all([
-    Task.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Issue.find().sort({ updated_time: -1 }).limit(200).lean(),
-    Discussion.find().sort({ timestamp: -1 }).limit(100).lean(),
-    Activity.find().sort({ created_at: -1 }).limit(50).lean(),
+    Task.find(taskFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Issue.find(issueFilter).sort({ updated_time: -1 }).limit(200).lean(),
+    Discussion.find(discussionFilter).sort({ timestamp: -1 }).limit(100).lean(),
+    Activity.find(activityFilter).sort({ created_at: -1 }).limit(50).lean(),
     Notification.find({
       status: { $in: ['PENDING', 'SENT'] },
       type: {
@@ -46,11 +62,13 @@ async function getDashboard() {
     (t) => t.awaiting_acknowledgement && t.awaiting_acknowledgement.user && !t.awaiting_acknowledgement.acknowledged
   );
 
+
   const ownerWorkload = {};
   for (const t of tasks) {
     if (t.status === 'COMPLETED') continue;
-    const key = t.assigned_to?.id || t.assigned_to?.name || 'Unassigned';
-    const label = t.assigned_to?.name || t.assigned_to?.display_name || 'Unassigned';
+    const normalizedAssignee = normalizeUserRef(t.assigned_to || {});
+    const key = normalizedAssignee.id || normalizedAssignee.name || 'Unassigned';
+    const label = normalizedAssignee.display_name || normalizedAssignee.name || 'Unassigned';
     if (!ownerWorkload[key]) {
       ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
@@ -60,24 +78,27 @@ async function getDashboard() {
   }
   for (const i of issues) {
     if (i.status === 'COMPLETED') continue;
-    const key = i.assigned_to?.id || i.assigned_to?.name || 'Unassigned';
-    const label = i.assigned_to?.name || i.assigned_to?.display_name || 'Unassigned';
+    const normalizedAssignee = normalizeUserRef(i.assigned_to || {});
+    const key = normalizedAssignee.id || normalizedAssignee.name || 'Unassigned';
+    const label = normalizedAssignee.display_name || normalizedAssignee.name || 'Unassigned';
     if (!ownerWorkload[key]) {
       ownerWorkload[key] = { id: key, name: label, tasks: 0, issues: 0, blocked: 0, overdue: 0 };
     }
     ownerWorkload[key].issues += 1;
   }
 
+  
+
   const toTaskView = (t) => ({
     id: t.task_id,
     title: t.title,
     description: t.description,
-    assigned_to: t.assigned_to,
-    assigned_by: t.assigned_by,
-    reporter: t.reporter,
-    created_by: t.created_by,
-    last_updated_by: t.last_updated_by,
-    owner: t.owner,
+    assigned_to: normalizeUserRef(t.assigned_to),
+    assigned_by: normalizeUserRef(t.assigned_by),
+    reporter: normalizeUserRef(t.reporter),
+    created_by: normalizeUserRef(t.created_by),
+    last_updated_by: normalizeUserRef(t.last_updated_by),
+    owner: normalizeUserRef(t.owner),
     mentioned_users: t.mentioned_users,
     priority: t.priority,
     status: t.status,
@@ -101,11 +122,11 @@ async function getDashboard() {
     id: i.issue_id,
     title: i.title,
     description: i.description,
-    assigned_to: i.assigned_to,
-    assigned_by: i.assigned_by,
-    reporter: i.reporter,
-    created_by: i.created_by,
-    owner: i.owner,
+    assigned_to: normalizeUserRef(i.assigned_to),
+    assigned_by: normalizeUserRef(i.assigned_by),
+    reporter: normalizeUserRef(i.reporter),
+    created_by: normalizeUserRef(i.created_by),
+    owner: normalizeUserRef(i.owner),
     mentioned_users: i.mentioned_users,
     priority: i.priority,
     status: i.status,
@@ -132,7 +153,7 @@ async function getDashboard() {
     discussion_timeline: discussions.map((d) => ({
       id: d.discussion_id,
       content: d.content,
-      author: d.author,
+      author: normalizeUserRef(d.author),
       task_id: d.task_id,
       issue_id: d.issue_id,
       channel: d.channel,

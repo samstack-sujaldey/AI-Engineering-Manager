@@ -35,7 +35,7 @@ const IssueSchema = new mongoose.Schema(
 		},
 		status: {
 			type: String,
-			enum: ["HOLD", "RESOLVED"],
+			enum: ["OPEN", "HOLD", "RESOLVED"],
 			default: "HOLD", // <--- Default is now HOLD
 		},
 		root_cause: { type: String, default: "" },
@@ -66,6 +66,10 @@ const IssueSchema = new mongoose.Schema(
 			urls: { type: [String], default: [] },
 			files: { type: [String], default: [] },
 		},
+		// Snapshot of Slack attachment descriptors captured at create/update
+		// time, since the underlying temp files get deleted shortly after by
+		// slackSync's cleanup step.
+		local_file_logs: { type: [mongoose.Schema.Types.Mixed], default: [] },
 		history: [
 			{
 				event: String,

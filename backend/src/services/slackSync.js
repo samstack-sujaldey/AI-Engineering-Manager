@@ -2,8 +2,11 @@ const { WebClient } = require('@slack/web-api');
 const config = require('../config');
 const { toUser } = require('../agent/parser');
 const { findWorkByMessageTs } = require('./similarity');
-const { Discussion } = require('../models');
+const { Discussion, Team } = require('../models');
 const { getDashboard } = require('./dashboard');
+const fs = require('fs/promises');
+const path = require('path');
+const axios = require('axios');
 
 function looksLikePlaceholder(value, prefixes = []) {
   if (!value) return true;
@@ -27,23 +30,49 @@ function createSlackClient() {
   return new WebClient(token);
 }
 
+// 🟢 Helper to detect bots and integration accounts
+function isBotUser(u = {}) {
+  const name = (u.name || u.real_name || u.display_name || '').toLowerCase();
+  const id = (u.id || '').toLowerCase();
+  return (
+    u.is_bot === true ||
+    u.is_app_user === true ||
+    id === 'uslackbot' ||
+    name.includes('github') ||
+    name.includes('slackbot') ||
+    name.includes('ai_engineering') ||
+    name.includes('bot')
+  );
+}
+
 async function resolveUser(client, userId, cache) {
-  if (!userId) return toUser({ id: '', name: 'unknown' });
+  if (!userId) return toUser({ id: '', name: 'Unassigned', display_name: 'Unassigned' });
   if (cache.has(userId)) return cache.get(userId);
+
   try {
     const info = await client.users.info({ user: userId });
     const u = info.user || {};
+
+    // 🟢 1. Check if user is a bot or integration
+    if (isBotUser(u)) {
+      const botFallback = toUser({ id: '', name: 'Unassigned', display_name: 'Unassigned' });
+      cache.set(userId, botFallback);
+      return botFallback;
+    }
+
+    const realDisplayName = u.profile?.real_name || u.profile?.display_name || u.real_name || u.name;
+
     const user = toUser({
       id: u.id,
       name: u.name,
-      display_name: u.profile?.display_name || u.real_name || u.name,
+      display_name: realDisplayName,
       email: u.profile?.email || '',
       real_name: u.real_name,
     });
     cache.set(userId, user);
     return user;
   } catch {
-    const fallback = toUser({ id: userId, name: userId, display_name: userId });
+    const fallback = toUser({ id: '', name: 'Unassigned', display_name: 'Unassigned' });
     cache.set(userId, fallback);
     return fallback;
   }
@@ -63,9 +92,12 @@ async function buildDirectory(client, text, cache) {
 
 async function alreadyProcessed(messageTs) {
   const { task, issue } = await findWorkByMessageTs(messageTs);
-  if (task || issue) return true;
+  if (task || issue) return { skipped: true, type: task ? 'TASK_MATCH' : 'ISSUE_MATCH' };
+  
   const discussion = await Discussion.findOne({ slack_message_ts: messageTs }).lean();
-  return !!discussion;
+  if (discussion) return { skipped: true, type: 'DISCUSSION_MATCH' };
+  
+  return { skipped: false };
 }
 
 async function listChannels(client, { channelIds = [] } = {}) {
@@ -107,16 +139,13 @@ async function fetchChannelHistory(client, channelId, limit) {
     cursor = result.has_more ? result.response_metadata?.next_cursor || '' : '';
   } while (cursor && remaining > 0);
 
-  // Oldest first so thread continuity works
   return messages.reverse();
 }
 
-/**
- * Pull recent Slack channel messages into the message processor, then return dashboard data.
- */
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
+    channelId = null,
     channelIds = (process.env.SLACK_SYNC_CHANNELS || '')
       .split(',')
       .map((s) => s.trim())
@@ -140,7 +169,12 @@ async function syncFromSlack(messageProcessor, options = {}) {
     throw error;
   }
 
-  const channels = await listChannels(client, { channelIds });
+  const downloadToken = config.slack.botToken;
+  let channels = await listChannels(client, { channelIds });
+  if (channelId) {
+    channels = channels.filter((ch) => ch.id === channelId);
+  }
+
   const userCache = new Map();
   const summary = {
     workspace: auth.team || '',
@@ -153,8 +187,51 @@ async function syncFromSlack(messageProcessor, options = {}) {
     errors: [],
   };
 
+  const botPattern = /github|jira|jirabot|slackbot|ai_engineering|bot/i;
+
   for (const channel of channels) {
     summary.channels_scanned += 1;
+
+    // 🟢 2. Sync channel members to Team collection — FILTER OUT BOTS STRICTLY
+    try {
+      const membersResult = await client.conversations.members({ channel: channel.id });
+      const rawMemberIds = membersResult.members || [];
+      const humanMembers = [];
+
+      for (const mId of rawMemberIds) {
+        const resolved = await resolveUser(client, mId, userCache);
+        
+        if (resolved && resolved.name !== 'Unassigned') {
+          const checkName = `${resolved.name || ''} ${resolved.display_name || ''} ${resolved.real_name || ''}`;
+          
+          // Check if user is a bot or system account
+          const isBot = 
+            resolved.id === 'USLACKBOT' ||
+            botPattern.test(checkName);
+
+          if (!isBot) {
+            humanMembers.push(resolved);
+          }
+        }
+      }
+
+      const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
+      await Team.findOneAndUpdate(
+        { channel_id: channel.id },
+        {
+          team_id: `team_${channel.id}`,
+          channel_id: channel.id,
+          channel_name: cleanChanName,
+          members: humanMembers,
+          member_count: humanMembers.length,
+          last_synced_at: new Date(),
+        },
+        { upsert: true }
+      );
+    } catch (e) {
+      console.warn(`[slackSync] Member sync warning for ${channel.id}:`, e.message);
+    }
+
     let history;
     try {
       history = await fetchChannelHistory(client, channel.id, limitPerChannel);
@@ -168,7 +245,12 @@ async function syncFromSlack(messageProcessor, options = {}) {
 
     for (const msg of history) {
       summary.messages_seen += 1;
-      if (!msg?.text || msg.bot_id || msg.subtype === 'bot_message') {
+      
+      const hasFiles = msg.files && msg.files.length > 0;
+      const safeText = msg.text || "";
+
+      // 🟢 3. Skip messages authored by bots/apps or webhook integrations
+      if ((!safeText && !hasFiles) || msg.bot_id || msg.app_id || msg.subtype === 'bot_message') {
         summary.messages_skipped += 1;
         continue;
       }
@@ -177,38 +259,44 @@ async function syncFromSlack(messageProcessor, options = {}) {
         continue;
       }
 
+      const checkDuplicate = await alreadyProcessed(msg.ts);
+      if (checkDuplicate.skipped) {
+        summary.messages_skipped += 1;
+        continue;
+      }
+
       try {
-        if (await alreadyProcessed(msg.ts)) {
+        const sender = await resolveUser(client, msg.user, userCache);
+        const checkSenderName = `${sender.name || ''} ${sender.display_name || ''} ${sender.real_name || ''}`;
+        
+        if (sender.name === 'Unassigned' || botPattern.test(checkSenderName)) {
           summary.messages_skipped += 1;
           continue;
         }
 
-        const sender = await resolveUser(client, msg.user, userCache);
-        const user_directory = await buildDirectory(client, msg.text, userCache);
-        const result = await messageProcessor.process(
+        const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
+        const directory = await buildDirectory(client, safeText, userCache);
+
+        const processed = await messageProcessor.process(
           {
-            text: msg.text,
+            text: safeText,
             sender,
             channel: channel.id,
-            thread_id: msg.thread_ts || msg.ts,
+            channel_name: cleanChanName,
+            thread_id: msg.thread_ts || '',
             workspace_id: auth.team_id || '',
-            team: auth.team || '',
+            team: cleanChanName,
             message_ts: msg.ts,
             is_edit: false,
-            user_directory,
+            user_directory: directory,
+            thread_context: [],
           },
           { quiet: true }
         );
 
         summary.messages_processed += 1;
-        if (result.task_created) summary.created.tasks += 1;
-        if (result.issue_created) summary.created.issues += 1;
-        if (
-          result.discussion?.id &&
-          (result.action === 'STORE_DISCUSSION' || result.action === 'LINK_DISCUSSION')
-        ) {
-          summary.created.discussions += 1;
-        }
+        if (processed?.task_created) summary.created.tasks += 1;
+        if (processed?.issue_created) summary.created.issues += 1;
       } catch (err) {
         summary.errors.push({
           channel: channel.id,
@@ -219,24 +307,14 @@ async function syncFromSlack(messageProcessor, options = {}) {
     }
   }
 
-  if (messageProcessor.io) {
-    messageProcessor.io.emit('dashboard:update', {
-      action: 'SLACK_SYNC',
-      at: new Date().toISOString(),
-      summary,
-    });
-  }
-
   const dashboard = await getDashboard();
-
-  if (summary.channels_scanned === 0) {
-    summary.errors.push({
-      error:
-        'No channels found. Invite the bot to channels and grant channels:read / groups:read scopes, then reinstall the app.',
-    });
-  }
-
   return { ok: true, sync: summary, dashboard };
 }
 
-module.exports = { syncFromSlack, createSlackClient };
+module.exports = { 
+  syncFromSlack, 
+  createSlackClient, 
+  buildDirectory, 
+  resolveUser,
+  listChannels
+};

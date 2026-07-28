@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { PageHeaderComponent } from '../shared/page-header';
@@ -36,10 +36,6 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             <div class="stat-value">{{ countStatus(data.tasks, 'PROCESSING') }}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Completed</div>
-            <div class="stat-value">{{ countStatus(data.tasks, 'COMPLETED') }}</div>
-          </div>
-          <div class="stat-card">
             <div class="stat-label">Blocked</div>
             <div class="stat-value critical">{{ countStatus(data.tasks, 'BLOCKED') }}</div>
             <div class="stat-badge critical" *ngIf="countStatus(data.tasks, 'BLOCKED') > 0">
@@ -63,10 +59,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
             <div class="standup-entry" *ngFor="let disc of data.discussion_timeline.slice(0, 3)">
               <div class="standup-text">{{ disc.content }}</div>
-              <div class="standup-meta">
-                <span class="slack-badge">{{ disc.author?.name || 'User' }}</span>
-                <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
-              </div>
+               <div class="standup-meta">
+                 <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
+                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
+               </div>
             </div>
 
             <div
@@ -122,7 +118,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                     {{ getInitials(w.name) }}
                   </div>
                   <div>
-                    <div class="member-name">{{ w.name || 'Unassigned' }}</div>
+                    <div class="member-name">{{ displayName({name: w.name}) || 'Unassigned' }}</div>
                     <div class="member-role">Developer</div>
                   </div>
                 </td>
@@ -406,12 +402,32 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
     `,
   ],
 })
-export class DashboardComponent {
+export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
+
+  ngOnInit() {
+    this.dashService.load();
+  }
 
   countStatus(tasks: any[], status: string): number {
     if (!tasks) return 0;
     return tasks.filter((t) => t.status === status).length;
+  }
+
+  displayName(user: any): string {
+    if (!user) return 'Unassigned';
+    const candidate = user.display_name || user.real_name || user.name || '';
+    return this.normalizeName(candidate) || 'Unassigned';
+  }
+
+  private normalizeName(value: string): string {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) {
+      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    }
+    return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
   getInitials(name: string): string {

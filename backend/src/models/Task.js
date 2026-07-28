@@ -20,6 +20,7 @@ const TaskSchema = new mongoose.Schema(
     assigned_by: { type: UserRefSchema, default: () => ({}) },
     reporter: { type: UserRefSchema, default: () => ({}) },
     created_by: { type: UserRefSchema, default: () => ({}) },
+    completed_at: { type: Date, default: null },
     last_updated_by: { type: UserRefSchema, default: () => ({}) },
     mentioned_users: { type: [UserRefSchema], default: [] },
     watcher_users: { type: [UserRefSchema], default: [] },
@@ -69,6 +70,10 @@ const TaskSchema = new mongoose.Schema(
       urls: { type: [String], default: [] },
       files: { type: [String], default: [] },
     },
+    // Snapshot of Slack attachment descriptors (fileName, mimeType, extracted
+    // content, etc.) captured at create/update time, since the underlying
+    // temp files get deleted by slackSync's cleanup step shortly after.
+    local_file_logs: { type: [mongoose.Schema.Types.Mixed], default: [] },
     history: [
       {
         event: String,
@@ -83,5 +88,12 @@ const TaskSchema = new mongoose.Schema(
 
 TaskSchema.index({ title: 'text', description: 'text' });
 TaskSchema.index({ status: 1, priority: 1, due_date: 1 });
+TaskSchema.index(
+  { completed_at: 1 }, 
+  { 
+    expireAfterSeconds: 2592000, 
+    partialFilterExpression: { status: { $in: ['done', 'completed'] } } 
+  }
+);
 
 module.exports = mongoose.model('Task', TaskSchema);

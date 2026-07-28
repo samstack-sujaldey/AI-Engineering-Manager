@@ -41,7 +41,6 @@ const STATUS = {
 		/\bcomplet(e|ed)\b/i,
 		/\bresolved\b/i,
 		/\bmerged\b/i,
-		/\bresolv(e|ed)\b/i,
 		/\bfixed\b/i,
 		/\bfinished\b/i,
 		/\bshipped\b/i,
@@ -73,15 +72,6 @@ const ISSUE_PATTERNS = [
 	/\bissue\b/i,
 	/\bnot\s+showing\b/i,
 	/\bproblem\b/i,
-	/\bbug\b/i,
-	/\bcrash(ed|ing)?\b/i,
-	/\boutage\b/i,
-	/\bdown\b/i,
-	/\bfail(ed|ure|ing)?\b/i,
-	/\berror\b/i,
-	/\bissue\b/i, // <--- Added
-	/\bproblem\b/i, // <--- Added
-	/\bnot\s+showing\b/i, // <--- Added
 	/\bbug\b/i,
 	/\bcrash(ed|ing)?\b/i,
 	/\boutage\b/i,
@@ -194,11 +184,30 @@ function emptyUser() {
 	return { id: "", name: "", display_name: "", email: "" };
 }
 
+function normalizePersonName(value = "") {
+	const trimmed = String(value || "").trim();
+	if (!trimmed) return "";
+
+	const withoutAngleBrackets = trimmed.replace(/^<|>$/g, "").trim();
+	if (!withoutAngleBrackets) return "";
+
+	if (withoutAngleBrackets.includes("@")) {
+		return withoutAngleBrackets.split("@")[0].trim();
+	}
+
+	return withoutAngleBrackets.replace(/[_-]+/g, " ").trim();
+}
+
 function toUser(u = {}) {
+	const primaryName = normalizePersonName(u.name || u.real_name || "");
+	const displayName = normalizePersonName(
+		u.display_name || u.real_name || u.name || "",
+	);
+
 	return {
 		id: u.id || u.slack_id || "",
-		name: u.name || u.real_name || "",
-		display_name: u.display_name || u.real_name || u.name || "",
+		name: primaryName || u.name || u.real_name || "",
+		display_name: displayName || primaryName || u.name || u.real_name || "",
 		email: u.email || "",
 	};
 }
@@ -216,6 +225,7 @@ function extractMentionedUsers(text, userDirectory = {}) {
 	const seen = new Set();
 	const lowerText = text.toLowerCase();
 
+	// 1. Extract Slack ID mentions (<@U123456>)
 	const idMentions = [...text.matchAll(/<@([A-Z0-9]+)>/g)];
 	for (const m of idMentions) {
 		const id = m[1];
@@ -225,6 +235,7 @@ function extractMentionedUsers(text, userDirectory = {}) {
 		users.push(toUser({ id, ...known }));
 	}
 
+	// 2. Extract @username mentions
 	const nameMentions = [...text.matchAll(/(?:^|\s)@([A-Za-z][\w.-]*)/g)];
 	for (const m of nameMentions) {
 		const name = m[1];
@@ -241,20 +252,21 @@ function extractMentionedUsers(text, userDirectory = {}) {
 		users.push(toUser({ name, display_name: name, ...known }));
 	}
 
-	// NEW: Catch plain text names without the @ symbol
+	// 3. Match plain-text names against workspace user directory
 	const cleanWords = lowerText.replace(/[^a-z0-9\s]/g, "").split(/\s+/);
 	Object.values(userDirectory).forEach((u) => {
-		const dName = (u.display_name || "").toLowerCase();
-		const rName = (u.real_name || "").toLowerCase();
-		const uName = (u.name || "").toLowerCase();
+		if (!u.id || seen.has(u.id)) return;
+		const handle = (u.name || "").toLowerCase();
+		const displayName = (u.display_name || "").toLowerCase();
+		const firstName = (u.real_name || "").toLowerCase().split(/\s+/)[0];
 
-		const matched = cleanWords.some(
+		const isMatched = cleanWords.some(
 			(w) =>
 				w.length > 2 &&
-				(dName.includes(w) || rName.includes(w) || uName.includes(w)),
+				(w === handle || w === displayName || w === firstName),
 		);
 
-		if (matched && !seen.has(u.id)) {
+		if (isMatched) {
 			seen.add(u.id);
 			users.push(toUser(u));
 		}
@@ -279,7 +291,6 @@ function detectAssignee(text, sender, mentionedUsers) {
 		const token = m[1] || m[2] || m[3];
 		if (!token) continue;
 
-		// UPDATED: Allow partial name matching for the extracted token
 		const mentioned =
 			mentionedUsers.find(
 				(u) =>
@@ -304,7 +315,8 @@ function detectAssignee(text, sender, mentionedUsers) {
 			needs_assignment: false,
 		};
 	}
-	if (matchAny(text, SELF_ASSIGN_PATTERNS) || mentionedUsers.length === 0) {
+
+	if (matchAny(text, SELF_ASSIGN_PATTERNS)) {
 		const self = toUser(sender);
 		return {
 			owner: self,
@@ -314,20 +326,22 @@ function detectAssignee(text, sender, mentionedUsers) {
 		};
 	}
 
-	// Default: first mention becomes assignee when action language present
-	if (mentionedUsers.length > 0 && matchAny(text, TASK_PATTERNS)) {
+	if (mentionedUsers.length > 0) {
+		const target =
+			mentionedUsers.find((u) => u.id !== sender.id) || mentionedUsers[0];
 		return {
-			owner: mentionedUsers[0],
-			assigned_to: mentionedUsers[0],
+			owner: target,
+			assigned_to: target,
 			assigned_by: toUser(sender),
 			needs_assignment: false,
 		};
 	}
 
+	const senderUser = toUser(sender);
 	return {
-		owner: toUser(sender),
-		assigned_to: toUser(sender),
-		assigned_by: toUser(sender),
+		owner: senderUser,
+		assigned_to: senderUser,
+		assigned_by: senderUser,
 		needs_assignment: false,
 	};
 }
@@ -340,9 +354,13 @@ function detectPriority(text) {
 }
 
 function detectStatus(text) {
-	if (matchAny(text, STATUS.COMPLETED)) return "COMPLETED";
-	if (matchAny(text, STATUS.BLOCKED)) return "BLOCKED";
-	if (matchAny(text, STATUS.PROCESSING)) return "PROCESSING";
+	const lower = text.toLowerCase();
+	// 🟢 FIXED: Added 'resolved' and 'resolve' to the match list
+	if (/\b(?:done|completed|finished|resolved|resolve)\b/.test(lower))
+		return "COMPLETED";
+	if (/\b(?:block|blocked|stuck|hold)\b/.test(lower)) return "BLOCKED";
+	if (/\b(?:processing|doing|working|in progress|open)\b/.test(lower))
+		return "PROCESSING";
 	return "TODO";
 }
 
@@ -355,15 +373,15 @@ function nextWeekday(from, dayIndex) {
 }
 
 function parseTimeOfDay(text, base) {
-	// NEW: Allows a colon or a space between hours and minutes (e.g., "5:45 pm" or "5 45 pm")
 	const m = text.match(/\b(\d{1,2})(?:[:\s](\d{2}))?\s*(am|pm)\b/i);
-
 	if (!m) return null;
 	let hours = parseInt(m[1], 10);
 	const minutes = parseInt(m[2] || "0", 10);
 	const meridiem = m[3].toLowerCase();
+
 	if (meridiem === "pm" && hours < 12) hours += 12;
 	if (meridiem === "am" && hours === 12) hours = 0;
+
 	const d = new Date(base);
 	d.setHours(hours, minutes, 0, 0);
 	return d;
@@ -408,8 +426,6 @@ function extractDueDate(text, now = new Date()) {
 	);
 	if (nextDay) {
 		const d = nextWeekday(now, WEEKDAYS[nextDay[1]]);
-		d.setDate(d.getDate() + (d.getDay() === WEEKDAYS[nextDay[1]] ? 0 : 0));
-		// ensure at least 7 days ahead for "next"
 		if (d - now < 7 * 24 * 3600 * 1000) d.setDate(d.getDate() + 7);
 		return d.toISOString();
 	}
@@ -465,10 +481,7 @@ function extractDueDate(text, now = new Date()) {
 	}
 
 	const timeOnly = parseTimeOfDay(text, now);
-	if (timeOnly) {
-		// FIXED: If they type a time (e.g., "by 5 PM"), strictly set it for today!
-		return timeOnly.toISOString();
-	}
+	if (timeOnly) return timeOnly.toISOString();
 
 	return null;
 }
@@ -482,11 +495,21 @@ function extractDependencies(text) {
 }
 
 function extractBlockedReason(text) {
-	const m =
-		text.match(/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|$)/i) ||
-		text.match(/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|$)/i);
-	return m ? m[1].trim() : "";
+	const explicitMatch = text.match(
+		/(?:reason|blocker|blocked\s+by)[\s:-]+(.+?)(?:\n|$)/i,
+	);
+	if (explicitMatch) return explicitMatch[1].trim();
+
+	const naturalMatch =
+		text.match(
+			/blocked\s+(?:because|due\s+to|by|on)\s+(.+?)(?:\.|\n|$)/i,
+		) ||
+		text.match(/waiting\s+(?:for|on)\s+(.+?)(?:\.|\n|$)/i) ||
+		text.match(
+			/cannot\s+continue\s+(?:because|due\s+to)\s+(.+?)(?:\.|\n|$)/i,
+		);
+
+	return naturalMatch ? naturalMatch[1].trim() : "";
 }
 
 function extractEntities(text) {
@@ -562,15 +585,14 @@ function classifyMessage(text) {
 		confidence = Math.min(0.95, 0.75 + discussionScore * 0.05);
 	}
 
-	// Short action imperatives
+	// Imperative command fallback
 	if (
 		/^[A-Z]?[a-z]+\s+the\s+\w+/i.test(text) &&
 		taskScore === 0 &&
 		issueScore === 0
 	) {
-		if (/\b(is|are|was|were|isn't|aren't)\b/i.test(text)) {
-			// likely statement not task
-		} else if (
+		if (
+			!/\b(is|are|was|were|isn't|aren't)\b/i.test(text) &&
 			/\b(deploy|create|fix|update|build|add|prepare)\b/i.test(text)
 		) {
 			classification = "TASK";
@@ -597,12 +619,15 @@ function generateTitle(text, classification) {
 		.replace(/\s+/g, " ")
 		.trim();
 
-	// NEW: Aggressively removes names and the command prefix (e.g., "nandani task - ")
 	cleaned = cleaned.replace(/^.*?(task|issue)\s*-\s*/i, "");
+	cleaned = cleaned
+		.replace(
+			/\s*-\s*(block(ed)?|done|todo|processing|in progress)\s*$/i,
+			"",
+		)
+		.trim();
 
-	if (cleaned.endsWith("]")) {
-		cleaned = cleaned.slice(0, -1).trim();
-	}
+	if (cleaned.endsWith("]")) cleaned = cleaned.slice(0, -1).trim();
 
 	const sentence = cleaned.split(/[.!?\n]/)[0].trim();
 	if (!sentence)
@@ -637,23 +662,103 @@ function isAcknowledgement(text) {
 	return ACK_PATTERNS.some((p) => p.test(text.trim()));
 }
 
-/**
- * @param {object} input
- * @param {string} input.text
- * @param {object} input.sender
- * @param {string} [input.channel]
- * @param {string} [input.thread_id]
- * @param {string} [input.workspace_id]
- * @param {string} [input.team]
- * @param {string} [input.message_ts]
- * @param {boolean} [input.is_edit]
- * @param {object} [input.user_directory]
- * @param {object|null} [input.existing_task]
- * @param {object|null} [input.existing_issue]
- * @param {Array} [input.thread_context]
- * @param {Date} [input.now]
- */
-function parseMessage(input) {
+function buildNotificationHints({
+	classification,
+	title,
+	owner,
+	dueDate,
+	status,
+	blockedReason,
+	text,
+	mentionedUsers,
+}) {
+	const notifications = [];
+
+	if (
+		classification === "TASK" &&
+		!dueDate &&
+		owner?.id &&
+		status !== "COMPLETED"
+	) {
+		notifications.push({
+			type: "MISSING_DUE_DATE",
+			target_user_id: owner.id,
+			target_user_name: owner.name || owner.display_name || "",
+			message: `I couldn't determine the due date for your task '${title}'. Please reply with the due date.`,
+			immediate: true,
+		});
+	}
+
+	if (
+		classification === "TASK" &&
+		status === "BLOCKED" &&
+		!blockedReason &&
+		owner?.id
+	) {
+		notifications.push({
+			type: "MISSING_BLOCK_REASON",
+			target_user_id: owner.id,
+			target_user_name: owner.name || owner.display_name || "",
+			message:
+				"Your task is marked as blocked. Please tell me what is blocking it.",
+			immediate: true,
+		});
+	}
+
+	if (classification === "ISSUE" && mentionedUsers.length > 0) {
+		const dependent =
+			mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
+
+		if (dependent?.id && dependent.id !== owner?.id) {
+			notifications.push({
+				type: "DEPENDENT_USER",
+				target_user_id: dependent.id,
+				target_user_name:
+					dependent.name || dependent.display_name || "",
+				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"} reported an issue ('${title}') and needs to connect with you. Please reply 'resolved' or 'done' in the thread when fixed!`,
+				immediate: true,
+				expects_acknowledgement: true,
+			});
+		}
+	}
+
+	return notifications;
+}
+
+function buildResponse(partial) {
+	return {
+		classification: partial.classification || "GENERAL_DISCUSSION",
+		confidence: partial.confidence ?? 0.5,
+		action: partial.action || "NONE",
+		task_created: partial.task_created || false,
+		task_updated: partial.task_updated || false,
+		issue_created: partial.issue_created || false,
+		issue_updated: partial.issue_updated || false,
+		acknowledgement: partial.acknowledgement || false,
+		sender: partial.sender || emptyUser(),
+		owner: partial.owner || null,
+		assigned_to: partial.assigned_to || null,
+		assigned_by: partial.assigned_by || null,
+		reporter: partial.reporter || null,
+		mentioned_users: partial.mentioned_users || [],
+		task: partial.task || null,
+		issue: partial.issue || null,
+		discussion: partial.discussion || null,
+		updates: partial.updates || null,
+		notifications: partial.notifications || [],
+		dashboard_update: true,
+		context: {
+			channel: partial.channel || "",
+			thread_id: partial.thread_id || "",
+			workspace_id: partial.workspace_id || "",
+			team: partial.team || "",
+			message_ts: partial.message_ts || "",
+		},
+		meta: partial.meta || {},
+	};
+}
+
+async function parseMessage(input) {
 	const {
 		text = "",
 		sender = {},
@@ -698,7 +803,6 @@ function parseMessage(input) {
 			? { issue_id: thread_context.find((c) => c.issue_id).issue_id }
 			: null);
 
-	// Acknowledgement of dependency
 	if (isAcknowledgement(text) && (linkingTask || linkingIssue)) {
 		return buildResponse({
 			classification: "GENERAL_DISCUSSION",
@@ -738,7 +842,6 @@ function parseMessage(input) {
 		});
 	}
 
-	// Thread updates against existing work
 	if (
 		(linkingTask || linkingIssue) &&
 		classification === "GENERAL_DISCUSSION" &&
@@ -746,23 +849,7 @@ function parseMessage(input) {
 	) {
 		const updates = {};
 
-		// Map status updates dynamically based on work type
-		if (status !== "TODO") {
-			if (linkingIssue) {
-				// If they replied "done" or "resolved" to an Issue, set it to RESOLVED
-				updates.status =
-					status === "COMPLETED" || status === "PROCESSING"
-						? "RESOLVED"
-						: "HOLD";
-			} else {
-				// Normal tasks keep normal statuses (PROCESSING, BLOCKED, COMPLETED)
-				updates.status = status;
-			}
-		}
-
-		if (priority !== "MEDIUM") updates.priority = priority;
-		if (dueDate && linkingTask) updates.due_date = dueDate; // Prevent due dates bleeding to issues here
-		if (blockedReason) updates.blocked_reason = blockedReason;
+		if (dueDate && linkingTask) updates.due_date = dueDate;
 
 		if (Object.keys(updates).length > 0 || text.trim()) {
 			return buildResponse({
@@ -791,7 +878,7 @@ function parseMessage(input) {
 						? linkingIssue.issue_id || linkingIssue.id
 						: null,
 				},
-				updates, // Contains the { status: 'RESOLVED' } payload
+				updates,
 				notifications: [],
 				meta: {
 					is_edit,
@@ -807,12 +894,8 @@ function parseMessage(input) {
 
 	if (classification === "TASK") {
 		const title = generateTitle(text, "TASK");
-		const action =
-			is_edit && existing_task
-				? "UPDATE_TASK"
-				: existing_task
-					? "UPDATE_TASK"
-					: "CREATE_TASK";
+		const action = existing_task ? "UPDATE_TASK" : "CREATE_TASK";
+
 		return buildResponse({
 			classification: "TASK",
 			confidence,
@@ -837,7 +920,7 @@ function parseMessage(input) {
 				title: existing_task?.title || title,
 				description: text,
 				priority,
-				status,
+				status: status !== "TODO" ? status : "TODO",
 				due_date: dueDate || "",
 				dependencies,
 				blocked_reason: blockedReason,
@@ -852,7 +935,6 @@ function parseMessage(input) {
 				dueDate,
 				status,
 				blockedReason,
-				dependencies,
 				text,
 				mentionedUsers,
 			}),
@@ -869,13 +951,8 @@ function parseMessage(input) {
 
 	if (classification === "ISSUE") {
 		const title = generateTitle(text, "ISSUE");
-		const action =
-			is_edit && existing_issue
-				? "UPDATE_ISSUE"
-				: existing_issue
-					? "UPDATE_ISSUE"
-					: "CREATE_ISSUE";
-		const issueStatus = status === "COMPLETED" ? "RESOLVED" : "HOLD"; // Map status for issues
+		const action = existing_issue ? "UPDATE_ISSUE" : "CREATE_ISSUE";
+		const issueStatus = status === "COMPLETED" ? "RESOLVED" : "HOLD";
 
 		return buildResponse({
 			classification: "ISSUE",
@@ -903,23 +980,19 @@ function parseMessage(input) {
 				status: issueStatus,
 				priority: priority === "MEDIUM" ? "HIGH" : priority,
 				root_cause: "",
-				blocked_reason: blockedReason,
-				block_reason_pending: issueStatus === "HOLD" && !blockedReason,
+				blocked_reason: "",
+				block_reason_pending: false,
 				needs_assignment: assignment.needs_assignment,
 				dependencies,
-				// Removed due_date and due_date_pending
 			},
 			notifications: buildNotificationHints({
 				classification: "ISSUE",
 				title: existing_issue?.title || title,
 				owner: assignment.owner,
-				assignedBy: assignment.assigned_by,
-				status: issueStatus, // Pass mapped status
+				status: issueStatus,
 				blockedReason,
-				dependencies,
 				text,
 				mentionedUsers,
-				// Omitted dueDate intentionally so the hint function ignores it
 			}),
 			meta: {
 				is_edit,
@@ -932,7 +1005,6 @@ function parseMessage(input) {
 		});
 	}
 
-	// GENERAL_DISCUSSION
 	return buildResponse({
 		classification: "GENERAL_DISCUSSION",
 		confidence,
@@ -966,139 +1038,6 @@ function parseMessage(input) {
 	});
 }
 
-function buildNotificationHints({
-	classification,
-	title,
-	owner,
-	dueDate,
-	status,
-	blockedReason,
-	dependencies,
-	text,
-	mentionedUsers,
-}) {
-	const notifications = [];
-
-	// 1. DUE DATES: STRICTLY FOR TASKS ONLY
-	if (
-		classification === "TASK" &&
-		!dueDate &&
-		owner &&
-		owner.id &&
-		status !== "COMPLETED"
-	) {
-		notifications.push({
-			type: "MISSING_DUE_DATE",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message: `I couldn't determine the due date for your task '${title}'. Please reply with the due date.`,
-			immediate: true,
-		});
-	}
-
-	// 2. MISSING BLOCK REASON: STRICTLY FOR TASKS
-	if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		!blockedReason &&
-		owner &&
-		owner.id
-	) {
-		notifications.push({
-			type: "MISSING_BLOCK_REASON",
-			target_user_id: owner.id,
-			target_user_name: owner.name || owner.display_name || "",
-			message:
-				"Your task is marked as blocked. Please tell me what is blocking it.",
-			immediate: true,
-		});
-	}
-
-	// 3. NOTIFY TEAM MEMBERS TO CONNECT ON ISSUES
-	if (classification === "ISSUE" && mentionedUsers.length > 0) {
-		// Find the mentioned user (e.g., Nandani)
-		const dependent =
-			mentionedUsers.find((u) => u.id !== owner?.id) || mentionedUsers[0];
-
-		if (dependent && dependent.id && dependent.id !== owner?.id) {
-			notifications.push({
-				type: "DEPENDENT_USER",
-				target_user_id: dependent.id,
-				target_user_name:
-					dependent.name || dependent.display_name || "",
-				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"} reported an issue ('${title}') and needs to connect with you. Please reply 'resolved' or 'done' in the original thread once it is fixed!`,
-				immediate: true,
-				expects_acknowledgement: true,
-			});
-		}
-	}
-	// 4. NOTIFY BLOCKERS ON TASKS
-	else if (
-		classification === "TASK" &&
-		status === "BLOCKED" &&
-		/(waiting\s+(for|on)|blocked\s+by)\s+<?@?/i.test(text)
-	) {
-		const dependent =
-			mentionedUsers.find(
-				(u) =>
-					new RegExp(
-						u.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-						"i",
-					).test(text) ||
-					text
-						.toLowerCase()
-						.includes((u.display_name || "").toLowerCase()),
-			) || mentionedUsers[0];
-
-		if (dependent && dependent.id) {
-			notifications.push({
-				type: "DEPENDENT_USER",
-				target_user_id: dependent.id,
-				target_user_name:
-					dependent.name || dependent.display_name || "",
-				message: `@${dependent.name || dependent.display_name}, ${owner?.name || "Someone"}'s task '${title}' is currently blocked waiting on you. Please reply 'OK' once you've acknowledged it.`,
-				immediate: true,
-				expects_acknowledgement: true,
-			});
-		}
-	}
-
-	return notifications;
-}
-
-function buildResponse(partial) {
-	return {
-		classification: partial.classification || "GENERAL_DISCUSSION",
-		confidence: partial.confidence ?? 0.5,
-		action: partial.action || "NONE",
-		task_created: partial.task_created || false,
-		task_updated: partial.task_updated || false,
-		issue_created: partial.issue_created || false,
-		issue_updated: partial.issue_updated || false,
-		acknowledgement: partial.acknowledgement || false,
-		sender: partial.sender || emptyUser(),
-		owner: partial.owner || null,
-		assigned_to: partial.assigned_to || null,
-		assigned_by: partial.assigned_by || null,
-		reporter: partial.reporter || null,
-		mentioned_users: partial.mentioned_users || [],
-		task: partial.task || null,
-		issue: partial.issue || null,
-		discussion: partial.discussion || null,
-		updates: partial.updates || null,
-		notifications: partial.notifications || [],
-		dashboard_update: true,
-		context: {
-			channel: partial.channel || "",
-			thread_id: partial.thread_id || "",
-			workspace_id: partial.workspace_id || "",
-			team: partial.team || "",
-			message_ts: partial.message_ts || "",
-		},
-		meta: partial.meta || {},
-	};
-}
-
 module.exports = {
 	parseMessage,
 	classifyMessage,
@@ -1107,5 +1046,6 @@ module.exports = {
 	detectStatus,
 	extractMentionedUsers,
 	isAcknowledgement,
+	normalizePersonName,
 	toUser,
 };

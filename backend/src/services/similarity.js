@@ -43,7 +43,7 @@ async function findSimilarIssue(title, description, workspaceId, channel) {
 
 	const candidates = await Issue.find({
 		...filter,
-		status: { $ne: "COMPLETED" },
+		status: { $ne: "RESOLVED" },
 	})
 		.sort({ updated_time: -1 })
 		.limit(50)
@@ -72,7 +72,7 @@ async function findSimilarIssue(title, description, workspaceId, channel) {
 
 async function findWorkByThread(thread, channel) {
 	if (!thread) return { task: null, issue: null };
-	const [task, issue] = await Promise.all([
+	let [task, issue] = await Promise.all([
 		Task.findOne({ thread, channel }).sort({ updated_time: -1 }).lean(),
 		Issue.findOne({ thread, channel }).sort({ updated_time: -1 }).lean(),
 	]);
@@ -94,16 +94,18 @@ async function findWorkByThread(thread, channel) {
 	return { task, issue };
 }
 
-async function findWorkByMessageTs(messageTs) {
-	if (!messageTs) return { task: null, issue: null };
-	const [task, issue] = await Promise.all([
-		Task.findOne({ slack_message_ts: messageTs }).lean(),
-		Issue.findOne({ slack_message_ts: messageTs }).lean(),
-	]);
+async function findWorkByMessageTs(messageTs, channel) {
+ 	if (!messageTs) return { task: null, issue: null };
+ 	const filter = { slack_message_ts: messageTs };
+ 	if (channel) filter.channel = channel;
+ 	let [task, issue] = await Promise.all([
+ 		Task.findOne(filter).lean(),
+ 		Issue.findOne(filter).lean(),
+ 	]);
 
 	if (!task && !issue) {
 		const notif = await Notification.findOne({
-			slack_dm_ts: thread,
+			slack_dm_ts: messageTs,
 		}).lean();
 		if (notif) {
 			if (notif.task_id)

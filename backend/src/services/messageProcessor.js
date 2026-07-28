@@ -1,31 +1,96 @@
-const { Task, Issue, Discussion, Activity } = require("../models");
-const { parseMessage } = require("../agent/parser");
+const vectorDbService = require("./vectorDbService"); // adjust path if needed
+const { getEmbedding } = require("../ai/openai");
+const crypto = require("crypto");
+const fs = require("fs/promises");
+const { Task, Issue, Discussion, Activity, Team } = require("../models");
+const {
+	parseMessage,
+	detectStatus,
+	extractDueDate,
+	extractMentionedUsers,
+} = require("../agent/parser");
 const {
 	findSimilarTask,
 	findSimilarIssue,
 	findWorkByThread,
 	findWorkByMessageTs,
 } = require("./similarity");
+const { findRelatedWorkWithAI } = require("./relatedWork");
 const { newId } = require("../utils/helpers");
-const config = require("../config");
+const { invalidateDailySummary } = require("../utils/cacheHelper");
+
+function hashText(text = "") {
+	return crypto
+		.createHash("sha1")
+		.update(text || "")
+		.digest("hex");
+}
+
+function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
+	if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
+	return doc.history.some(
+		(h) =>
+			h?.details?.message_ts === message_ts &&
+			h?.details?.text_hash === hash,
+	);
+}
 
 class MessageProcessor {
-	constructor({ notificationService, io } = {}) {
+	constructor({ notificationService, io, connectService } = {}) {
 		this.notifications = notificationService || null;
 		this.io = io || null;
+		this.connect = connectService || null;
 	}
 
 	setIo(io) {
 		this.io = io;
 	}
 
-	/**
-	 * Process one Slack message end-to-end.
-	 * Returns the structured parser result enriched with persisted IDs.
-	 */
+	async checkAndPromptMissingInfo(doc, ctx) {
+		let threadPrompt = "";
+
+		if (
+			!doc.due_date &&
+			doc.status !== "COMPLETED" &&
+			doc.status !== "RESOLVED"
+		) {
+			doc.due_date_pending = true;
+			if (threadPrompt) {
+				threadPrompt +=
+					" Also, I couldn't find a due date. Please include the deadline in your reply (e.g., 'by tomorrow').";
+			} else {
+				threadPrompt += `📅 <@${ctx.sender?.id}> I tracked this, but I couldn't find a due date. Please reply directly to this thread with the deadline (e.g., 'by tomorrow').`;
+			}
+		}
+
+		if (threadPrompt) {
+			const nextHour = new Date(Date.now() + 3600000);
+			if (doc.block_reason_pending)
+				doc.block_reason_notification_at = nextHour;
+			if (doc.due_date_pending) doc.due_date_notification_at = nextHour;
+
+			await doc.save();
+
+			try {
+				if (ctx.slack_client) {
+					await ctx.slack_client.chat.postMessage({
+						channel: ctx.channel,
+						thread_ts: ctx.thread_id || ctx.message_ts,
+						text: threadPrompt,
+					});
+				}
+			} catch (err) {
+				console.error(
+					"Failed to ask for missing info in thread:",
+					err.message,
+				);
+			}
+		}
+	}
+
 	async process(raw, options = {}) {
-		const {
-			text,
+		let {
+			text = "",
 			sender,
 			channel = "",
 			thread_id = "",
@@ -34,25 +99,89 @@ class MessageProcessor {
 			message_ts = "",
 			is_edit = false,
 			user_directory = {},
+			slack_client = null,
+			local_attachments = [],
 		} = raw;
 		const { quiet = false } = options;
 
-		let existing_task = null;
-		let existing_issue = null;
+		// 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
+		if (!team && channel) {
+			try {
+				const cleanChan = channel.replace(/^#/, "").trim();
+				const teamDoc = await Team.findOne({
+					$or: [
+						{ channel_id: cleanChan },
+						{ channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
+						{ team_id: cleanChan },
+					],
+				}).lean();
 
-		// NEW: Detect if this is an explicit command so we don't accidentally merge it!
-		const isExplicitCommand =
-			/task\s*-/i.test(text) || /issue\s*-/i.test(text);
-
-		if (is_edit && message_ts) {
-			const byMsg = await findWorkByMessageTs(message_ts);
-			existing_task = byMsg.task;
-			existing_issue = byMsg.issue;
+				if (teamDoc) {
+					team =
+						teamDoc.channel_name ||
+						teamDoc.team_id ||
+						teamDoc.team ||
+						"";
+				}
+			} catch (e) {
+				console.warn(
+					"[MessageProcessor] Team lookup warning:",
+					e.message,
+				);
+			}
 		}
 
 		const threadRoot = thread_id || message_ts;
 
-		// FIXED: Do not merge into an existing thread if the user explicitly types "task -"
+		// 🟢 Save message embedding to ChromaDB (for backfilling & real-time)
+		if (text && text.trim().length > 0) {
+			try {
+				const vectorArray = await getEmbedding(text);
+				if (vectorArray) {
+					await vectorDbService.saveMessage({
+						messageId: message_ts || newId("msg"),
+						threadId: threadRoot,
+						text: text,
+						vectorArray: vectorArray,
+						senderId: sender?.id || "unknown",
+						senderName:
+							sender?.display_name ||
+							sender?.real_name ||
+							sender?.name ||
+							"Unknown",
+					});
+				}
+			} catch (vectorErr) {
+				console.warn(
+					"[VectorDB Warning] Failed to index message:",
+					vectorErr.message,
+				);
+			}
+		}
+
+		let existing_task = null;
+		let existing_issue = null;
+
+		const isExplicitCommand =
+			/task\s*-/i.test(text) || /issue\s*-/i.test(text);
+		const textHash = hashText(text);
+
+		if (is_edit && message_ts) {
+			const byMsg = await findWorkByMessageTs(message_ts, channel);
+			existing_task = byMsg.task;
+			existing_issue = byMsg.issue;
+
+			const alreadyAnalyzed =
+				wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
+				wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
+
+			if (alreadyAnalyzed) {
+				console.log(
+					`[MessageProcessor] Skipping already analyzed message edit (${message_ts})`,
+				);
+			}
+		}
+
 		if (
 			!existing_task &&
 			!existing_issue &&
@@ -64,7 +193,267 @@ class MessageProcessor {
 			existing_issue = byThread.issue;
 		}
 
-		const parsed = parseMessage({
+		// 🟢 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
+		if (
+			(existing_task || existing_issue) &&
+			threadRoot &&
+			threadRoot !== message_ts
+		) {
+			const lowerReply = text.toLowerCase().trim();
+
+			// Flexible Regex: Catches 'status - hold', 'status-hold', 'status -hold', etc.
+			const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
+			const priorityMatch = lowerReply.match(
+				/\bpriority\s*-\s*([a-z]+)\b/i,
+			);
+
+			if (statusMatch || priorityMatch) {
+				const updates = {};
+
+				if (statusMatch) {
+					const s = statusMatch[1].trim();
+					if (/^(resolve|resolved|done|completed|finished)$/.test(s))
+						updates.status = existing_issue
+							? "RESOLVED"
+							: "COMPLETED";
+					else if (/^(hold|blocked|block|stuck)$/.test(s))
+						updates.status = existing_issue ? "HOLD" : "BLOCKED";
+					else if (/^(open|processing|doing|wip)$/.test(s))
+						updates.status = existing_issue ? "OPEN" : "PROCESSING";
+				}
+
+				if (priorityMatch) {
+					const p = priorityMatch[1].trim();
+					if (/^(urgent|critical|p0)$/.test(p))
+						updates.priority = "URGENT";
+					else if (/^(high|important|p1)$/.test(p))
+						updates.priority = "HIGH";
+					else if (/^(medium|p2)$/.test(p))
+						updates.priority = "MEDIUM";
+					else if (/^(low|minor|p3)$/.test(p))
+						updates.priority = "LOW";
+				}
+
+				if (Object.keys(updates).length > 0) {
+					// Route the exact update directly into your existing persist pipeline
+					const dummyParsed = {
+						classification: existing_issue ? "ISSUE" : "TASK",
+						action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
+						updates,
+						sender: sender
+							? {
+									id: sender.id,
+									name: sender.name,
+									display_name: sender.display_name,
+									email: "",
+								}
+							: { id: "", name: "" },
+						issue: existing_issue
+							? { id: existing_issue.issue_id }
+							: null,
+						task: existing_task
+							? { id: existing_task.task_id }
+							: null,
+						meta: { needs_human_review: false },
+					};
+
+					const result = await this.persist(dummyParsed, {
+						text,
+						sender,
+						channel,
+						thread_id: threadRoot,
+						workspace_id,
+						team,
+						message_ts,
+						text_hash: textHash,
+						slack_client,
+						user_directory,
+					});
+
+					if (this.io && !quiet) {
+						this.io.emit("dashboard:update", {
+							action: result.action,
+							classification: result.classification,
+							task_id: result.task?.id || null,
+							issue_id: result.issue?.id || null,
+							at: new Date().toISOString(),
+						});
+					}
+					return result; // 🛑 Halt processing so it doesn't parse anything else
+				}
+			}
+		}
+
+		// 1. Intercept "accept" command
+		if (text.trim().toLowerCase().startsWith("accept")) {
+			const mentioned = extractMentionedUsers(text, user_directory || {});
+			const targetToTag = mentioned.find(
+				(u) => u.id && u.id !== sender?.id,
+			);
+
+			if (targetToTag && slack_client) {
+				const originalSenderId = targetToTag.id;
+				await slack_client.chat.postMessage({
+					channel: originalSenderId,
+					text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
+				});
+				await slack_client.chat.postMessage({
+					channel: channel,
+					thread_ts: threadRoot || message_ts,
+					text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
+				});
+				return {
+					classification: "GENERAL_DISCUSSION",
+					action: "CONNECT_ACCEPTED",
+					dashboard_update: false,
+				};
+			}
+		}
+
+		// 2. Intercept "delay" command
+		if (text.trim().toLowerCase().startsWith("delay")) {
+			const mentioned = extractMentionedUsers(text, user_directory || {});
+			const targetToTag = mentioned.find(
+				(u) => u.id && u.id !== sender?.id,
+			);
+
+			if (targetToTag && slack_client) {
+				const originalSenderId = targetToTag.id;
+				const timeInput = text
+					.replace(/^delay/i, "")
+					.replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
+					.replace(/@[A-Za-z0-9_.-]+/g, "")
+					.trim();
+
+				let postAt;
+				let delayText = timeInput;
+
+				const minMatch = timeInput.match(
+					/^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
+				);
+				const hrMatch = timeInput.match(
+					/^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
+				);
+
+				if (minMatch) {
+					const mins = parseInt(minMatch[1], 10);
+					postAt =
+						Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
+					delayText = `in ${mins} minutes`;
+				} else if (hrMatch) {
+					const hrs = parseFloat(hrMatch[1]);
+					postAt =
+						Math.floor(Date.now() / 1000) +
+						Math.max(hrs * 3600, 65);
+					delayText = `in ${hrs} hours`;
+				} else {
+					const parsedDateStr = extractDueDate(timeInput, new Date());
+					if (parsedDateStr) {
+						postAt = Math.floor(
+							new Date(parsedDateStr).getTime() / 1000,
+						);
+						delayText = `at ${timeInput}`;
+						if (postAt <= Math.floor(Date.now() / 1000) + 60) {
+							postAt += 24 * 3600;
+						}
+					} else {
+						await slack_client.chat.postMessage({
+							channel: channel,
+							thread_ts: threadRoot || message_ts,
+							text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
+						});
+						return {
+							classification: "GENERAL_DISCUSSION",
+							action: "CONNECT_DELAY_FAILED",
+							dashboard_update: false,
+						};
+					}
+				}
+
+				await slack_client.chat.postMessage({
+					channel: originalSenderId,
+					text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
+				});
+				await slack_client.chat.postMessage({
+					channel: channel,
+					thread_ts: threadRoot || message_ts,
+					text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
+				});
+
+				try {
+					await slack_client.chat.scheduleMessage({
+						channel: originalSenderId,
+						post_at: postAt,
+						text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
+					});
+					await slack_client.chat.scheduleMessage({
+						channel: sender.id,
+						post_at: postAt,
+						text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
+					});
+				} catch (e) {
+					console.error("[Slack] Scheduler error:", e.message);
+				}
+
+				return {
+					classification: "GENERAL_DISCUSSION",
+					action: "CONNECT_DELAYED",
+					dashboard_update: false,
+				};
+			}
+		}
+
+		// 3. Intercept "connect" command
+		const connectMatch = text.match(
+			/\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
+		);
+		if (connectMatch) {
+			try {
+				const mentioned = extractMentionedUsers(
+					text,
+					user_directory || {},
+				);
+				const senderId = sender?.id || "unknown";
+				const targetUser = mentioned.find(
+					(u) => u.id && u.id !== senderId,
+				);
+
+				if (targetUser && this.connect) {
+					const request = this.connect.createRequest({
+						senderId,
+						senderName:
+							sender?.display_name || sender?.name || senderId,
+						targetUserId: targetUser.id,
+						targetUserName:
+							targetUser.display_name ||
+							targetUser.name ||
+							targetUser.id,
+						channel: channel,
+						threadTs: threadRoot || message_ts,
+					});
+
+					return {
+						classification: "GENERAL_DISCUSSION",
+						action: "CONNECT_REQUEST",
+						dashboard_update: false,
+						connect: {
+							requestId: request.id,
+							senderId: request.senderId,
+							senderName: request.senderName,
+							targetUserId: request.targetUserId,
+							targetUserName: request.targetUserName,
+							channel: request.channel,
+							threadTs: request.threadTs,
+						},
+					};
+				}
+			} catch (err) {
+				console.error("[Connect] FATAL ERROR:", err.message);
+			}
+		}
+
+		// Baseline parser
+		const parsed = await parseMessage({
 			text,
 			sender,
 			channel,
@@ -79,18 +468,17 @@ class MessageProcessor {
 			now: new Date(),
 		});
 
-		// FIXED: Skip deduplication if the user explicitly types "task -"
 		if (
 			parsed.classification === "TASK" &&
 			parsed.action === "CREATE_TASK" &&
-			parsed.task &&
-			!isExplicitCommand
+			parsed.task
 		) {
 			const sim = await findSimilarTask(
 				parsed.task.title,
 				parsed.task.description,
 				workspace_id,
 				channel,
+				0.6,
 			);
 			if (sim) {
 				parsed.action = "UPDATE_TASK";
@@ -98,6 +486,42 @@ class MessageProcessor {
 				parsed.task_updated = true;
 				parsed.task.id = sim.task.task_id;
 				existing_task = sim.task;
+
+				if (parsed.task.status && parsed.task.status !== "TODO") {
+					parsed.updates = {
+						...parsed.updates,
+						status: parsed.task.status,
+					};
+				}
+			}
+		}
+
+		if (
+			parsed.classification === "GENERAL_DISCUSSION" &&
+			parsed.action === "STORE_DISCUSSION"
+		) {
+			const statusMatch = detectStatus(text);
+			if (statusMatch !== "TODO") {
+				const sim = await findSimilarTask(
+					text,
+					"",
+					workspace_id,
+					channel,
+					0.75,
+				);
+				if (sim) {
+					parsed.classification = "TASK";
+					parsed.action = "UPDATE_TASK";
+					parsed.task_created = false;
+					parsed.task_updated = true;
+					parsed.task = {
+						...sim.task,
+						id: sim.task.task_id,
+						status: statusMatch,
+					};
+					parsed.updates = { status: statusMatch };
+					existing_task = sim.task;
+				}
 			}
 		}
 
@@ -111,6 +535,7 @@ class MessageProcessor {
 				parsed.issue.description,
 				workspace_id,
 				channel,
+				0.6,
 			);
 			if (sim) {
 				parsed.action = "UPDATE_ISSUE";
@@ -118,11 +543,6 @@ class MessageProcessor {
 				parsed.issue_updated = true;
 				parsed.issue.id = sim.issue.issue_id;
 				existing_issue = sim.issue;
-				parsed.meta = {
-					...parsed.meta,
-					similarity_score: sim.score,
-					deduped: true,
-				};
 			}
 		}
 
@@ -134,8 +554,12 @@ class MessageProcessor {
 			workspace_id,
 			team,
 			message_ts,
+			text_hash: textHash,
+			slack_client,
+			user_directory: raw.user_directory || {},
 			existing_task,
 			existing_issue,
+			local_attachments,
 		});
 
 		if (this.io && !quiet) {
@@ -149,6 +573,26 @@ class MessageProcessor {
 		}
 
 		return result;
+	}
+
+	async cleanupAttachments(localAttachments = []) {
+		for (const attachment of localAttachments) {
+			try {
+				if (attachment.localPath) {
+					await fs.unlink(attachment.localPath);
+					console.log(
+						`[cleanup] Deleted local temp attachment: ${attachment.localPath}`,
+					);
+				}
+			} catch (err) {
+				if (err.code !== "ENOENT") {
+					console.warn(
+						`[cleanup] Failed to delete file ${attachment.localPath}:`,
+						err.message,
+					);
+				}
+			}
+		}
 	}
 
 	async persist(parsed, ctx) {
@@ -180,16 +624,30 @@ class MessageProcessor {
 	}
 
 	async createTask(parsed, ctx, senderRef) {
-		const t = parsed.task;
+		const t = parsed.task || {};
 		const taskId = newId("tsk");
 		const dueDate = t.due_date ? new Date(t.due_date) : null;
+
+		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+		const resolvedOwner =
+			parsed.owner && (parsed.owner.id || parsed.owner.name)
+				? parsed.owner
+				: senderRef && (senderRef.id || senderRef.name)
+					? senderRef
+					: { id: "", name: "Unassigned" };
+
+		const resolvedAssignee =
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+				? parsed.assigned_to
+				: resolvedOwner;
 
 		const doc = await Task.create({
 			task_id: taskId,
 			title: t.title,
 			description: t.description || ctx.text,
-			owner: parsed.owner || { id: "", name: "Unassigned" },
-			assigned_to: parsed.assigned_to || { id: "", name: "Unassigned" },
+			owner: resolvedOwner,
+			assigned_to: resolvedAssignee,
 			assigned_by: parsed.assigned_by || senderRef,
 			reporter: parsed.reporter || senderRef,
 			created_by: senderRef,
@@ -206,7 +664,6 @@ class MessageProcessor {
 			blocked_reason: t.blocked_reason || "",
 			block_reason_pending: t.status === "BLOCKED" && !t.blocked_reason,
 			dependencies: t.dependencies || [],
-			tags: [],
 			confidence_score: parsed.confidence,
 			channel: ctx.channel,
 			thread: ctx.thread_id,
@@ -214,11 +671,16 @@ class MessageProcessor {
 			team: ctx.team,
 			slack_message_ts: ctx.message_ts,
 			entities: parsed.meta?.entities || {},
+			local_file_logs: ctx.local_attachments || [],
 			history: [
 				{
 					event: "CREATED",
 					by: senderRef,
-					details: { action: "CREATE_TASK" },
+					details: {
+						action: "CREATE_TASK",
+						message_ts: ctx.message_ts,
+						text_hash: ctx.text_hash,
+					},
 				},
 			],
 		});
@@ -240,7 +702,8 @@ class MessageProcessor {
 			doc.assigned_to &&
 			doc.assigned_to.id &&
 			doc.assigned_to.name !== "Unassigned" &&
-			doc.assigned_to.id !== senderRef.id
+			doc.assigned_to.id !== senderRef.id &&
+			this.notifications
 		) {
 			await this.notifications.createAndSend({
 				type: "GENERAL",
@@ -261,7 +724,6 @@ class MessageProcessor {
 			await doc.save();
 		}
 
-		// Track dependent user acknowledgement
 		const depNtf = (parsed.notifications || []).find(
 			(n) => n.type === "DEPENDENT_USER",
 		);
@@ -277,6 +739,9 @@ class MessageProcessor {
 			await doc.save();
 		}
 
+		await this.checkAndPromptMissingInfo(doc, ctx);
+		await invalidateDailySummary();
+
 		return {
 			...parsed,
 			task_created: true,
@@ -289,7 +754,6 @@ class MessageProcessor {
 		const taskId = parsed.task?.id || ctx.existing_task?.task_id;
 		const doc = await Task.findOne({ task_id: taskId });
 		if (!doc) {
-			// Fall back to create if missing
 			return this.createTask(
 				{ ...parsed, action: "CREATE_TASK", task_created: true },
 				ctx,
@@ -302,8 +766,13 @@ class MessageProcessor {
 
 		if (t.title && !ctx.existing_task) doc.title = t.title;
 		if (t.description) doc.description = t.description;
-		if (parsed.owner) doc.owner = parsed.owner;
-		if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+		if (parsed.owner && (parsed.owner.id || parsed.owner.name))
+			doc.owner = parsed.owner;
+		if (
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+		)
+			doc.assigned_to = parsed.assigned_to;
 		if (parsed.assigned_by) doc.assigned_by = parsed.assigned_by;
 		if (parsed.mentioned_users?.length) {
 			doc.mentioned_users = mergeUsers(
@@ -352,11 +821,6 @@ class MessageProcessor {
 			];
 		}
 
-		if (parsed.meta?.needs_assignment != null) {
-			doc.needs_assignment = parsed.meta.needs_assignment;
-		}
-
-		// Re-evaluate pending flags
 		if (doc.status === "BLOCKED" && !doc.blocked_reason) {
 			doc.block_reason_pending = true;
 		}
@@ -368,10 +832,13 @@ class MessageProcessor {
 		doc.history.push({
 			event: "UPDATED",
 			by: senderRef,
-			details: { action: parsed.action, updates },
+			details: {
+				action: parsed.action,
+				updates,
+				text_hash: ctx.text_hash,
+			},
 		});
 
-		// Link discussion if present
 		if (
 			parsed.discussion ||
 			parsed.classification === "GENERAL_DISCUSSION"
@@ -404,10 +871,90 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		// Fire missing-info notifications on newly blocked / missing due
 		await this.dispatchNotifications(parsed.notifications, {
 			task_id: doc.task_id,
 		});
+
+		if (nextBlock && ctx.slack_client) {
+			const mentionedInReason = extractMentionedUsers(
+				nextBlock,
+				ctx.user_directory,
+			);
+			const targetUser = mentionedInReason.find(
+				(u) => u.id && u.id !== (doc.assigned_to?.id || ctx.sender?.id),
+			);
+
+			if (targetUser) {
+				const ownerName =
+					doc.assigned_to?.name ||
+					ctx.sender?.name ||
+					"A team member";
+				const senderId = ctx.sender?.id || "unknown";
+
+				const blocks = [
+					{
+						type: "header",
+						text: {
+							type: "plain_text",
+							text: "🚨 Action Required: Task Blocked",
+						},
+					},
+					{
+						type: "section",
+						text: {
+							type: "mrkdwn",
+							text: `Hi ${targetUser.display_name || targetUser.name},\n\nThe task *${doc.title}* has been marked as blocked by *${ownerName}*.\n\n*Reason:* ${nextBlock}\n\nPlease review this at your earliest convenience.`,
+						},
+					},
+					{
+						type: "actions",
+						elements: [
+							{
+								type: "button",
+								text: {
+									type: "plain_text",
+									text: "✅ I'm looking into it",
+								},
+								style: "primary",
+								action_id: "accept_sync_btn",
+								value: `${doc.task_id}|${senderId}`,
+							},
+							{
+								type: "button",
+								text: {
+									type: "plain_text",
+									text: "🕒 I'll check later",
+								},
+								action_id: "later_sync_btn",
+								value: `${doc.task_id}|${senderId}`,
+							},
+						],
+					},
+				];
+
+				try {
+					await ctx.slack_client.chat.postMessage({
+						channel: targetUser.id,
+						text: `Blocked Task Notification: ${doc.title}`,
+						blocks,
+					});
+
+					await ctx.slack_client.chat.postMessage({
+						channel: ctx.channel,
+						thread_ts: ctx.thread_id || ctx.message_ts,
+						text: `✅ <@${senderId}> I have privately messaged <@${targetUser.id}> about this blocker. I will DM you directly with their response.`,
+					});
+				} catch (err) {
+					console.error(
+						"[Slack] Failed to notify blocking user:",
+						err.message,
+					);
+				}
+			}
+		}
+
+		await this.checkAndPromptMissingInfo(doc, ctx);
+		await invalidateDailySummary();
 
 		return {
 			...parsed,
@@ -418,24 +965,38 @@ class MessageProcessor {
 	}
 
 	async createIssue(parsed, ctx, senderRef) {
-		const i = parsed.issue;
+		const i = parsed.issue || {};
 		const issueId = newId("iss");
+
+		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+		const resolvedOwner =
+			parsed.owner && (parsed.owner.id || parsed.owner.name)
+				? parsed.owner
+				: senderRef && (senderRef.id || senderRef.name)
+					? senderRef
+					: { id: "", name: "Unassigned" };
+
+		const resolvedAssignee =
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+				? parsed.assigned_to
+				: resolvedOwner;
 
 		const doc = await Issue.create({
 			issue_id: issueId,
 			title: i.title,
 			description: i.description || ctx.text,
 			reporter: parsed.reporter || senderRef,
-			owner: parsed.owner || { id: "", name: "Unassigned" },
-			assigned_to: parsed.assigned_to || { id: "", name: "Unassigned" },
+			owner: resolvedOwner,
+			assigned_to: resolvedAssignee,
 			assigned_by: parsed.assigned_by || senderRef,
 			created_by: senderRef,
 			last_updated_by: senderRef,
 			mentioned_users: parsed.mentioned_users || [],
 			priority: i.priority || "HIGH",
-			status: i.status || "HOLD", // Map to HOLD
-			blocked_reason: i.blocked_reason || "",
-			block_reason_pending: i.status === "HOLD" && !i.blocked_reason,
+			status: i.status || "HOLD",
+			blocked_reason: "",
+			block_reason_pending: false,
 			dependencies: i.dependencies || [],
 			confidence_score: parsed.confidence,
 			channel: ctx.channel,
@@ -444,11 +1005,15 @@ class MessageProcessor {
 			team: ctx.team,
 			slack_message_ts: ctx.message_ts,
 			entities: parsed.meta?.entities || {},
+			local_file_logs: ctx.local_attachments || [],
 			history: [
 				{
 					event: "CREATED",
 					by: senderRef,
-					details: { action: "CREATE_ISSUE" },
+					details: {
+						action: "CREATE_ISSUE",
+						text_hash: ctx.text_hash,
+					},
 				},
 			],
 		});
@@ -462,15 +1027,82 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			issue_id: issueId,
-		});
+		await invalidateDailySummary();
+
+		let relatedWork = [];
+		try {
+			relatedWork = await findRelatedWorkWithAI({
+				title: doc.title,
+				description: doc.description,
+				workspaceId: ctx.workspace_id,
+				channel: ctx.channel,
+			});
+		} catch (err) {
+			console.error("[RelatedWork] AI lookup failed:", err.message);
+		}
+
+		if (!relatedWork.length) {
+			try {
+				const [simTask, simIssue] = await Promise.all([
+					findSimilarTask(
+						doc.title,
+						doc.description,
+						ctx.workspace_id,
+						ctx.channel,
+						0.35,
+					),
+					findSimilarIssue(
+						doc.title,
+						doc.description,
+						ctx.workspace_id,
+						ctx.channel,
+						0.35,
+					),
+				]);
+
+				if (simTask?.task) {
+					const t = simTask.task;
+					relatedWork.push({
+						type: "task",
+						id: t.task_id,
+						title: t.title,
+						description: t.description,
+						status: t.status,
+						reason: `Similar task (score ${(simTask.score * 100).toFixed(0)}%)`,
+						related_users: [t.assigned_to, t.owner].filter(
+							(u) => u && u.id,
+						),
+					});
+				}
+
+				if (simIssue?.issue) {
+					const i = simIssue.issue;
+					relatedWork.push({
+						type: "issue",
+						id: i.issue_id,
+						title: i.title,
+						description: i.description,
+						status: i.status,
+						reason: `Similar issue (score ${(simIssue.score * 100).toFixed(0)}%)`,
+						related_users: [i.assigned_to, i.owner].filter(
+							(u) => u && u.id,
+						),
+					});
+				}
+			} catch (fallbackErr) {
+				console.error(
+					"[RelatedWork] fallback lookup failed:",
+					fallbackErr.message,
+				);
+			}
+		}
 
 		return {
 			...parsed,
 			issue_created: true,
 			issue_updated: false,
 			issue: this.issueSnapshot(doc),
+			related_work: relatedWork,
 		};
 	}
 
@@ -490,8 +1122,13 @@ class MessageProcessor {
 		const updates = parsed.updates || {};
 
 		if (i.description) doc.description = i.description;
-		if (parsed.owner) doc.owner = parsed.owner;
-		if (parsed.assigned_to) doc.assigned_to = parsed.assigned_to;
+		if (parsed.owner && (parsed.owner.id || parsed.owner.name))
+			doc.owner = parsed.owner;
+		if (
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+		)
+			doc.assigned_to = parsed.assigned_to;
 		if (parsed.mentioned_users?.length) {
 			doc.mentioned_users = mergeUsers(
 				doc.mentioned_users,
@@ -501,18 +1138,9 @@ class MessageProcessor {
 
 		const nextStatus = updates.status || i.status;
 		const nextPriority = updates.priority || i.priority;
-		const nextBlock = updates.blocked_reason || i.blocked_reason;
-		const nextRoot = i.root_cause;
 
 		if (nextStatus) doc.status = nextStatus;
 		if (nextPriority) doc.priority = nextPriority;
-
-		if (nextBlock) {
-			doc.blocked_reason = nextBlock;
-			doc.block_reason_pending = false;
-		}
-
-		if (nextRoot) doc.root_cause = nextRoot;
 
 		if (
 			parsed.discussion ||
@@ -539,7 +1167,11 @@ class MessageProcessor {
 		doc.history.push({
 			event: "UPDATED",
 			by: senderRef,
-			details: { action: parsed.action, updates },
+			details: {
+				action: parsed.action,
+				updates,
+				text_hash: ctx.text_hash,
+			},
 		});
 		await doc.save();
 
@@ -552,9 +1184,7 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			issue_id: doc.issue_id,
-		});
+		await invalidateDailySummary();
 
 		return {
 			...parsed,
@@ -621,10 +1251,14 @@ class MessageProcessor {
 			thread: ctx.thread_id,
 		});
 
-		await this.dispatchNotifications(parsed.notifications, {
-			task_id: discussion.task_id,
-			issue_id: discussion.issue_id,
-		});
+		if (discussion.task_id) {
+			await this.dispatchNotifications(parsed.notifications, {
+				task_id: discussion.task_id,
+				issue_id: null,
+			});
+		}
+
+		await invalidateDailySummary();
 
 		return {
 			...parsed,
@@ -694,17 +1328,23 @@ class MessageProcessor {
 	}
 
 	async createDiscussionRecord(parsed, ctx, senderRef, links) {
+		const safeContent =
+			parsed.discussion?.content?.trim() ||
+			parsed.content?.trim() ||
+			ctx?.text?.trim() ||
+			"Slack discussion update";
+
 		return Discussion.create({
 			discussion_id: newId("dsc"),
-			content: parsed.discussion?.content || ctx.text,
+			content: safeContent,
 			author: senderRef,
 			channel: ctx.channel,
-			thread: ctx.thread_id,
+			thread: ctx.thread_id || ctx.thread,
 			workspace_id: ctx.workspace_id,
 			team: ctx.team,
 			task_id: links.task_id,
 			issue_id: links.issue_id,
-			slack_message_ts: ctx.message_ts,
+			slack_message_ts: ctx.message_ts || ctx.ts,
 			mentioned_users: parsed.mentioned_users || [],
 			flagged_for_review:
 				!!parsed.discussion?.flagged_for_review ||
@@ -769,8 +1409,11 @@ class MessageProcessor {
 			description: doc.description,
 			status: doc.status,
 			priority: doc.priority,
+			due_date: doc.due_date ? doc.due_date.toISOString() : "",
+			due_date_pending: doc.due_date_pending,
 			root_cause: doc.root_cause || "",
-			blocked_reason: doc.blocked_reason || "",
+			blocked_reason: "",
+			block_reason_pending: false,
 			owner: doc.owner,
 			assigned_to: doc.assigned_to,
 			reporter: doc.reporter,
