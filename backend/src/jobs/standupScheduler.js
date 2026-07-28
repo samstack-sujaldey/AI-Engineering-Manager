@@ -1,16 +1,9 @@
 const cron = require("node-cron");
-const { Task, Issue, Team } = require("../models");
+const { Task, Issue, Discussion, Team } = require("../models");
 const DailySummary = require("../models/DailySummary");
 const { callOpenAI } = require("../ai/openai");
 const { normalizePersonName } = require("../agent/parser");
 
-/**
- * Calculates target business date:
- * If today is Monday, target Friday (-3 days).
- * If Sunday, target Friday (-2 days).
- * If Saturday, target Friday (-1 day).
- * Otherwise, target yesterday.
- */
 function getTargetSummaryDate(date = new Date()) {
   const d = new Date(date);
   const dayOfWeek = d.getDay(); // 0: Sun, 1: Mon, ..., 6: Sat
@@ -32,30 +25,29 @@ function getTargetSummaryDate(date = new Date()) {
 }
 
 function startStandupScheduler() {
-  // ⏰ Runs strictly at 10:00 AM every day
-  cron.schedule("52 15 * * *", async () => {
+  // ⏰ Runs strictly at 10:00 AM daily
+  cron.schedule("0 10 * * *", async () => {
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0: Sun, 6: Sat
+    const dayOfWeek = now.getDay();
 
-    // 🟢 CONDITION: Skip execution entirely on Saturday (6) and Sunday (0)
+    // Skip Saturday and Sunday
     if (dayOfWeek === 0 || dayOfWeek === 6) {
-      console.log(`[StandupScheduler] 🛑 Weekend (${dayOfWeek === 0 ? 'Sunday' : 'Saturday'}). Skipping daily stand-up caching.`);
+      console.log(`[StandupScheduler] 🛑 Weekend. Skipping stand-up summary generation.`);
       return;
     }
 
-    // 🟢 CONDITION: On Monday, getTargetSummaryDate automatically picks Friday (-3 days)
     const targetDateStr = getTargetSummaryDate(now);
-    console.log(`[StandupScheduler] ⏰ 10:00 AM job started. Pre-caching for target business date: ${targetDateStr}...`);
+    console.log(`[StandupScheduler] ⏰ Running 10:00 AM job for target date: ${targetDateStr}...`);
 
     try {
       const [reqYear, reqMonth, reqDay] = targetDateStr.split("-").map(Number);
       const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
       const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
 
-      // 1. Generate & Cache Workspace-Wide Summary
+      // 1. Workspace-wide summary
       await generateAndCacheSummary(null, targetDateStr, startOfDay, endOfDay);
 
-      // 2. Generate & Cache Summary for Each Active Team Channel
+      // 2. Channel-specific summaries
       const teams = await Team.find({}).lean();
       for (const team of teams) {
         if (team.channel_id) {
@@ -63,17 +55,21 @@ function startStandupScheduler() {
         }
       }
 
-      console.log(`[StandupScheduler] ✅ Pre-caching complete for ${targetDateStr}.`);
+      console.log(`[StandupScheduler] ✅ Finished pre-caching for ${targetDateStr}.`);
     } catch (err) {
       console.error("[StandupScheduler Error]:", err.message);
     }
   });
 
-  console.log("[StandupScheduler] 🕒 Initialized 10:00 AM daily caching scheduler (Mon-Fri only).");
+  console.log("[StandupScheduler] 🕒 Initialized 10:00 AM daily job.");
 }
 
 async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOfDay) {
-  // Build query filters for DB tasks and issues
+  const [reqYear, reqMonth, reqDay] = targetDateStr.split("-").map(Number);
+  const displayDateStr = `${String(reqDay).padStart(2, "0")}.${String(reqMonth).padStart(2, "0")}.${String(reqYear).slice(2)}`;
+  const duration = process.env.STANDUP_DURATION || "15 Minutes";
+
+  // Build filters for Tasks, Issues, and Discussions
   const taskFilter = {
     $or: [
       { created_time: { $gte: startOfDay, $lte: endOfDay } },
@@ -87,48 +83,132 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       { updated_time: { $gte: startOfDay, $lte: endOfDay } },
     ],
   };
+  const discussionFilter = {
+    timestamp: { $gte: startOfDay, $lte: endOfDay },
+  };
 
   if (channel) {
     taskFilter.channel = channel;
     issueFilter.channel = channel;
+    discussionFilter.channel = channel;
   }
 
-  // 1. Fetch from DB
-  const [tasks, issues] = await Promise.all([
-    Task.find(taskFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
-    Issue.find(issueFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
+  // 🟢 OPTIMIZATION #2: Field projections + .lean() queries run in parallel
+  const [tasks, issues, discussions] = await Promise.all([
+    Task.find(taskFilter, {
+      title: 1,
+      status: 1,
+      priority: 1,
+      blocked_reason: 1,
+      "assigned_to.name": 1,
+      "owner.name": 1,
+      _id: 0,
+    })
+      .lean()
+      .catch(() => []),
+    Issue.find(issueFilter, {
+      title: 1,
+      status: 1,
+      priority: 1,
+      blocked_reason: 1,
+      "assigned_to.name": 1,
+      "owner.name": 1,
+      _id: 0,
+    })
+      .lean()
+      .catch(() => []),
+    Discussion.find(discussionFilter, {
+      content: 1,
+      "author.name": 1,
+      _id: 0,
+    })
+      .lean()
+      .catch(() => []),
   ]);
 
+  // Group records by Individual
+  const memberDataMap = {};
+  const getMemberGroup = (rawName) => {
+    const cleanName = normalizePersonName(rawName) || "Unassigned";
+    if (!memberDataMap[cleanName]) {
+      memberDataMap[cleanName] = { tasks: [], issues: [], discussions: [] };
+    }
+    return memberDataMap[cleanName];
+  };
+
+  for (const t of tasks) getMemberGroup(t.assigned_to?.name || t.owner?.name).tasks.push(t);
+  for (const i of issues) getMemberGroup(i.assigned_to?.name || i.owner?.name).issues.push(i);
+  for (const d of discussions) getMemberGroup(d.author?.name).discussions.push(d);
+
+  const momHeader = `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${displayDateStr}\nDuration: ${duration}\nTeam-wise Task Updates`;
+
   let summaryText = "";
-  let generatedBy = "fallback";
 
-  // 2. Parse via OpenAI if records exist
-  if (tasks.length || issues.length) {
-    const prompt = `You are an AI Engineering Manager writing a Stand-up Minutes of Meeting (MOM) for date: ${targetDateStr}.
-Format output grouped strictly by team member with natural bullet points detailing their tasks, issues, or blockers.
+  if (!Object.keys(memberDataMap).length) {
+    summaryText = `${momHeader}\n\nNo activities recorded for date (${displayDateStr}).`;
+  } else {
+    // Construct single, compact raw payload for the entire team
+    let rawPayload = "";
+    for (const [memberName, data] of Object.entries(memberDataMap)) {
+      rawPayload += `\nMember: ${memberName}\n`;
+      if (data.tasks.length) {
+        rawPayload += `Tasks:\n` + data.tasks.map(t => `- ${t.title} [${t.status || 'TODO'}]${t.blocked_reason ? ` (Blocker: ${t.blocked_reason})` : ''}`).join('\n') + '\n';
+      }
+      if (data.issues.length) {
+        rawPayload += `Issues:\n` + data.issues.map(i => `- ${i.title} [${i.status || 'OPEN'}]${i.blocked_reason ? ` (Blocker: ${i.blocked_reason})` : ''}`).join('\n') + '\n';
+      }
+      if (data.discussions.length) {
+        rawPayload += `Discussions:\n` + data.discussions.map(d => `- ${d.content}`).join('\n') + '\n';
+      }
+    }
 
-Tasks: ${JSON.stringify(tasks)}
-Issues: ${JSON.stringify(issues)}`;
+    // Single-pass OpenAI formatting call
+    const prompt = `You are an AI Engineering Manager. Format this aggregated raw standup data into a clean Stand-up MOM string.
+
+INSTRUCTIONS:
+1. Include this EXACT header at the top:
+${momHeader}
+
+2. Group strictly by member name using bold headers (**Member Name**).
+3. Under each member, format every task, issue, and discussion as bullet points (* ).
+4. ONLY include an "Issues:" subsection under a member if they have issues logged. If no issues exist for a member, omit the Issues subsection completely.
+5. Do NOT add a "Present Members" line.
+6. Write each bullet as a natural, concise sentence.
+
+Raw Team Work Data:
+${rawPayload}`;
 
     try {
-      summaryText = await callOpenAI([{ role: "user", content: prompt }], { maxTokens: 900, temperature: 0.3 });
-      if (summaryText && summaryText.trim()) generatedBy = "ai";
+      const aiFormatted = await callOpenAI([{ role: "user", content: prompt }], {
+        maxTokens: 800,
+        temperature: 0.2,
+      });
+
+      if (aiFormatted && aiFormatted.trim()) {
+        summaryText = aiFormatted.trim();
+      } else {
+        throw new Error("OpenAI returned empty response");
+      }
     } catch (aiErr) {
-      console.error(`[StandupScheduler] OpenAI formatting failed for ${targetDateStr}, using fallback.`);
+      console.warn(`[StandupScheduler] OpenAI single-pass failed: ${aiErr.message}. Using structured DB output directly.`);
+
+      let fallbackBody = "";
+      for (const [memberName, data] of Object.entries(memberDataMap)) {
+        fallbackBody += `\n**${memberName}**\n`;
+        for (const t of data.tasks) fallbackBody += `* ${t.title}${t.status ? ` [${t.status}]` : ''}${t.blocked_reason ? ` 🚨 Blocker: ${t.blocked_reason}` : ''}\n`;
+        if (data.issues.length > 0) {
+          fallbackBody += `  Issues:\n`;
+          for (const i of data.issues) fallbackBody += `  * ${i.title}${i.status ? ` [${i.status}]` : ''}${i.blocked_reason ? ` 🚨 Blocker: ${i.blocked_reason}` : ''}\n`;
+        }
+        for (const d of data.discussions) fallbackBody += `* Discussion: ${d.content}\n`;
+      }
+      summaryText = `${momHeader}\n${fallbackBody}`;
     }
   }
 
-  // Fallback summary if OpenAI fails or no activity recorded
-  if (!summaryText || !summaryText.trim()) {
-    summaryText = `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetDateStr}\n` +
-      (tasks.length || issues.length 
-        ? `Tasks (${tasks.length}), Issues (${issues.length}) recorded.` 
-        : `No activities recorded for date (${targetDateStr}).`);
-  }
-
-  // 3. Cache directly into MongoDB for instant lookups
+  // Cache final document into MongoDB
   const cacheKey = channel ? { date: targetDateStr, channel } : { date: targetDateStr, $or: [{ channel: null }, { channel: "" }] };
-  
+
   await DailySummary.findOneAndUpdate(
     cacheKey,
     {
@@ -137,8 +217,9 @@ Issues: ${JSON.stringify(issues)}`;
       summary: summaryText.trim(),
       tasks_count: tasks.length,
       issues_count: issues.length,
+      discussions_count: discussions.length,
       is_stale: false,
-      generated_by: generatedBy,
+      generated_by: "single_pass_ai",
     },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
   );
