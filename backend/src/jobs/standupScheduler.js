@@ -33,7 +33,7 @@ function getTargetSummaryDate(date = new Date()) {
 
 function startStandupScheduler() {
   // ⏰ Runs strictly at 10:00 AM every day
-  cron.schedule("52 15 * * *", async () => {
+  cron.schedule("53 17 * * *", async () => {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0: Sun, 6: Sat
 
