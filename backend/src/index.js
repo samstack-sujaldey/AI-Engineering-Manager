@@ -7,6 +7,7 @@ const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 const { WebClient } = require("@slack/web-api");
 const vectorDbService = require("./services/vectorDbService");
+const { startStandupScheduler } = require("./jobs/standupScheduler");
 
 process.env.TZ = "Asia/Kolkata";
 
@@ -321,6 +322,9 @@ async function main() {
 	});
 
 	startReminderScheduler(notificationService);
+
+	startStandupScheduler();
+
 	await cleanupCompletedWork().catch((err) =>
 		console.error("[retention warning]", err.message),
 	);

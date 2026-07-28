@@ -18,21 +18,9 @@ function getYesterdayDateString() {
  * Marks cache stale immediately, then schedules an AI summary update.
  */
 async function invalidateDailySummary(dateStr = null) {
-  const targetDate = dateStr || getYesterdayDateString();
-
-  try {
-    await DailySummary.updateOne({ date: targetDate }, { $set: { is_stale: true } });
-  } catch (err) {
-    console.error('[Cache] Failed to mark summary stale:', err.message);
-  }
-
-  if (debounceTimer) clearTimeout(debounceTimer);
-
-  // Reduced delay to 3 seconds for instant summary generation
-  debounceTimer = setTimeout(async () => {
-    console.log(`[AI Summary] Running background update for yesterday (${targetDate})...`);
-    await regenerateSummaryInBackground(targetDate);
-  }, 3000); 
+  // 🟢 Disabled: We rely exclusively on the 10:00 AM scheduled pre-cache job. 
+  // Real-time chat messages or WebSocket updates will no longer invalidate or regenerate summaries.
+  return;
 }
 
 /**
