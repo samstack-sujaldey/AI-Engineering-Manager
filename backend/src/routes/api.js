@@ -17,207 +17,189 @@ function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
-  router.get("/discussions/daily-summary", async (req, res) => {
-    try {
-      const getTodayStr = () => {
-        const d = new Date();
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        return `${year}-${month}-${day}`;
-      };
+router.get("/discussions/daily-summary", async (req, res) => {
+  try {
+    const getTodayStr = () => {
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
 
-      const requestedDateStr = req.query.date
-        ? String(req.query.date).split("T")[0].trim()
-        : getTodayStr();
+    const requestedDateStr = req.query.date
+      ? String(req.query.date).split("T")[0].trim()
+      : getTodayStr();
 
-      const forceRefresh = req.query.forceRefresh === "true";
-      const channel = req.query.channel || null;
+    // 🟢 Convert "2026-07-26" to "26.07.26" for the MOM Header
+    const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
+    if (!reqYear || !reqMonth || !reqDay) {
+      return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+    }
+    const displayDateStr = `${String(reqDay).padStart(2, "0")}.${String(reqMonth).padStart(2, "0")}.${String(reqYear).slice(2)}`;
 
-      const cacheKey = channel ? { date: requestedDateStr, channel } : { date: requestedDateStr };
+    const forceRefresh = req.query.forceRefresh === "true";
+    const channel = req.query.channel || null;
+    const cacheKey = channel ? { date: requestedDateStr, channel } : { date: requestedDateStr };
 
-      // 1. Cache Lookup
-      if (!forceRefresh) {
-        const cachedDoc = await DailySummary.findOne(cacheKey).lean();
-        if (cachedDoc && cachedDoc.summary) {
-          console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}${channel ? ` (${channel})` : ''}`);
-          res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-          res.setHeader("Pragma", "no-cache");
-          res.setHeader("Expires", "0");
-          return res.json({
-            date: requestedDateStr,
-            channel: channel || null,
-            summary: cachedDoc.summary,
-            tasks_count: cachedDoc.tasks_count || 0,
-            issues_count: cachedDoc.issues_count || 0,
-            cached: true,
-            last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
-          });
-        }
+    // 1. Cache Lookup (With format validation bypass)
+    if (!forceRefresh) {
+      const cachedDoc = await DailySummary.findOne(cacheKey).lean();
+      
+      // Ensure the cache doesn't serve old Markdown-heavy formats
+      const isCorrectFormat = cachedDoc?.summary?.includes("Hi Everyone, please find Today Stand-up MOM\n\nDate:");
+
+      if (cachedDoc && cachedDoc.summary && isCorrectFormat) {
+        console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}${channel ? ` (${channel})` : ''}`);
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+        return res.json({
+          date: requestedDateStr,
+          channel: channel || null,
+          summary: cachedDoc.summary,
+          tasks_count: cachedDoc.tasks_count || 0,
+          issues_count: cachedDoc.issues_count || 0,
+          cached: true,
+          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+        });
       }
+    }
 
-      console.log(`[DailySummary] 🤖 Generating MOM summary for (${requestedDateStr})${channel ? ` (${channel})` : ''}...`);
+    console.log(`[DailySummary] 🤖 Generating MOM summary for (${requestedDateStr})${channel ? ` (${channel})` : ''}...`);
 
-      // 2. Parse Date
-      const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
-      if (!reqYear || !reqMonth || !reqDay) {
-        return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
+    const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
+    const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
+
+    // 2. Construct Channel Filters
+    const dateRangeQuery = { $gte: startOfDay, $lte: endOfDay };
+    const taskBaseFilter = {
+      $or: [
+        { createdAt: dateRangeQuery },
+        { updatedAt: dateRangeQuery },
+        { created_time: dateRangeQuery },
+        { updated_time: dateRangeQuery },
+        { due_date: dateRangeQuery },
+      ],
+    };
+    const issueBaseFilter = {
+      $or: [
+        { createdAt: dateRangeQuery },
+        { updatedAt: dateRangeQuery },
+        { created_time: dateRangeQuery },
+        { updated_time: dateRangeQuery },
+      ],
+    };
+
+    if (channel) {
+      taskBaseFilter.channel = channel;
+      issueBaseFilter.channel = channel;
+    }
+
+    const [tasks, issues] = await Promise.all([
+      Task.find(taskBaseFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
+      Issue.find(issueBaseFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
+    ]);
+
+    // 3. Calculate Present Members
+    const memberNames = [];
+    const seenNames = new Set();
+    const addMember = (name) => {
+      if (name && name !== "Unassigned" && !seenNames.has(name)) {
+        seenNames.add(name);
+        memberNames.push(name);
       }
+    };
+    for (const t of tasks) addMember(t.assigned_to?.name || t.owner?.name);
+    for (const i of issues) addMember(i.assigned_to?.name || i.owner?.name);
+    
+    const presentMembers = memberNames.length > 0 ? memberNames.join(", ") : "—";
+    const duration = process.env.STANDUP_DURATION || "15 Minutes";
 
-      const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
-      const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
+    // 🟢 Exact Header Formatting
+    const momHeader = 
+`Hi Everyone, please find Today Stand-up MOM
 
-      // 3. Construct Channel Filters
-      const taskBaseFilter = {
-        $or: [
-          { created_time: { $gte: startOfDay, $lte: endOfDay } },
-          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-          { due_date: { $gte: startOfDay, $lte: endOfDay } },
-        ],
-      };
-      const issueBaseFilter = {
-        $or: [
-          { created_time: { $gte: startOfDay, $lte: endOfDay } },
-          { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-        ],
-      };
+Date: ${displayDateStr}
+Duration: ${duration}
+Present Members: ${presentMembers}
+Team-wise Task Updates`;
 
-      if (channel) {
-        taskBaseFilter.channel = channel;
-        issueBaseFilter.channel = channel;
-      }
+    let summaryText = "";
 
-      const [tasks, issues] = await Promise.all([
-        Task.find(taskBaseFilter, "title status priority blocked_reason assigned_to owner")
-          .lean()
-          .catch(() => []),
-        Issue.find(issueBaseFilter, "title status priority blocked_reason assigned_to owner")
-          .lean()
-          .catch(() => []),
-      ]);
+    if (!tasks.length && !issues.length) {
+      summaryText = `${momHeader}\nNo activities recorded for date (${displayDateStr}).`;
+    } else {
+      // 🟢 Strict prompt with NO Markdown and NO Bullet symbols
+      const prompt = `You are an AI generating a Daily Stand-up MOM.
 
-      // 4. Calculate Present Members
-      const memberNames = [];
-      const seenNames = new Set();
-      const addMember = (name) => {
-        if (name && name !== "Unassigned" && !seenNames.has(name)) {
-          seenNames.add(name);
-          memberNames.push(name);
-        }
-      };
-      for (const t of tasks) addMember(t.assigned_to?.name || t.owner?.name);
-      for (const i of issues) addMember(i.assigned_to?.name || i.owner?.name);
-      const presentMembers = memberNames.join(", ") || "—";
-      const duration = process.env.STANDUP_DURATION || "15 Minutes";
-
-      const momHeader =
-        `Hi Everyone, please find Today Stand-up MOM\n` +
-        `Date: ${requestedDateStr}\n` +
-        `Duration: ${duration}\n` +
-        `Present Members: ${presentMembers}\n` +
-        `Team-wise Task Updates`;
-
-      let summaryText = "";
-
-      if (!tasks.length && !issues.length) {
-        summaryText = `${momHeader}\n\n• No activities recorded for date (${requestedDateStr}).`;
-      } else {
-        const prompt = `
-You are an AI Engineering Manager writing a Stand-up Minutes of Meeting (MOM) for ${requestedDateStr}.
-
-Format the output EXACTLY like this template:
+Format the output EXACTLY like this template. Do NOT use markdown bolding (**). Do NOT use bullet points (•, -, or *). Just write plain text on new lines.
 
 Hi Everyone, please find Today Stand-up MOM
-Date: ${requestedDateStr}
+
+Date: ${displayDateStr}
 Duration: ${duration}
 Present Members: ${presentMembers}
 Team-wise Task Updates
-
-**[Member Name]**
-* Natural, complete-sentence bullet describing what they did, are working on, or are blocked by — written like a real human standup note, not "Task: X, Status: Y".
-* Use an indented sub-bullet (two spaces then "* ") when one task has multiple distinct parts worth calling out separately.
-
-**[Next Member Name]**
-* ...
+[Member Name]
+Natural complete-sentence describing what they worked on or completed.
+Another complete-sentence describing another task.
+[Next Member Name]
+...
 
 INSTRUCTIONS:
-1. Group strictly by team member — one section per name listed in "Present Members" above, in that order. Wrap each member's name in ** ** exactly as shown, on its own line.
-2. Write each bullet as a natural sentence, not a mechanical field dump.
-3. If an item has a blocked reason, give it its OWN separate bullet line starting with "🚨" followed directly by a natural description of the blocker — don't mix it into another bullet's sentence.
-4. Do not invent work that isn't in the data below.
-5. Skip a member's section entirely if they have no activity today.
+1. Start EXACTLY with the header block provided above.
+2. Under "Team-wise Task Updates", write the member's name on its own line (NO bolding, NO symbols).
+3. Directly beneath the member's name, write their tasks as plain text sentences on new lines. Do not use bullets or dashes.
+4. If an item has a blocker, write a sentence explaining the blocker on a new line.
+5. Do not invent work that isn't in the data below.
 
 Data for ${requestedDateStr}:
 Tasks: ${JSON.stringify(tasks.map(t => ({ member: t.assigned_to?.name || t.owner?.name || "Unassigned", title: t.title, status: t.status, priority: t.priority, blocker: t.blocked_reason })))}
-Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.owner?.name || "Unassigned", title: i.title, status: i.status, priority: i.priority, blocker: i.blocked_reason })))}
-`;
+Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.owner?.name || "Unassigned", title: i.title, status: i.status, priority: i.priority, blocker: i.blocked_reason })))}`;
 
-        summaryText = await callOpenAI([{ role: "user", content: prompt }], {
-          maxTokens: 900,
-          temperature: 0.3,
-        });
+      summaryText = await callOpenAI([{ role: "user", content: prompt }], {
+        maxTokens: 900,
+        temperature: 0.2, // Lowered temperature to enforce strict formatting
+      });
 
-        if (!summaryText) {
-          const byMember = {};
-          const pushItem = (name, line) => {
-            const key = name || "Unassigned";
-            if (!byMember[key]) byMember[key] = [];
-            byMember[key].push(line);
-          };
-          for (const t of tasks) {
-            const name = t.assigned_to?.name || t.owner?.name || "Unassigned";
-            const status = t.status ? ` [${t.status}]` : "";
-            pushItem(name, `${t.title}${status}`);
-            if (t.blocked_reason) pushItem(name, `🚨 ${t.blocked_reason}`);
-          }
-          for (const i of issues) {
-            const name = i.assigned_to?.name || i.owner?.name || "Unassigned";
-            const status = i.status ? ` [${i.status}]` : "";
-            pushItem(name, `${i.title}${status}`);
-            if (i.blocked_reason) pushItem(name, `🚨 ${i.blocked_reason}`);
-          }
-
-          let body = "";
-          for (const [name, lines] of Object.entries(byMember)) {
-            body += `\n**${name}**\n`;
-            for (const line of lines) body += `* ${line}\n`;
-          }
-
-          summaryText = `${momHeader}\n${body}`;
-        }
+      // 🟢 NO FALLBACK. If AI fails to return text, throw an error to prevent saving bad cache.
+      if (!summaryText || !summaryText.trim()) {
+        throw new Error("AI failed to generate a valid stand-up summary from the provided data.");
       }
+    }
 
-      // 5. Save to DB under cacheKey
-      const updatedDoc = await DailySummary.findOneAndUpdate(
-        cacheKey,
-        {
-          summary: summaryText,
-          tasks_count: tasks.length,
-          issues_count: issues.length,
-          discussions_count: 0,
-          is_stale: false,
-        },
-        { upsert: true, returnDocument: "after" }
-      );
-
-      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-      res.setHeader("Pragma", "no-cache");
-      res.setHeader("Expires", "0");
-
-      return res.json({
-        date: requestedDateStr,
-        channel: channel || null,
-        summary: summaryText,
+    // 4. Save to DB under cacheKey
+    const updatedDoc = await DailySummary.findOneAndUpdate(
+      cacheKey,
+      {
+        summary: summaryText.trim(),
         tasks_count: tasks.length,
         issues_count: issues.length,
-        cached: false,
-        last_updated_at: updatedDoc.updatedAt || new Date(),
-      });
-    } catch (err) {
-      console.error("[daily-summary route error]:", err);
-      res.status(500).json({ error: "Failed to generate daily summary" });
-    }
-  });
+        discussions_count: 0,
+        is_stale: false,
+      },
+      { upsert: true, returnDocument: "after" }
+    );
+
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+
+    return res.json({
+      date: requestedDateStr,
+      channel: channel || null,
+      summary: summaryText.trim(),
+      tasks_count: tasks.length,
+      issues_count: issues.length,
+      cached: false,
+      last_updated_at: updatedDoc.updatedAt || new Date(),
+    });
+  } catch (err) {
+    console.error("[daily-summary route error]:", err);
+    res.status(500).json({ error: "Failed to generate daily summary" });
+  }
+});
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
   router.post("/discussions/parse-mom", async (req, res) => {
