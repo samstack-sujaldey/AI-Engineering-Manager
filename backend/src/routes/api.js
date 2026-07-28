@@ -17,43 +17,31 @@ function createApiRouter({ messageProcessor }) {
   const router = express.Router();
 
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
-router.get("/discussions/daily-summary", async (req, res) => {
-  try {
-    const getTodayStr = () => {
-      const d = new Date();
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    };
+  // Replace GET /discussions/daily-summary in routes/api.js with this:
 
-    const requestedDateStr = req.query.date
-      ? String(req.query.date).split("T")[0].trim()
-      : getTodayStr();
+  router.get("/discussions/daily-summary", async (req, res) => {
+    try {
+      const { getTargetSummaryDate } = require("../jobs/standupScheduler");
+      const requestedDateStr = req.query.date
+        ? String(req.query.date).split("T")[0].trim()
+        : getTargetSummaryDate(new Date());
 
-    // 🟢 Convert "2026-07-26" to "26.07.26" for the MOM Header
-    const [reqYear, reqMonth, reqDay] = requestedDateStr.split("-").map(Number);
-    if (!reqYear || !reqMonth || !reqDay) {
-      return res.status(400).json({ error: "Invalid date format. Expected YYYY-MM-DD" });
-    }
-    const displayDateStr = `${String(reqDay).padStart(2, "0")}.${String(reqMonth).padStart(2, "0")}.${String(reqYear).slice(2)}`;
+      const channel = req.query.channel || null;
+      const cacheKey = channel
+        ? { date: requestedDateStr, channel }
+        : { date: requestedDateStr };
 
-    const forceRefresh = req.query.forceRefresh === "true";
-    const channel = req.query.channel || null;
-    const cacheKey = channel ? { date: requestedDateStr, channel } : { date: requestedDateStr };
-
-    // 1. Cache Lookup (With format validation bypass)
-    if (!forceRefresh) {
+      // Strictly fetch from the pre-cached 10:00 AM snapshot
       const cachedDoc = await DailySummary.findOne(cacheKey).lean();
-      
-      // Ensure the cache doesn't serve old Markdown-heavy formats
-      const isCorrectFormat = cachedDoc?.summary?.includes("Hi Everyone, please find Today Stand-up MOM\n\nDate:");
 
-      if (cachedDoc && cachedDoc.summary && isCorrectFormat) {
-        console.log(`[DailySummary] ⚡ Serving cache for: ${requestedDateStr}${channel ? ` (${channel})` : ''}`);
-        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-        res.setHeader("Pragma", "no-cache");
-        res.setHeader("Expires", "0");
+      res.setHeader(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate, proxy-revalidate",
+      );
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      if (cachedDoc && cachedDoc.summary) {
         return res.json({
           date: requestedDateStr,
           channel: channel || null,
@@ -64,142 +52,21 @@ router.get("/discussions/daily-summary", async (req, res) => {
           last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
         });
       }
-    }
 
-    console.log(`[DailySummary] 🤖 Generating MOM summary for (${requestedDateStr})${channel ? ` (${channel})` : ''}...`);
-
-    const startOfDay = new Date(reqYear, reqMonth - 1, reqDay, 0, 0, 0, 0);
-    const endOfDay = new Date(reqYear, reqMonth - 1, reqDay, 23, 59, 59, 999);
-
-    // 2. Construct Channel Filters
-    const dateRangeQuery = { $gte: startOfDay, $lte: endOfDay };
-    const taskBaseFilter = {
-      $or: [
-        { createdAt: dateRangeQuery },
-        { updatedAt: dateRangeQuery },
-        { created_time: dateRangeQuery },
-        { updated_time: dateRangeQuery },
-        { due_date: dateRangeQuery },
-      ],
-    };
-    const issueBaseFilter = {
-      $or: [
-        { createdAt: dateRangeQuery },
-        { updatedAt: dateRangeQuery },
-        { created_time: dateRangeQuery },
-        { updated_time: dateRangeQuery },
-      ],
-    };
-
-    if (channel) {
-      taskBaseFilter.channel = channel;
-      issueBaseFilter.channel = channel;
-    }
-
-    const [tasks, issues] = await Promise.all([
-      Task.find(taskBaseFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
-      Issue.find(issueBaseFilter, "title status priority blocked_reason assigned_to owner").lean().catch(() => []),
-    ]);
-
-    // 3. Calculate Present Members
-    const memberNames = [];
-    const seenNames = new Set();
-    const addMember = (name) => {
-      if (name && name !== "Unassigned" && !seenNames.has(name)) {
-        seenNames.add(name);
-        memberNames.push(name);
-      }
-    };
-    for (const t of tasks) addMember(t.assigned_to?.name || t.owner?.name);
-    for (const i of issues) addMember(i.assigned_to?.name || i.owner?.name);
-    
-    const presentMembers = memberNames.length > 0 ? memberNames.join(", ") : "—";
-    const duration = process.env.STANDUP_DURATION || "15 Minutes";
-
-    // 🟢 Exact Header Formatting
-    const momHeader = 
-`Hi Everyone, please find Today Stand-up MOM
-
-Date: ${displayDateStr}
-Duration: ${duration}
-Present Members: ${presentMembers}
-Team-wise Task Updates`;
-
-    let summaryText = "";
-
-    if (!tasks.length && !issues.length) {
-      summaryText = `${momHeader}\nNo activities recorded for date (${displayDateStr}).`;
-    } else {
-      // 🟢 Strict prompt with NO Markdown and NO Bullet symbols
-      const prompt = `You are an AI generating a Daily Stand-up MOM.
-
-Format the output EXACTLY like this template. Do NOT use markdown bolding (**). Do NOT use bullet points (•, -, or *). Just write plain text on new lines.
-
-Hi Everyone, please find Today Stand-up MOM
-
-Date: ${displayDateStr}
-Duration: ${duration}
-Present Members: ${presentMembers}
-Team-wise Task Updates
-[Member Name]
-Natural complete-sentence describing what they worked on or completed.
-Another complete-sentence describing another task.
-[Next Member Name]
-...
-
-INSTRUCTIONS:
-1. Start EXACTLY with the header block provided above.
-2. Under "Team-wise Task Updates", write the member's name on its own line (NO bolding, NO symbols).
-3. Directly beneath the member's name, write their tasks as plain text sentences on new lines. Do not use bullets or dashes.
-4. If an item has a blocker, write a sentence explaining the blocker on a new line.
-5. Do not invent work that isn't in the data below.
-
-Data for ${requestedDateStr}:
-Tasks: ${JSON.stringify(tasks.map(t => ({ member: t.assigned_to?.name || t.owner?.name || "Unassigned", title: t.title, status: t.status, priority: t.priority, blocker: t.blocked_reason })))}
-Issues: ${JSON.stringify(issues.map(i => ({ member: i.assigned_to?.name || i.owner?.name || "Unassigned", title: i.title, status: i.status, priority: i.priority, blocker: i.blocked_reason })))}`;
-
-      summaryText = await callOpenAI([{ role: "user", content: prompt }], {
-        maxTokens: 900,
-        temperature: 0.2, // Lowered temperature to enforce strict formatting
+      return res.json({
+        date: requestedDateStr,
+        channel: channel || null,
+        summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${requestedDateStr}\n• Summary will be available after the 10:00 AM scheduled generation.`,
+        tasks_count: 0,
+        issues_count: 0,
+        cached: false,
+        last_updated_at: new Date(),
       });
-
-      // 🟢 NO FALLBACK. If AI fails to return text, throw an error to prevent saving bad cache.
-      if (!summaryText || !summaryText.trim()) {
-        throw new Error("AI failed to generate a valid stand-up summary from the provided data.");
-      }
+    } catch (err) {
+      console.error("[daily-summary route error]:", err);
+      res.status(500).json({ error: "Failed to fetch daily summary cache" });
     }
-
-    // 4. Save to DB under cacheKey
-    const updatedDoc = await DailySummary.findOneAndUpdate(
-      cacheKey,
-      {
-        summary: summaryText.trim(),
-        tasks_count: tasks.length,
-        issues_count: issues.length,
-        discussions_count: 0,
-        is_stale: false,
-      },
-      { upsert: true, returnDocument: "after" }
-    );
-
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
-
-    return res.json({
-      date: requestedDateStr,
-      channel: channel || null,
-      summary: summaryText.trim(),
-      tasks_count: tasks.length,
-      issues_count: issues.length,
-      cached: false,
-      last_updated_at: updatedDoc.updatedAt || new Date(),
-    });
-  } catch (err) {
-    console.error("[daily-summary route error]:", err);
-    res.status(500).json({ error: "Failed to generate daily summary" });
-  }
-});
+  });
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
   router.post("/discussions/parse-mom", async (req, res) => {
@@ -226,65 +93,63 @@ Instructions:
    - "discussions": Meetings, discussions with leads/management, or general administrative notes.
 `;
 
-      const aiResponse = await callOpenAI(
-        [{ role: "user", content: prompt }],
-        {
-          maxTokens: 1000,
-          temperature: 0.1,
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "mom_parsed_structure",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  metadata: {
+      const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
+        maxTokens: 1000,
+        temperature: 0.1,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "mom_parsed_structure",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                metadata: {
+                  type: "object",
+                  properties: {
+                    date: { type: "string" },
+                    duration: { type: "string" },
+                    present_members: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                  },
+                  required: ["date", "duration", "present_members"],
+                  additionalProperties: false,
+                },
+                member_updates: {
+                  type: "array",
+                  items: {
                     type: "object",
                     properties: {
-                      date: { type: "string" },
-                      duration: { type: "string" },
-                      present_members: {
+                      member_name: { type: "string" },
+                      tasks: {
                         type: "array",
-                        items: { type: "string" }
-                      }
-                    },
-                    required: ["date", "duration", "present_members"],
-                    additionalProperties: false
-                  },
-                  member_updates: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        member_name: { type: "string" },
-                        tasks: {
-                          type: "array",
-                          items: { type: "string" }
-                        },
-                        issues: {
-                          type: "array",
-                          items: { type: "string" }
-                        },
-                        discussions: {
-                          type: "array",
-                          items: { type: "string" }
-                        }
+                        items: { type: "string" },
                       },
-                      required: ["member_name", "tasks", "issues", "discussions"],
-                      additionalProperties: false
-                    }
-                  }
+                      issues: {
+                        type: "array",
+                        items: { type: "string" },
+                      },
+                      discussions: {
+                        type: "array",
+                        items: { type: "string" },
+                      },
+                    },
+                    required: ["member_name", "tasks", "issues", "discussions"],
+                    additionalProperties: false,
+                  },
                 },
-                required: ["metadata", "member_updates"],
-                additionalProperties: false
-              }
-            }
-          }
-        }
-      );
+              },
+              required: ["metadata", "member_updates"],
+              additionalProperties: false,
+            },
+          },
+        },
+      });
 
-      const parsedData = typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+      const parsedData =
+        typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
 
       let formattedText = `Hi Everyone, please find Today Stand-up MOM\n\n`;
       formattedText += `Date: ${parsedData.metadata.date}\n`;
@@ -304,12 +169,21 @@ Instructions:
         { date: parsedData.metadata.date },
         {
           summary: formattedText.trim(),
-          tasks_count: parsedData.member_updates.reduce((acc, m) => acc + m.tasks.length, 0),
-          issues_count: parsedData.member_updates.reduce((acc, m) => acc + m.issues.length, 0),
-          discussions_count: parsedData.member_updates.reduce((acc, m) => acc + m.discussions.length, 0),
+          tasks_count: parsedData.member_updates.reduce(
+            (acc, m) => acc + m.tasks.length,
+            0,
+          ),
+          issues_count: parsedData.member_updates.reduce(
+            (acc, m) => acc + m.issues.length,
+            0,
+          ),
+          discussions_count: parsedData.member_updates.reduce(
+            (acc, m) => acc + m.discussions.length,
+            0,
+          ),
           is_stale: false,
         },
-        { upsert: true, returnDocument: "after" }
+        { upsert: true, returnDocument: "after" },
       );
 
       return res.json({
@@ -593,9 +467,7 @@ Instructions:
       const filter = {};
       if (channelId) filter.channel_id = channelId;
 
-      const teams = await Team.find(filter)
-        .sort({ updated_time: -1 })
-        .lean();
+      const teams = await Team.find(filter).sort({ updated_time: -1 }).lean();
       res.json(teams);
     } catch (err) {
       next(err);
@@ -604,8 +476,11 @@ Instructions:
 
   router.get("/teams/channel/:channelId", async (req, res, next) => {
     try {
-      const team = await Team.findOne({ channel_id: req.params.channelId }).lean();
-      if (!team) return res.status(404).json({ error: "Team not found for channel" });
+      const team = await Team.findOne({
+        channel_id: req.params.channelId,
+      }).lean();
+      if (!team)
+        return res.status(404).json({ error: "Team not found for channel" });
       res.json(team);
     } catch (err) {
       next(err);
@@ -633,9 +508,15 @@ Instructions:
       today.setHours(0, 0, 0, 0);
 
       const getName = (item) => {
-        const name = item.assigned_to?.name || item.assigned_to || item.owner?.name || item.owner;
-        if (!name || name === 'Unassigned') return null;
-        return typeof name === 'string' ? name : (name.name || name.display_name || 'Unknown');
+        const name =
+          item.assigned_to?.name ||
+          item.assigned_to ||
+          item.owner?.name ||
+          item.owner;
+        if (!name || name === "Unassigned") return null;
+        return typeof name === "string"
+          ? name
+          : name.name || name.display_name || "Unknown";
       };
 
       const isToday = (date) => {
@@ -648,9 +529,12 @@ Instructions:
         const name = getName(task);
         if (!name) continue;
 
-        const status = (task.status || '').toLowerCase();
-        const isBlocked = status === 'blocked' || task.blocked_reason || task.block_reason_pending;
-        const isDone = status === 'completed' || status === 'done';
+        const status = (task.status || "").toLowerCase();
+        const isBlocked =
+          status === "blocked" ||
+          task.blocked_reason ||
+          task.block_reason_pending;
+        const isDone = status === "completed" || status === "done";
         const isCurrent = !isBlocked && !isDone;
 
         if (!memberMap.has(name)) {
@@ -660,7 +544,9 @@ Instructions:
 
         if (isBlocked) member.blocked++;
         else if (isDone) {
-          if (isToday(task.updated_time || task.updatedAt || task.created_time)) {
+          if (
+            isToday(task.updated_time || task.updatedAt || task.created_time)
+          ) {
             member.doneToday++;
           }
         } else if (isCurrent) member.current++;
@@ -670,9 +556,12 @@ Instructions:
         const name = getName(issue);
         if (!name) continue;
 
-        const status = (issue.status || '').toLowerCase();
-        const isBlocked = status === 'hold' || issue.blocked_reason || issue.block_reason_pending;
-        const isResolved = status === 'resolved';
+        const status = (issue.status || "").toLowerCase();
+        const isBlocked =
+          status === "hold" ||
+          issue.blocked_reason ||
+          issue.block_reason_pending;
+        const isResolved = status === "resolved";
         const isCurrent = !isBlocked && !isResolved;
 
         if (!memberMap.has(name)) {
@@ -682,7 +571,9 @@ Instructions:
 
         if (isBlocked) member.blocked++;
         else if (isResolved) {
-          if (isToday(issue.updated_time || issue.updatedAt || issue.created_time)) {
+          if (
+            isToday(issue.updated_time || issue.updatedAt || issue.created_time)
+          ) {
             member.doneToday++;
           }
         } else if (isCurrent) member.current++;
@@ -723,7 +614,7 @@ Instructions:
       } catch (err) {
         next(err);
       }
-    }
+    },
   );
 
   router.post(
@@ -756,7 +647,7 @@ Instructions:
       } catch (err) {
         next(err);
       }
-    }
+    },
   );
 
   return router;

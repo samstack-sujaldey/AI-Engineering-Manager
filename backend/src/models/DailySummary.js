@@ -9,6 +9,11 @@ const DailySummarySchema = new mongoose.Schema(
     issues_count: { type: Number, default: 0 },
     discussions_count: { type: Number, default: 0 },
     is_stale: { type: Boolean, default: false },
+    // Lets you tell at a glance (or query for) whether this particular
+    // cached summary actually came from the AI call or fell back to the
+    // deterministic per-member breakdown because callOpenAI failed/returned
+    // nothing that day.
+    generated_by: { type: String, enum: ['ai', 'fallback'], default: 'fallback' },
   },
   { timestamps: true }
 );
