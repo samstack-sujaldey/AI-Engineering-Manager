@@ -113,25 +113,32 @@ class MessageProcessor {
 		} = raw;
 		const { quiet = false } = options;
 
-    // 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
-    if (!team && channel) {
-      try {
-        const cleanChan = channel.replace(/^#/, '').trim();
-        const teamDoc = await Team.findOne({
-          $or: [
-            { channel_id: cleanChan },
-            { channel_name: new RegExp(`^#?${cleanChan}$`, 'i') },
-            { team_id: cleanChan }
-          ]
-        }).lean();
+		// 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
+		if (!team && channel) {
+			try {
+				const cleanChan = channel.replace(/^#/, "").trim();
+				const teamDoc = await Team.findOne({
+					$or: [
+						{ channel_id: cleanChan },
+						{ channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
+						{ team_id: cleanChan },
+					],
+				}).lean();
 
-        if (teamDoc) {
-          team = teamDoc.channel_name || teamDoc.team_id || teamDoc.team || "";
-        }
-      } catch (e) {
-        console.warn("[MessageProcessor] Team lookup warning:", e.message);
-      }
-    }
+				if (teamDoc) {
+					team =
+						teamDoc.channel_name ||
+						teamDoc.team_id ||
+						teamDoc.team ||
+						"";
+				}
+			} catch (e) {
+				console.warn(
+					"[MessageProcessor] Team lookup warning:",
+					e.message,
+				);
+			}
+		}
 
 		const threadRoot = thread_id || message_ts;
 
@@ -184,7 +191,6 @@ class MessageProcessor {
 			}
 		}
 
-
 		if (
 			!existing_task &&
 			!existing_issue &&
@@ -194,6 +200,97 @@ class MessageProcessor {
 			const byThread = await findWorkByThread(threadRoot, channel);
 			existing_task = byThread.task;
 			existing_issue = byThread.issue;
+		}
+
+		// 🟢 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
+		if (
+			(existing_task || existing_issue) &&
+			threadRoot &&
+			threadRoot !== message_ts
+		) {
+			const lowerReply = text.toLowerCase().trim();
+
+			// Flexible Regex: Catches 'status - hold', 'status-hold', 'status -hold', etc.
+			const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
+			const priorityMatch = lowerReply.match(
+				/\bpriority\s*-\s*([a-z]+)\b/i,
+			);
+
+			if (statusMatch || priorityMatch) {
+				const updates = {};
+
+				if (statusMatch) {
+					const s = statusMatch[1].trim();
+					if (/^(resolve|resolved|done|completed|finished)$/.test(s))
+						updates.status = existing_issue
+							? "RESOLVED"
+							: "COMPLETED";
+					else if (/^(hold|blocked|block|stuck)$/.test(s))
+						updates.status = existing_issue ? "HOLD" : "BLOCKED";
+					else if (/^(open|processing|doing|wip)$/.test(s))
+						updates.status = existing_issue ? "OPEN" : "PROCESSING";
+				}
+
+				if (priorityMatch) {
+					const p = priorityMatch[1].trim();
+					if (/^(urgent|critical|p0)$/.test(p))
+						updates.priority = "URGENT";
+					else if (/^(high|important|p1)$/.test(p))
+						updates.priority = "HIGH";
+					else if (/^(medium|p2)$/.test(p))
+						updates.priority = "MEDIUM";
+					else if (/^(low|minor|p3)$/.test(p))
+						updates.priority = "LOW";
+				}
+
+				if (Object.keys(updates).length > 0) {
+					// Route the exact update directly into your existing persist pipeline
+					const dummyParsed = {
+						classification: existing_issue ? "ISSUE" : "TASK",
+						action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
+						updates,
+						sender: sender
+							? {
+									id: sender.id,
+									name: sender.name,
+									display_name: sender.display_name,
+									email: "",
+								}
+							: { id: "", name: "" },
+						issue: existing_issue
+							? { id: existing_issue.issue_id }
+							: null,
+						task: existing_task
+							? { id: existing_task.task_id }
+							: null,
+						meta: { needs_human_review: false },
+					};
+
+					const result = await this.persist(dummyParsed, {
+						text,
+						sender,
+						channel,
+						thread_id: threadRoot,
+						workspace_id,
+						team,
+						message_ts,
+						text_hash: textHash,
+						slack_client,
+						user_directory,
+					});
+
+					if (this.io && !quiet) {
+						this.io.emit("dashboard:update", {
+							action: result.action,
+							classification: result.classification,
+							task_id: result.task?.id || null,
+							issue_id: result.issue?.id || null,
+							at: new Date().toISOString(),
+						});
+					}
+					return result; // 🛑 Halt processing so it doesn't parse anything else
+				}
+			}
 		}
 
 		// 1. Intercept "accept" command
@@ -540,18 +637,19 @@ class MessageProcessor {
 		const taskId = newId("tsk");
 		const dueDate = t.due_date ? new Date(t.due_date) : null;
 
-    // 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
-    const resolvedOwner =
-      parsed.owner && (parsed.owner.id || parsed.owner.name)
-        ? parsed.owner
-        : senderRef && (senderRef.id || senderRef.name)
-        ? senderRef
-        : { id: "", name: "Unassigned" };
+		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+		const resolvedOwner =
+			parsed.owner && (parsed.owner.id || parsed.owner.name)
+				? parsed.owner
+				: senderRef && (senderRef.id || senderRef.name)
+					? senderRef
+					: { id: "", name: "Unassigned" };
 
-    const resolvedAssignee =
-      parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)
-        ? parsed.assigned_to
-        : resolvedOwner;
+		const resolvedAssignee =
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+				? parsed.assigned_to
+				: resolvedOwner;
 
 		const doc = await Task.create({
 			task_id: taskId,
@@ -677,8 +775,13 @@ class MessageProcessor {
 
 		if (t.title && !ctx.existing_task) doc.title = t.title;
 		if (t.description) doc.description = t.description;
-		if (parsed.owner && (parsed.owner.id || parsed.owner.name)) doc.owner = parsed.owner;
-		if (parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)) doc.assigned_to = parsed.assigned_to;
+		if (parsed.owner && (parsed.owner.id || parsed.owner.name))
+			doc.owner = parsed.owner;
+		if (
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+		)
+			doc.assigned_to = parsed.assigned_to;
 		if (parsed.assigned_by) doc.assigned_by = parsed.assigned_by;
 		if (parsed.mentioned_users?.length) {
 			doc.mentioned_users = mergeUsers(
@@ -874,18 +977,19 @@ class MessageProcessor {
 		const i = parsed.issue || {};
 		const issueId = newId("iss");
 
-    // 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
-    const resolvedOwner =
-      parsed.owner && (parsed.owner.id || parsed.owner.name)
-        ? parsed.owner
-        : senderRef && (senderRef.id || senderRef.name)
-        ? senderRef
-        : { id: "", name: "Unassigned" };
+		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+		const resolvedOwner =
+			parsed.owner && (parsed.owner.id || parsed.owner.name)
+				? parsed.owner
+				: senderRef && (senderRef.id || senderRef.name)
+					? senderRef
+					: { id: "", name: "Unassigned" };
 
-    const resolvedAssignee =
-      parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)
-        ? parsed.assigned_to
-        : resolvedOwner;
+		const resolvedAssignee =
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+				? parsed.assigned_to
+				: resolvedOwner;
 
 		const doc = await Issue.create({
 			issue_id: issueId,
@@ -1027,8 +1131,13 @@ class MessageProcessor {
 		const updates = parsed.updates || {};
 
 		if (i.description) doc.description = i.description;
-		if (parsed.owner && (parsed.owner.id || parsed.owner.name)) doc.owner = parsed.owner;
-		if (parsed.assigned_to && (parsed.assigned_to.id || parsed.assigned_to.name)) doc.assigned_to = parsed.assigned_to;
+		if (parsed.owner && (parsed.owner.id || parsed.owner.name))
+			doc.owner = parsed.owner;
+		if (
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+		)
+			doc.assigned_to = parsed.assigned_to;
 		if (parsed.mentioned_users?.length) {
 			doc.mentioned_users = mergeUsers(
 				doc.mentioned_users,

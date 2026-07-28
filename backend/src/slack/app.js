@@ -557,8 +557,15 @@ function createSlackApp({
 					`[slack] ${result.action} classification=${result.classification} confidence=${result.confidence}`,
 				);
 
-				if (result && (result.task_created || result.issue_created)) {
-					const isTask = result.task_created;
+				// 🟢 FIXED: Now listens for task_updated and issue_updated events from MessageProcessor
+				if (
+					result &&
+					(result.task_created ||
+						result.issue_created ||
+						result.task_updated ||
+						result.issue_updated)
+				) {
+					const isTask = result.task_created || result.task_updated;
 					const workItem = isTask ? result.task : result.issue;
 
 					const title = workItem?.title || "Untitled";
@@ -568,9 +575,15 @@ function createSlackApp({
 						? `<@${workItem.assigned_to.id}>`
 						: workItem?.assigned_to?.name || "Unassigned";
 
+					// Change the label dynamically based on whether it is new or an update
+					const actionText =
+						result.task_created || result.issue_created
+							? "Tracked"
+							: "Updated";
+
 					const label = isTask
-						? `🎯 *Task Tracked:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`
-						: `🚨 *Issue Tracked:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`;
+						? `🎯 *Task ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`
+						: `🚨 *Issue ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`;
 
 					console.log(
 						`[slack] Posting confirmation for ${isTask ? "task" : "issue"}: ${label}`,
@@ -593,7 +606,7 @@ function createSlackApp({
 					}
 				} else {
 					console.log(
-						`[slack] No confirmation sent - task_created=${result?.task_created}, issue_created=${result?.issue_created}`,
+						`[slack] No confirmation sent - action=${result?.action}`,
 					);
 				}
 
