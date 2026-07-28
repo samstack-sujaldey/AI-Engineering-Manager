@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { PageHeaderComponent } from '../shared/page-header';
@@ -10,13 +10,25 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
   providers: [DatePipe],
   template: `
     <app-page-header title="Dashboard" searchPlaceholder="Search tasks, teams, or summaries...">
-      <button
-        class="refresh-btn"
-        (click)="dashService.refresh()"
-        [disabled]="dashService.loading()"
-      >
-        {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
-      </button>
+      <div class="header-controls">
+        <div class="date-picker-wrapper">
+          <label for="dashboardDate">Date:</label>
+          <input
+            type="date"
+            id="dashboardDate"
+            [value]="dashService.selectedDate()"
+            (change)="onDateChange($event)"
+            class="date-input"
+          />
+        </div>
+        <button
+          class="refresh-btn"
+          (click)="dashService.refresh()"
+          [disabled]="dashService.loading()"
+        >
+          {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
+        </button>
+      </div>
     </app-page-header>
 
     <div class="dashboard-body">
@@ -148,6 +160,32 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         display: flex;
         flex-direction: column;
         gap: 20px;
+      }
+      .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .date-picker-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        color: #333;
+        font-weight: 500;
+      }
+      .date-picker-wrapper label {
+        white-space: nowrap;
+      }
+      .date-input {
+        border: 1px solid #5b4fcf;
+        border-radius: 6px;
+        padding: 6px 12px;
+        font-size: 13px;
+        color: #1a1a2e;
+        outline: none;
+        background: #fafafd;
+        cursor: pointer;
       }
       .refresh-btn {
         background: #5b4fcf;
@@ -405,8 +443,22 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
 
+  constructor() {
+    effect(() => {
+      this.dashService.load();
+    });
+  }
+
   ngOnInit() {
     this.dashService.load();
+  }
+
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+      this.dashService.load();
+    }
   }
 
   countStatus(tasks: any[], status: string): number {

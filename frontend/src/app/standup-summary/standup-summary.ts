@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
@@ -32,8 +32,8 @@ import { DashboardService } from '../services/dashboard.service';
               <input
                 type="date"
                 id="summaryDate"
-                [(ngModel)]="selectedDate"
-                (change)="onDateChange()"
+                [value]="dashService.selectedDate()"
+                (change)="onDateChange($event)"
                 class="calendar-input"
               />
             </div>
@@ -167,8 +167,9 @@ import { DashboardService } from '../services/dashboard.service';
 export class StandupSummaryComponent implements OnInit {
   private apiUrl = 'http://localhost:4000/api';
 
-  selectedDate: string = '';
   formattedDateDisplay: string = '';
+
+  selectedDate: string = '';
 
   summaryHtml: string = '';
   taskCount: number = 0;
@@ -183,7 +184,7 @@ export class StandupSummaryComponent implements OnInit {
   constructor(
     private http: HttpClient,
     private cdRef: ChangeDetectorRef,
-    private dashService: DashboardService
+    public dashService: DashboardService
   ) {}
 
   ngOnInit(): void {
@@ -206,7 +207,7 @@ export class StandupSummaryComponent implements OnInit {
     this.fetchSummaryForDate(this.selectedDate);
   }
 
-  onDateChange(): void {
+  onDateChange(event: Event): void {
     if (!this.selectedDate) return;
 
     const [year, month, day] = this.selectedDate.split('-').map(Number);
@@ -267,7 +268,7 @@ export class StandupSummaryComponent implements OnInit {
   }
 
   /**
-   * 🟢 Strips bolding/bullets and wraps lines in <div> tags for proper line title extraction
+   * Strips bolding/bullets and wraps lines in <div> tags for proper line title extraction
    */
   formatSectionContent(text: string): string {
     if (!text) return '<em>No summary available.</em>';

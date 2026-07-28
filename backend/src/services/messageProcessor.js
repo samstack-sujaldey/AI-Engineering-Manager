@@ -19,12 +19,19 @@ const { findRelatedWorkWithAI } = require("./relatedWork");
 const { newId } = require("../utils/helpers");
 const { invalidateDailySummary } = require("../utils/cacheHelper");
 
-function hashText(text = "") {
-	return crypto
-		.createHash("sha1")
-		.update(text || "")
-		.digest("hex");
-}
+	function hashText(text = "") {
+		return crypto
+			.createHash("sha1")
+			.update(text || "")
+			.digest("hex");
+	}
+
+	function getMessageTime(ctx) {
+		if (!ctx || !ctx.message_ts) return new Date();
+		const parsed = parseFloat(ctx.message_ts);
+		if (isNaN(parsed) || parsed <= 0) return new Date();
+		return new Date(parsed * 1000);
+	}
 
 function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
 	if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
@@ -627,6 +634,7 @@ class MessageProcessor {
 		const t = parsed.task || {};
 		const taskId = newId("tsk");
 		const dueDate = t.due_date ? new Date(t.due_date) : null;
+		const messageTime = getMessageTime(ctx);
 
 		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
 		const resolvedOwner =
@@ -672,6 +680,8 @@ class MessageProcessor {
 			slack_message_ts: ctx.message_ts,
 			entities: parsed.meta?.entities || {},
 			local_file_logs: ctx.local_attachments || [],
+			created_time: messageTime,
+			updated_time: messageTime,
 			history: [
 				{
 					event: "CREATED",
@@ -967,6 +977,7 @@ class MessageProcessor {
 	async createIssue(parsed, ctx, senderRef) {
 		const i = parsed.issue || {};
 		const issueId = newId("iss");
+		const messageTime = getMessageTime(ctx);
 
 		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
 		const resolvedOwner =
@@ -1006,6 +1017,8 @@ class MessageProcessor {
 			slack_message_ts: ctx.message_ts,
 			entities: parsed.meta?.entities || {},
 			local_file_logs: ctx.local_attachments || [],
+			created_time: messageTime,
+			updated_time: messageTime,
 			history: [
 				{
 					event: "CREATED",
@@ -1333,6 +1346,7 @@ class MessageProcessor {
 			parsed.content?.trim() ||
 			ctx?.text?.trim() ||
 			"Slack discussion update";
+		const messageTime = getMessageTime(ctx);
 
 		return Discussion.create({
 			discussion_id: newId("dsc"),
@@ -1350,7 +1364,7 @@ class MessageProcessor {
 				!!parsed.discussion?.flagged_for_review ||
 				!!parsed.meta?.needs_human_review,
 			confidence_score: parsed.confidence,
-			timestamp: new Date(),
+			timestamp: messageTime,
 		});
 	}
 

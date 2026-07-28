@@ -1,7 +1,7 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { Task, Issue, Discussion, Team } = require("../models");
-const { getDashboard } = require("../services/dashboard");
+const { getDashboard, getDashboardForDate } = require("../services/dashboard");
 const {
   createSlackClient,
   listChannels,
@@ -218,6 +218,17 @@ Instructions:
     try {
       const channel = req.query.channel || null;
       const data = await getDashboard(channel);
+      res.json(data);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/dashboard/for-date", async (req, res, next) => {
+    try {
+      const date = req.query.date || null;
+      const channel = req.query.channel || null;
+      const data = await getDashboardForDate(date, channel);
       res.json(data);
     } catch (err) {
       next(err);
@@ -497,12 +508,30 @@ Instructions:
   router.get("/teams/workload", async (req, res, next) => {
     try {
       const channelId = req.query.channelId;
+      const dateStr = req.query.date || null;
       const taskFilter = {};
       const issueFilter = {};
 
       if (channelId) {
         taskFilter.channel = channelId;
         issueFilter.channel = channelId;
+      }
+
+      if (dateStr) {
+        const [year, month, day] = String(dateStr).split("-").map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          taskFilter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+            { due_date: { $gte: start, $lte: end } },
+          ];
+          issueFilter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+          ];
+        }
       }
 
       const [tasks, issues] = await Promise.all([
