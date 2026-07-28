@@ -50,15 +50,6 @@ class MessageProcessor {
 		let threadPrompt = "";
 
 		if (
-			(doc.status === "BLOCKED" || doc.status === "HOLD") &&
-			!doc.blocked_reason
-		) {
-			doc.block_reason_pending = true;
-			const statusLabel = doc.status === "HOLD" ? "HOLD" : "BLOCKED";
-			threadPrompt += `⚠️ <@${ctx.sender?.id}> This item is marked as *${statusLabel}*. Please reply directly to this thread with the reason.`;
-		}
-
-		if (
 			!doc.due_date &&
 			doc.status !== "COMPLETED" &&
 			doc.status !== "RESOLVED"
@@ -1004,8 +995,8 @@ class MessageProcessor {
 			mentioned_users: parsed.mentioned_users || [],
 			priority: i.priority || "HIGH",
 			status: i.status || "HOLD",
-			blocked_reason: i.blocked_reason || "",
-			block_reason_pending: i.status === "HOLD" && !i.blocked_reason,
+			blocked_reason: "",
+			block_reason_pending: false,
 			dependencies: i.dependencies || [],
 			confidence_score: parsed.confidence,
 			channel: ctx.channel,
@@ -1147,14 +1138,9 @@ class MessageProcessor {
 
 		const nextStatus = updates.status || i.status;
 		const nextPriority = updates.priority || i.priority;
-		const nextBlock = updates.blocked_reason || i.blocked_reason;
 
 		if (nextStatus) doc.status = nextStatus;
 		if (nextPriority) doc.priority = nextPriority;
-		if (nextBlock) {
-			doc.blocked_reason = nextBlock;
-			doc.block_reason_pending = false;
-		}
 
 		if (
 			parsed.discussion ||
@@ -1426,8 +1412,8 @@ class MessageProcessor {
 			due_date: doc.due_date ? doc.due_date.toISOString() : "",
 			due_date_pending: doc.due_date_pending,
 			root_cause: doc.root_cause || "",
-			blocked_reason: doc.blocked_reason || "",
-			block_reason_pending: doc.block_reason_pending,
+			blocked_reason: "",
+			block_reason_pending: false,
 			owner: doc.owner,
 			assigned_to: doc.assigned_to,
 			reporter: doc.reporter,
