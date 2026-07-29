@@ -76,15 +76,21 @@ router.get("/discussions/daily-summary", async (req, res) => {
 });
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
+ // POST: Parse Raw Unstructured MOM Message with OpenAI, falling back to Regex if it fails
   router.post("/discussions/parse-mom", async (req, res) => {
     try {
-      const { rawText } = req.body;
+      const { rawText, channel, workspace_id, user_directory, team } = req.body;
 
       if (!rawText || typeof rawText !== "string") {
         return res.status(400).json({ error: "rawText parameter is required" });
       }
 
-      const prompt = `
+      let parsedData = null;
+      let parsedByAI = true;
+
+      // 1. Try parsing with OpenAI first
+      try {
+        const prompt = `
 You are an expert AI Engineering Manager. Parse the following Stand-up MOM message into structured categories per team member.
 
 Raw MOM Message:
@@ -100,64 +106,118 @@ Instructions:
    - "discussions": Meetings, discussions with leads/management, or general administrative notes.
 `;
 
-      const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
-        maxTokens: 1000,
-        temperature: 0.1,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "mom_parsed_structure",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                metadata: {
-                  type: "object",
-                  properties: {
-                    date: { type: "string" },
-                    duration: { type: "string" },
-                    present_members: {
-                      type: "array",
-                      items: { type: "string" },
-                    },
-                  },
-                  required: ["date", "duration", "present_members"],
-                  additionalProperties: false,
-                },
-                member_updates: {
-                  type: "array",
-                  items: {
+        const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
+          maxTokens: 1000,
+          temperature: 0.1,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "mom_parsed_structure",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  metadata: {
                     type: "object",
                     properties: {
-                      member_name: { type: "string" },
-                      tasks: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      issues: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      discussions: {
+                      date: { type: "string" },
+                      duration: { type: "string" },
+                      present_members: {
                         type: "array",
                         items: { type: "string" },
                       },
                     },
-                    required: ["member_name", "tasks", "issues", "discussions"],
+                    required: ["date", "duration", "present_members"],
                     additionalProperties: false,
                   },
+                  member_updates: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        member_name: { type: "string" },
+                        tasks: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        issues: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        discussions: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                      },
+                      required: ["member_name", "tasks", "issues", "discussions"],
+                      additionalProperties: false,
+                    },
+                  },
                 },
+                required: ["metadata", "member_updates"],
+                additionalProperties: false,
               },
-              required: ["metadata", "member_updates"],
-              additionalProperties: false,
             },
           },
-        },
-      });
+        });
 
-      const parsedData =
-        typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+        parsedData = typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+      } catch (openaiErr) {
+        console.warn("[parse-mom] OpenAI parsing failed, falling back to local Regex parser:", openaiErr.message);
+        parsedByAI = false;
+      }
 
+      // 2. Fallback to Regex Parsing if OpenAI failed or returned null
+      if (!parsedData || !parsedData.member_updates) {
+        const lines = rawText.split("\n").map((l) => l.trim()).filter(Boolean);
+        const memberUpdatesMap = {};
+        let currentMember = null;
+
+        for (const line of lines) {
+          if (/^(hi everyone|date|duration|present members|team-wise task updates)/i.test(line)) continue;
+
+          const isBullet = line.startsWith("-") || line.startsWith("*") || line.startsWith("•");
+          
+          if (!isBullet && line.length < 30 && !line.includes(".")) {
+            currentMember = line.replace(/[*_]/g, "").trim();
+            if (!memberUpdatesMap[currentMember]) {
+              memberUpdatesMap[currentMember] = { tasks: [], issues: [], discussions: [] };
+            }
+            continue;
+          }
+
+          if (currentMember) {
+            const cleanLine = line.replace(/^([-•*]|\d+\.)\s*/, "").trim();
+            if (!cleanLine) continue;
+
+            const lower = cleanLine.toLowerCase();
+            const isIssue = lower.includes("bug") || lower.includes("issue") || lower.includes("mismatch") || lower.includes("survival issue") || lower.includes("blocker");
+            const isDiscussion = lower.includes("discuss") || lower.includes("align") || lower.includes("follow up");
+
+            if (isIssue) {
+              memberUpdatesMap[currentMember].issues.push(cleanLine);
+            } else if (isDiscussion) {
+              memberUpdatesMap[currentMember].discussions.push(cleanLine);
+            } else {
+              memberUpdatesMap[currentMember].tasks.push(cleanLine);
+            }
+          }
+        }
+
+        parsedData = {
+          metadata: {
+            date: new Date().toISOString().split("T")[0],
+            duration: "15 Minutes",
+            present_members: Object.keys(memberUpdatesMap),
+          },
+          member_updates: Object.entries(memberUpdatesMap).map(([member_name, data]) => ({
+            member_name,
+            ...data,
+          })),
+        };
+      }
+
+      // 3. Format and save to database
       let formattedText = `Hi Everyone, please find Today Stand-up MOM\n\n`;
       formattedText += `Date: ${parsedData.metadata.date}\n`;
       formattedText += `Duration: ${parsedData.metadata.duration}\n`;
@@ -176,18 +236,9 @@ Instructions:
         { date: parsedData.metadata.date },
         {
           summary: formattedText.trim(),
-          tasks_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.tasks.length,
-            0,
-          ),
-          issues_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.issues.length,
-            0,
-          ),
-          discussions_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.discussions.length,
-            0,
-          ),
+          tasks_count: parsedData.member_updates.reduce((acc, m) => acc + m.tasks.length, 0),
+          issues_count: parsedData.member_updates.reduce((acc, m) => acc + m.issues.length, 0),
+          discussions_count: parsedData.member_updates.reduce((acc, m) => acc + m.discussions.length, 0),
           is_stale: false,
         },
         { upsert: true, returnDocument: "after" },
@@ -195,6 +246,7 @@ Instructions:
 
       return res.json({
         success: true,
+        parsed_by_ai: parsedByAI,
         metadata: parsedData.metadata,
         member_updates: parsedData.member_updates,
         formatted_summary: formattedText.trim(),
