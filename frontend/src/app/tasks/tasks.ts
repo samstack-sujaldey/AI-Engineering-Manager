@@ -51,7 +51,7 @@ import { DashboardService } from '../services/dashboard.service';
               <th style="width: 15%;">DUE DATE</th>
             </tr>
           </thead>
-          <tbody *ngIf="(dashService.data()?.tasks || []) as tasks">
+          <tbody *ngIf="dashService.data()?.tasks || [] as tasks">
             <tr
               *ngFor="let task of filteredTasks(tasks)"
               [ngClass]="{ 'clickable-row': task.status === 'BLOCKED' }"
@@ -194,23 +194,27 @@ import { DashboardService } from '../services/dashboard.service';
       }
       .task-name-cell {
         padding-right: 16px;
+        min-width: 16rem;
+        max-width: 500px;
+        white-space: normal;
       }
       .task-name {
         font-size: 13.5px;
         color: #1a1a2e;
         font-weight: 500;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: normal;
+        overflow-wrap: break-word;
+        word-wrap: break-word;
+        line-height: 1.4;
       }
       .task-category {
         font-size: 11px;
         color: #999;
         margin-top: 2px;
-        display: -webkit-box;
-        -webkit-line-clamp: 1;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
+        white-space: normal;
+        overflow-wrap: break-word;
+        word-wrap: break-word;
+        line-height: 1.4;
       }
       .assignee-cell {
         align-items: center;
@@ -459,7 +463,7 @@ export class TasksComponent implements OnInit {
       const params: any = {};
       const activeChannel = this.dashService.activeChannelId();
       if (activeChannel) params.channel = activeChannel;
-      
+
       const selectedDate = this.dashService.selectedDate();
       params.date = selectedDate;
 
@@ -482,9 +486,9 @@ export class TasksComponent implements OnInit {
 
   filteredTasks(tasks: any[]): any[] {
     // Prefer freshly loaded this.tasks when available, otherwise fall back to dashboard payload
-    const list = this.tasks !== null ? this.tasks : (tasks || []);
+    const list = this.tasks !== null ? this.tasks : tasks || [];
     if (!list) return [];
-    
+
     const selectedDate = this.dashService.selectedDate();
     return list.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
