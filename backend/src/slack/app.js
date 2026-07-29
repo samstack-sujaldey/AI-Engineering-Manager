@@ -168,20 +168,57 @@ function createSlackApp({
 
 		// Download Slack attachments locally for background analysis
 		let downloadedFiles = [];
-		if (event.files && event.files.length > 0) {
-			const rawAttachments = event.files.map((f) => ({
-				slackFileId: f.id,
-				fileName: f.name,
-				mimeType: f.mimetype,
-				fileType: f.filetype,
-				urlPrivateDownload: f.url_private_download,
-				urlPrivate: f.url_private,
-			}));
-			downloadedFiles = await downloadSlackAttachments(
-				rawAttachments,
-				client.token,
-			);
-		}
+        if (event.files && event.files.length > 0) {
+            try {
+                // 🟢 Optional: Send a quick indicator message in chat if desired, 
+                // or just keep it silent until extraction completes.
+                
+                const rawAttachments = event.files.map((f) => ({
+                    slackFileId: f.id,
+                    fileName: f.name,
+                    mimeType: f.mimetype,
+                    fileType: f.filetype,
+                    urlPrivateDownload: f.url_private_download || f.url_private,
+                    urlPrivate: f.url_private,
+                    size: f.size, 
+                }));
+                
+                downloadedFiles = await downloadSlackAttachments(
+                    rawAttachments,
+                    client.token,
+                );
+
+                if (downloadedFiles.length === 0) {
+                    await client.chat.postMessage({
+                        channel: event.channel,
+                        thread_ts: event.thread_ts || event.ts,
+                        text: `⚠️ Failed to download the attached file(s). Please check bot token scopes (files:read).`,
+                    });
+                }
+
+                for (const file of downloadedFiles) {
+                    if (
+                        (file.mimeType && file.mimeType.startsWith("text/")) ||
+                        ["text", "markdown", "space", "csv"].includes(file.fileType)
+                    ) {
+                        try {
+                            const snippetContent = await fs.readFile(file.localPath, "utf8");
+                            text += "\n" + snippetContent;
+                            console.log(`[slack] Extracted long text from Slack Snippet: ${file.fileName}`);
+                        } catch (err) {
+                            console.error("[slack] Failed to read text snippet:", err.message);
+                        }
+                    }
+                }
+            } catch (downloadErr) {
+                console.error("[slack] Attachment download pipeline error:", downloadErr.message);
+                await client.chat.postMessage({
+                    channel: event.channel,
+                    thread_ts: event.thread_ts || event.ts,
+                    text: `❌ Error downloading attachments: ${downloadErr.message}`,
+                });
+            }
+        }
 
 		const lowerText = text.toLowerCase();
 		const pendingConnect = connect.getByTarget(event.user);
