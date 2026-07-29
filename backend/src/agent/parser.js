@@ -211,6 +211,29 @@ function isMultiPersonWorkDocument(text = "") {
 	return false;
 }
 
+/**
+ * 🟢 Isolated Helper: Matches a mentioned name handle against Slack user profiles
+ * supporting exact matches or dot/underscore separated Slack handles (e.g., "aditya.k" matches "@aditya").
+ */
+function matchSlackHandle(userDirectory = {}, mentionKey = "") {
+  const target = mentionKey.toLowerCase().trim();
+  if (!target) return null;
+
+  return Object.values(userDirectory).find((u) => {
+    const handle = (u.name || "").toLowerCase();
+    const displayName = (u.display_name || "").toLowerCase();
+    const realFirstName = (u.real_name || "").toLowerCase().split(/\s+/)[0];
+
+    return (
+      handle === target ||
+      displayName === target ||
+      realFirstName === target ||
+      handle.split(/[._-]/)[0] === target ||
+      displayName.split(/[._-]/)[0] === target
+    );
+  });
+}
+
 function emptyUser() {
 	return { id: "", name: "", display_name: "", email: "" };
 }
@@ -273,13 +296,7 @@ function extractMentionedUsers(text, userDirectory = {}) {
 		const key = name.toLowerCase();
 		if (seen.has(key)) continue;
 		seen.add(key);
-		const known =
-			Object.values(userDirectory).find(
-				(u) =>
-					(u.name || "").toLowerCase() === key ||
-					(u.display_name || "").toLowerCase() === key ||
-					(u.real_name || "").toLowerCase().split(/\s+/)[0] === key,
-			) || {};
+		const known =matchSlackHandle(userDirectory, key)
 		users.push(toUser({ name, display_name: name, ...known }));
 	}
 

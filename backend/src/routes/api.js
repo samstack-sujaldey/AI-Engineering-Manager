@@ -19,6 +19,17 @@ function createApiRouter({ messageProcessor }) {
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   // Replace GET /discussions/daily-summary in routes/api.js with this:
 
+  /**
+ * 🟢 Protects routes requiring the message processor from undefined crashes
+ */
+function ensureMessageProcessorReady(processor, res) {
+  if (!processor || typeof processor.process !== "function") {
+    res.status(503).json({ error: "Message processor is not ready or uninitialized." });
+    return false;
+  }
+  return true;
+}
+
   router.get("/discussions/daily-summary", async (req, res) => {
     try {
       const { getTargetSummaryDate } = require("../jobs/standupScheduler");
@@ -87,6 +98,7 @@ function createApiRouter({ messageProcessor }) {
   // POST: Parse Raw Unstructured MOM Message / Document and Auto-Assign Items by First Name
   router.post("/discussions/parse-mom", async (req, res) => {
     try {
+      if (!ensureMessageProcessorReady(messageProcessor, res)) return;
       const { rawText, channel, workspace_id, user_directory, team } = req.body;
 
       if (!rawText || typeof rawText !== "string") {

@@ -2,6 +2,33 @@ const { callOpenAI } = require("../ai/openai");
 const { toUser } = require("../agent/parser");
 
 /**
+ * 🟢 Safely parses OpenAI JSON outputs even if wrapped in markdown code blocks
+ */
+function safeJsonParse(response) {
+  if (typeof response !== "string") return response;
+  let cleaned = response.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?/i, "").replace(/```$/g, "").trim();
+  }
+  return JSON.parse(cleaned);
+}
+
+/**
+ * 🟢 Isolated Helper: Cleanly extracts a single first name from any format
+ * (e.g., "Rashmi (QA)", "Laxmikant Sir", "Lead Aditya", "@praveen").
+ */
+function extractCleanFirstName(rawName = "") {
+  return String(rawName)
+    .replace(/\s*\([^)]*\)/g, "") // Remove parenthesis e.g., (QA), (Dev)
+    .replace(/<@([A-Z0-9]+)>/gi, "") // Strip Slack ID tags if pasted
+    .replace(/@[A-Za-z0-9_.-]+/g, "") // Strip raw @ mentions
+    .replace(/\b(sir|ma'am|lead|manager|qa|dev|mr|ms|mrs)\b/gi, "") // Remove titles/honorifics
+    .trim()
+    .split(/\s+/)[0]
+    .toLowerCase();
+}
+
+/**
  * 🟢 Extracts first name and matches strictly against Slack usernames
  */
 function findSlackUserByFirstName(rawDocumentName = "", userDirectory = {}) {
@@ -12,7 +39,7 @@ function findSlackUserByFirstName(rawDocumentName = "", userDirectory = {}) {
     .trim();
 
   // 2. Extract strictly the First Name (e.g., "Rashmi" from "Rashmi (QA)")
-  const firstName = cleanedName.split(/\s+/)[0].toLowerCase();
+  const firstName = extractCleanFirstName(rawDocumentName);
   if (!firstName) return toUser({ name: rawDocumentName, display_name: rawDocumentName });
 
   const directoryUsers = Object.values(userDirectory);
@@ -143,7 +170,7 @@ Instructions:
     },
   });
 
-  const parsedData = typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+  const parsedData = safeJsonParse(aiResponse);
   const createdCounts = { tasks: 0, issues: 0, discussions: 0 };
 
   // 2. Loop over extracted member updates and create assigned MongoDB records
