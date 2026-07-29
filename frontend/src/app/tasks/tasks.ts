@@ -470,11 +470,14 @@ export class TasksComponent implements OnInit {
       const response: any = (await firstValueFrom(this.http.get('/api/tasks', { params }))) || [];
 
       this.tasks = (Array.isArray(response) ? response : []).filter((t: any) => {
-        const status = (t.status || '').toLowerCase();
-        const isNotCompleted = status !== 'done' && status !== 'completed';
-        const taskDate = t.created_time || t.created_at || t.date || t.updated_time;
-        const matchesDate = this.matchesSelectedDate(taskDate, selectedDate);
-        return isNotCompleted && matchesDate;
+        // REMOVED the isNotCompleted check completely.
+        // We only want to filter by Date here, so the dropdowns can do the rest.
+        const matchesDate =
+          this.matchesSelectedDate(t.updated_time, selectedDate) ||
+          this.matchesSelectedDate(t.created_time, selectedDate) ||
+          this.matchesSelectedDate(t.due_date, selectedDate);
+
+        return matchesDate;
       });
       this.cdr.detectChanges();
     } catch (err) {
