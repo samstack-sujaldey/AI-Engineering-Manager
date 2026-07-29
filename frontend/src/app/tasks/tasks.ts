@@ -16,29 +16,29 @@ import { DashboardService } from '../services/dashboard.service';
       searchPlaceholder="Search tasks, PRs, or team..."
     ></app-page-header>
 
-      <div class="tasks-body">
-        <div class="filters-row">
-          <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadTasks()">
-            <option value="all">Status: All</option>
-            <option value="TODO">To Do</option>
-            <option value="PROCESSING">In Progress</option>
-            <option value="COMPLETED">Completed</option>
-            <option value="BLOCKED">Blocked</option>
-          </select>
-          <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadTasks()">
-            <option value="all">Priority: All</option>
-            <option value="LOW">Low</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="HIGH">High</option>
-            <option value="URGENT">Urgent</option>
-          </select>
-          <input
-            type="date"
-            class="filter-select"
-            [value]="dashService.selectedDate()"
-            (change)="onDateChange($event)"
-          />
-        </div>
+    <div class="tasks-body">
+      <div class="filters-row">
+        <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadTasks()">
+          <option value="all">Status: All</option>
+          <option value="TODO">To Do</option>
+          <option value="PROCESSING">In Progress</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="BLOCKED">Blocked</option>
+        </select>
+        <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadTasks()">
+          <option value="all">Priority: All</option>
+          <option value="LOW">Low</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="HIGH">High</option>
+          <option value="URGENT">Urgent</option>
+        </select>
+        <input
+          type="date"
+          class="filter-select"
+          [value]="dashService.selectedDate()"
+          (change)="onDateChange($event)"
+        />
+      </div>
 
       <div class="tasks-table-card">
         <table class="tasks-table">
@@ -51,7 +51,7 @@ import { DashboardService } from '../services/dashboard.service';
               <th style="width: 15%;">DUE DATE</th>
             </tr>
           </thead>
-          <tbody *ngIf="dashService.data()?.tasks as tasks">
+          <tbody *ngIf="(dashService.data()?.tasks || []) as tasks">
             <tr
               *ngFor="let task of filteredTasks(tasks)"
               [ngClass]="{ 'clickable-row': task.status === 'BLOCKED' }"
@@ -430,7 +430,7 @@ export class TasksComponent implements OnInit {
   dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
 
-  tasks: any[] = [];
+  tasks: any[] | null = null;
   statusFilter = 'all';
   priorityFilter = 'all';
 
@@ -450,6 +450,7 @@ export class TasksComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     if (input.value) {
       this.dashService.setSelectedDate(input.value);
+      this.loadTasks();
     }
   }
 
@@ -458,28 +459,76 @@ export class TasksComponent implements OnInit {
       const params: any = {};
       const activeChannel = this.dashService.activeChannelId();
       if (activeChannel) params.channel = activeChannel;
-      params.date = this.dashService.selectedDate();
+      
+      const selectedDate = this.dashService.selectedDate();
+      params.date = selectedDate;
 
-      const tasks: any = (await this.http.get('/api/tasks', { params }).toPromise()) || [];
+      const response: any = (await firstValueFrom(this.http.get('/api/tasks', { params }))) || [];
 
-      this.tasks = tasks.filter((t: any) => {
+      this.tasks = (Array.isArray(response) ? response : []).filter((t: any) => {
         const status = (t.status || '').toLowerCase();
-        return status !== 'done' && status !== 'completed';
+        const isNotCompleted = status !== 'done' && status !== 'completed';
+        const taskDate = t.created_time || t.created_at || t.date || t.updated_time;
+        const matchesDate = this.matchesSelectedDate(taskDate, selectedDate);
+        return isNotCompleted && matchesDate;
       });
       this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load tasks:', err);
+      this.tasks = [];
+      this.cdr.detectChanges();
     }
   }
 
   filteredTasks(tasks: any[]): any[] {
-    const list = tasks || this.tasks;
+    // Prefer freshly loaded this.tasks when available, otherwise fall back to dashboard payload
+    const list = this.tasks !== null ? this.tasks : (tasks || []);
     if (!list) return [];
+    
+    const selectedDate = this.dashService.selectedDate();
     return list.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
       const matchPriority = this.priorityFilter === 'all' || task.priority === this.priorityFilter;
-      return matchStatus && matchPriority;
+      const taskDate = task.created_time || task.created_at || task.date || task.updated_time;
+      const matchDate = this.matchesSelectedDate(taskDate, selectedDate);
+      return matchStatus && matchPriority && matchDate;
     });
+  }
+
+  /**
+   * Robust date matcher that handles ISO strings, Unix timestamps (seconds/ms),
+   * and Slack timestamp formats.
+   */
+  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
+    if (!itemDate || !targetDateStr) return false;
+
+    // Direct string match if ISO format (e.g. "2026-07-29T10:00:00Z")
+    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
+      return true;
+    }
+
+    let numericDate = Number(itemDate);
+    let dateObj: Date;
+
+    if (!isNaN(numericDate) && numericDate > 0) {
+      // If timestamp is in seconds (10 digits like Slack timestamps), convert to milliseconds
+      if (numericDate < 10000000000) {
+        numericDate *= 1000;
+      }
+      dateObj = new Date(numericDate);
+    } else {
+      dateObj = new Date(itemDate);
+    }
+
+    if (isNaN(dateObj.getTime())) return false;
+
+    // Convert to YYYY-MM-DD
+    const yyyy = dateObj.getFullYear();
+    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dd = String(dateObj.getDate()).padStart(2, '0');
+    const formattedDate = `${yyyy}-${mm}-${dd}`;
+
+    return formattedDate === targetDateStr;
   }
 
   getStatusClass(status: string): string {

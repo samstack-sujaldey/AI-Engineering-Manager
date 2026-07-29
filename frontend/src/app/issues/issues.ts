@@ -1,4 +1,4 @@
-import { Component, inject, OnInit ,ChangeDetectorRef, effect } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -59,7 +59,7 @@ import { DashboardService } from '../services/dashboard.service';
           </div>
         </div>
 
-        <!-- Issues Table (Due Date column removed) -->
+        <!-- Issues Table -->
         <div class="issues-table-card">
           <table class="issues-table">
             <thead>
@@ -274,7 +274,6 @@ import { DashboardService } from '../services/dashboard.service';
         color: #666;
       }
 
-      /* Updated Badges */
       .status-badge {
         display: inline-block;
         padding: 4px 12px;
@@ -356,9 +355,17 @@ export class IssuesComponent implements OnInit {
       if (this.priorityFilter !== 'all') params.priority = this.priorityFilter;
       const activeChannel = this.dashService.activeChannelId();
       if (activeChannel) params.channel = activeChannel;
-      params.date = this.dashService.selectedDate();
+      
+      const selectedDate = this.dashService.selectedDate();
+      params.date = selectedDate;
 
-      this.issues = await firstValueFrom(this.http.get('/api/issues', { params })) as any[] || [];
+      const response = (await firstValueFrom(this.http.get('/api/issues', { params }))) as any[] || [];
+      
+      // Strict frontend date filter: ensures both stats cards and table only show the selected date
+      this.issues = response.filter(issue => 
+        this.matchesSelectedDate(issue.created_time, selectedDate)
+      );
+
       this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load issues:', err);
@@ -376,6 +383,42 @@ export class IssuesComponent implements OnInit {
       const matchPriority = this.priorityFilter === 'all' || issue.priority === this.priorityFilter;
       return matchStatus && matchPriority;
     });
+  }
+
+  /**
+   * Robust date matcher that handles ISO strings, Unix timestamps (seconds/ms),
+   * and Slack timestamp formats.
+   */
+  private matchesSelectedDate(issueDate: any, targetDateStr: string): boolean {
+    if (!issueDate || !targetDateStr) return false;
+
+    // Direct string match if ISO format (e.g. "2026-07-29T10:00:00Z")
+    if (typeof issueDate === 'string' && issueDate.startsWith(targetDateStr)) {
+      return true;
+    }
+
+    let numericDate = Number(issueDate);
+    let dateObj: Date;
+
+    if (!isNaN(numericDate) && numericDate > 0) {
+      // If timestamp is in seconds (10 digits like Slack timestamps), convert to milliseconds
+      if (numericDate < 10000000000) {
+        numericDate *= 1000;
+      }
+      dateObj = new Date(numericDate);
+    } else {
+      dateObj = new Date(issueDate);
+    }
+
+    if (isNaN(dateObj.getTime())) return false;
+
+    // Convert to YYYY-MM-DD
+    const yyyy = dateObj.getFullYear();
+    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dd = String(dateObj.getDate()).padStart(2, '0');
+    const formattedDate = `${yyyy}-${mm}-${dd}`;
+
+    return formattedDate === targetDateStr;
   }
 
   countByStatus(issues: any[], status: string): number {
