@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const { Task, Issue, Team } = require("../models");
+const { Task, Issue, Discussion, Team } = require("../models");
 const DailySummary = require("../models/DailySummary");
 const { callOpenAI } = require("../ai/openai");
 
@@ -13,12 +13,17 @@ function getCleanMemberName(userObj) {
   let rawName = userObj.display_name || userObj.real_name || userObj.name || "";
   rawName = String(rawName).trim();
 
-  // If the name is an email address, extract the part before '@'
+  // If name is an email address, extract part before '@'
   if (rawName.includes("@")) {
     rawName = rawName.split("@")[0];
   }
 
-  // Convert dots, underscores, and hyphens to spaces and Title Case the words
+  // Prevent rogue labels like "Issues:" from becoming separate member cards
+  if (!rawName || rawName.toLowerCase().includes("issue")) {
+    return "Unassigned";
+  }
+
+  // Convert dots, underscores, and hyphens to spaces and Title Case words
   const cleanName = rawName
     .replace(/[._-]+/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase())
@@ -43,7 +48,7 @@ function getTargetSummaryDate(date = new Date()) {
 }
 
 function startStandupScheduler() {
-  cron.schedule("59 17 * * *", async () => {
+  cron.schedule("48 11 * * *", async () => {
     const now = new Date();
     const dayOfWeek = now.getDay();
 
@@ -53,7 +58,7 @@ function startStandupScheduler() {
     }
 
     const targetDateStr = getTargetSummaryDate(now);
-    console.log(`[StandupScheduler] ⏰ Running 10:00 AM job for target date: ${targetDateStr}...`);
+    console.log(`[StandupScheduler] ⏰ Running daily job for target date: ${targetDateStr}...`);
 
     try {
       const [reqYear, reqMonth, reqDay] = targetDateStr.split("-").map(Number);
@@ -75,7 +80,7 @@ function startStandupScheduler() {
     }
   });
 
-  console.log("[StandupScheduler] 🕒 Initialized 10:00 AM daily job.");
+  console.log("[StandupScheduler] 🕒 Initialized daily job.");
 }
 
 async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOfDay) {
@@ -96,24 +101,32 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       { updated_time: { $gte: startOfDay, $lte: endOfDay } },
     ],
   };
+  const discussionFilter = {
+    timestamp: { $gte: startOfDay, $lte: endOfDay },
+  };
 
   if (channel) {
     taskFilter.channel = channel;
     issueFilter.channel = channel;
+    discussionFilter.channel = channel;
   }
 
-  // 🟢 Projections updated to fetch display_name and real_name
-  const [tasks, issues] = await Promise.all([
+  // 🟢 Fetch Tasks (including description), Issues (including description), and Discussions
+  const [tasks, issues, discussions] = await Promise.all([
     Task.find(taskFilter, {
-      title: 1, status: 1, priority: 1, blocked_reason: 1,
+      title: 1, description: 1, status: 1, priority: 1, blocked_reason: 1,
       "assigned_to.name": 1, "assigned_to.display_name": 1, "assigned_to.real_name": 1,
       "owner.name": 1, "owner.display_name": 1, "owner.real_name": 1,
       _id: 0,
     }).lean().catch(() => []),
     Issue.find(issueFilter, {
-      title: 1, status: 1, priority: 1, blocked_reason: 1,
+      title: 1, description: 1, status: 1, priority: 1, blocked_reason: 1,
       "assigned_to.name": 1, "assigned_to.display_name": 1, "assigned_to.real_name": 1,
       "owner.name": 1, "owner.display_name": 1, "owner.real_name": 1,
+      _id: 0,
+    }).lean().catch(() => []),
+    Discussion.find(discussionFilter, {
+      content: 1, "author.name": 1, "author.display_name": 1, "author.real_name": 1,
       _id: 0,
     }).lean().catch(() => []),
   ]);
@@ -122,13 +135,14 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
   const getMemberGroup = (userObj) => {
     const cleanName = getCleanMemberName(userObj);
     if (!memberDataMap[cleanName]) {
-      memberDataMap[cleanName] = { tasks: [], issues: [] };
+      memberDataMap[cleanName] = { tasks: [], issues: [], discussions: [] };
     }
     return memberDataMap[cleanName];
   };
 
   for (const t of tasks) getMemberGroup(t.assigned_to || t.owner).tasks.push(t);
   for (const i of issues) getMemberGroup(i.assigned_to || i.owner).issues.push(i);
+  for (const d of discussions) getMemberGroup(d.author).discussions.push(d);
 
   const momHeader = `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${displayDateStr}\nDuration: ${duration}\nTeam-wise Task Updates`;
 
@@ -141,10 +155,13 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
     for (const [memberName, data] of Object.entries(memberDataMap)) {
       rawPayload += `\nMember: ${memberName}\n`;
       if (data.tasks.length) {
-        rawPayload += `Tasks:\n` + data.tasks.map(t => `- ${t.title} [${t.status || 'TODO'}]${t.blocked_reason ? ` (Blocker: ${t.blocked_reason})` : ''}`).join('\n') + '\n';
+        rawPayload += `Tasks:\n` + data.tasks.map(t => `- ${t.title}${t.description ? ` (${t.description})` : ''} [${t.status || 'TODO'}]${t.blocked_reason ? ` (Blocker: ${t.blocked_reason})` : ''}`).join('\n') + '\n';
       }
       if (data.issues.length) {
-        rawPayload += `Issues:\n` + data.issues.map(i => `- ${i.title} [${i.status || 'OPEN'}]${i.blocked_reason ? ` (Blocker: ${i.blocked_reason})` : ''}`).join('\n') + '\n';
+        rawPayload += `Issues:\n` + data.issues.map(i => `- ${i.title}${i.description ? ` (${i.description})` : ''} [${i.status || 'OPEN'}]${i.blocked_reason ? ` (Blocker: ${i.blocked_reason})` : ''}`).join('\n') + '\n';
+      }
+      if (data.discussions.length) {
+        rawPayload += `Discussions:\n` + data.discussions.map(d => `- ${d.content}`).join('\n') + '\n';
       }
     }
 
@@ -155,18 +172,16 @@ INSTRUCTIONS:
 ${momHeader}
 
 2. Group strictly by member name using bold headers (**Member Name**).
-3. Under each member, format every task and issue as bullet points (* ).
-4. ONLY include an "Issues:" subsection under a member if they have issues logged. If no issues exist for a member, omit the Issues subsection completely.
-5. Do NOT add a "Present Members" line.
-6. Do NOT include general discussions.
-7. Write each bullet as a natural, concise sentence.
+3. Under each member, combine tasks, issues (including descriptions), and discussions cleanly as bullet points (* ).
+4. Do NOT add a "Present Members" line.
+5. Write each bullet as a natural, concise sentence.
 
 Raw Team Work Data:
 ${rawPayload}`;
 
     try {
       const aiFormatted = await callOpenAI([{ role: "user", content: prompt }], {
-        maxTokens: 800,
+        maxTokens: 1200,
         temperature: 0.2,
       });
 
@@ -182,13 +197,13 @@ ${rawPayload}`;
       for (const [memberName, data] of Object.entries(memberDataMap)) {
         fallbackBody += `\n**${memberName}**\n`;
         for (const t of data.tasks) {
-          fallbackBody += `* ${t.title}${t.status ? ` [${t.status}]` : ''}${t.blocked_reason ? ` 🚨 Blocker: ${t.blocked_reason}` : ''}\n`;
+          fallbackBody += `* ${t.title}${t.description && t.description !== t.title ? ` — ${t.description}` : ''}${t.status ? ` [${t.status}]` : ''}${t.blocked_reason ? ` 🚨 Blocker: ${t.blocked_reason}` : ''}\n`;
         }
-        if (data.issues.length > 0) {
-          fallbackBody += `  Issues:\n`;
-          for (const i of data.issues) {
-            fallbackBody += `  * ${i.title}${i.status ? ` [${i.status}]` : ''}${i.blocked_reason ? ` 🚨 Blocker: ${i.blocked_reason}` : ''}\n`;
-          }
+        for (const i of data.issues) {
+          fallbackBody += `* 🚨 Issue: ${i.title}${i.description && i.description !== i.title ? ` — ${i.description}` : ''}${i.status ? ` [${i.status}]` : ''}${i.blocked_reason ? ` 🚨 Blocker: ${i.blocked_reason}` : ''}\n`;
+        }
+        for (const d of data.discussions) {
+          fallbackBody += `* 💬 Note: ${d.content}\n`;
         }
       }
       summaryText = `${momHeader}\n${fallbackBody}`;
@@ -205,7 +220,7 @@ ${rawPayload}`;
       summary: summaryText.trim(),
       tasks_count: tasks.length,
       issues_count: issues.length,
-      discussions_count: 0,
+      discussions_count: discussions.length,
       is_stale: false,
       generated_by: "single_pass_ai",
     },
