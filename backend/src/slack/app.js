@@ -541,7 +541,7 @@ function createSlackApp({
 					continue;
 				}
 
-				// 2. Ignore MOM metadata lines so they don't break the flow
+				// 2. Ignore MOM metadata lines
 				if (
 					inMomMode &&
 					/^(Date|Duration|Present Members)/i.test(line)
@@ -550,73 +550,71 @@ function createSlackApp({
 					continue;
 				}
 
-				// 3. In MOM mode, detect plain names acting as headers (e.g., "*Antim*", "Rashmi (QA)")
+				// 3. Detect plain names acting as headers (e.g., "*Antim*")
 				if (inMomMode && line.length < 50) {
-					// Strip Slack markdown (asterisks, underscores) before testing the string
 					const textWithoutMarkdown = line
 						.replace(/[*_]/g, "")
 						.trim();
-
-					// Now test if it's just a name, with or without a role in parentheses
 					if (
 						/^[A-Za-z\s]+(?:\([A-Za-z\s]+\))?$/.test(
 							textWithoutMarkdown,
 						)
 					) {
-						// Strip tags like "(QA)" to get the clean name
 						const cleanName = textWithoutMarkdown
 							.replace(/\s*\(.*?\)/, "")
 							.trim();
-						activePrefix = `task - @${cleanName} - `;
+						// FIX: Removed the trailing hyphen to prevent double-dashes in titles
+						activePrefix = `task - @${cleanName} `;
 						continue;
 					}
 				}
 
-				// 4. Catch standalone generic header: "task -" or "issue -"
+				// 4. Catch standalone generic header
 				if (/^(task|issue)\s*[-:]?$/i.test(line)) {
 					activePrefix =
 						line.match(/^(task|issue)/i)[0].toLowerCase() + " - ";
 					continue;
 				}
 
-				// 5. Catch targeted user header: "task - @Nitesh Kumar Vishwakarma"
+				// 5. Catch targeted user header
 				const targetedHeader = line.match(
 					/^(task|issue)\s*[-:]?\s*(<@[A-Z0-9]+>|@.+?)$/i,
 				);
 				if (targetedHeader) {
-					activePrefix = targetedHeader[0].trim() + " - ";
+					// FIX: Space instead of hyphen for targeted headers
+					activePrefix = targetedHeader[0].trim() + " ";
 					continue;
 				}
 
-				// 6. Catch explicit single-line task: "task - @user do something"
+				// 6. Catch explicit single-line task
 				if (/^(task|issue)\s*-/i.test(line)) {
 					activePrefix = null;
-					processedLines.push(line);
+					// Clean leading bullet if they typed "task - - @user"
+					processedLines.push(
+						line.replace(/^(task|issue)\s*-\s*[-•*]\s*/i, "$1 - "),
+					);
 					continue;
 				}
 
 				// 7. If any header is active, process the items underneath it
 				if (activePrefix) {
-					// Remove standard bullets/numbers if they exist, otherwise just take the raw line
+					// FIX: Aggressively strip any starting bullet, hyphen, or number
 					const cleanLine = line.replace(/^([-•*]|\d+\.)\s*/, "");
-					let combined = activePrefix + cleanLine;
-					combined = combined.replace(/\s+-\s+-/g, " -");
-					processedLines.push(combined);
+					processedLines.push(activePrefix + cleanLine);
 					continue;
 				}
 
-				// Default: push the normal text line as is
+				// Default
 				processedLines.push(line);
 			}
 
-			// Filter out all the newly generated explicit task lines
 			const explicitLines = processedLines.filter(
 				(l) => /task\s*-/i.test(l) || /issue\s*-/i.test(l),
 			);
 
-			// Let the processor run on all generated tasks individually
+			// FIX: Changed > 1 to > 0 to guarantee the raw text is never processed if tasks are found
 			const textsToProcess =
-				explicitLines.length > 1
+				explicitLines.length > 0
 					? explicitLines
 					: [processedLines.join("\n")];
 
