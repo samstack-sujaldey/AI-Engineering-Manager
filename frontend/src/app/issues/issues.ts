@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -8,114 +8,93 @@ import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-issues',
+  standalone: true,
   imports: [CommonModule, PageHeaderComponent, FormsModule],
   providers: [DatePipe],
   template: `
-    <app-page-header title="Issues" searchPlaceholder="Search issues..."></app-page-header>
+    <app-page-header
+      title="Issues & Blockers"
+      searchPlaceholder="Search issues or blockers..."
+    ></app-page-header>
 
     <div class="issues-body">
-      <!-- Filters -->
       <div class="filters-row">
-        <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadIssues()">
+        <select class="filter-select" [(ngModel)]="statusFilter">
           <option value="all">Status: All</option>
-          <option value="HOLD">Hold</option>
+          <option value="OPEN">Open</option>
+          <option value="BLOCKED">Blocked</option>
           <option value="RESOLVED">Resolved</option>
         </select>
-        <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadIssues()">
+        <select class="filter-select" [(ngModel)]="priorityFilter">
           <option value="all">Priority: All</option>
-          <option value="URGENT">Urgent</option>
-          <option value="HIGH">High</option>
-          <option value="MEDIUM">Medium</option>
           <option value="LOW">Low</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="HIGH">High</option>
+          <option value="URGENT">Urgent</option>
         </select>
-        <input
-          type="date"
-          class="filter-select"
-          [value]="dashService.selectedDate()"
-          (change)="onDateChange($event)"
-        />
+        
+        <!-- Date Filter with Clear Button -->
+        <div class="date-filter-group">
+          <input
+            type="date"
+            class="filter-select"
+            [value]="dashService.selectedDate()"
+            (change)="onDateChange($event)"
+          />
+          <button 
+            class="clear-date-btn" 
+            *ngIf="dashService.selectedDate()" 
+            (click)="clearDateFilter()" 
+            title="Show All Dates"
+          >✕</button>
+        </div>
       </div>
 
-      <div *ngIf="!loading">
-        <!-- Stats -->
-        <div class="issue-stats" *ngIf="issues.length > 0">
-          <div class="issue-stat-card">
-            <div class="stat-label">Total Issues</div>
-            <div class="stat-value">{{ issues.length }}</div>
-          </div>
-          <div class="issue-stat-card">
-            <div class="stat-label">Urgent / High</div>
-            <div class="stat-value critical-color">
-              {{ countByPriority(issues, ['URGENT', 'HIGH']) }}
-            </div>
-          </div>
-          <div class="issue-stat-card">
-            <div class="stat-label">On Hold</div>
-            <div class="stat-value inprogress-color">{{ countByStatus(issues, 'HOLD') }}</div>
-          </div>
-          <div class="issue-stat-card">
-            <div class="stat-label">Resolved</div>
-            <div class="stat-value resolved-color">{{ countByStatus(issues, 'RESOLVED') }}</div>
-          </div>
-        </div>
-
-        <!-- Issues Table -->
-        <div class="issues-table-card">
-          <table class="issues-table">
-            <thead>
-              <tr>
-                <th>ISSUE TITLE</th>
-                <th>ASSIGNED TO</th>
-                <th>REPORTER</th>
-                <th>PRIORITY</th>
-                <th>STATUS</th>
-                <th>CREATED</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let issue of filteredIssues(issues)" class="issue-row">
-                <td class="issue-title-cell">
-                  <div class="issue-title">{{ issue.title }}</div>
-                  <div class="issue-desc">
-                    {{ issue.description || 'No description provided.' }}
-                  </div>
-                </td>
-                <td class="assignee-cell">
-                  <div class="avatar-sm" [style.background]="getAvatarColor(getPersonName(issue.owner))">
-                    {{ getInitials(getPersonName(issue.owner)) }}
-                  </div>
-                  <span>{{ getPersonName(issue.owner) }}</span>
-                </td>
-                <td>
-                  <span style="font-size: 13px; color: #555; text-transform: capitalize;">{{
-                    getPersonName(issue.reporter) || 'System'
-                  }}</span>
-                </td>
-                <td>
-                  <span class="priority-badge" [ngClass]="issue.priority.toLowerCase()">{{
-                    issue.priority
-                  }}</span>
-                </td>
-                <td>
-                  <span class="status-badge" [ngClass]="getStatusClass(issue.status)">{{
-                    issue.status
-                  }}</span>
-                </td>
-                <td class="date-cell">
-                  {{ issue.created_time ? (issue.created_time | date: 'mediumDate') : '—' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div class="empty-state" *ngIf="filteredIssues(issues).length === 0">
-            <div class="empty-icon">🎉</div>
-            <div class="empty-title">No issues found</div>
-            <div class="empty-desc">
-              Try adjusting your filters or wait for a new issue to be reported.
-            </div>
-          </div>
-        </div>
+      <div class="issues-table-card">
+        <table class="issues-table">
+          <thead>
+            <tr>
+              <th style="width: 40%;">ISSUE / BLOCKER TITLE</th>
+              <th style="width: 25%;">ASSIGNED TO</th>
+              <th style="width: 15%;">PRIORITY</th>
+              <th style="width: 10%;">STATUS</th>
+              <th style="width: 10%;">DATE</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let issue of filteredIssues()">
+              <td class="issue-name-cell">
+                <div class="issue-name">{{ issue.title || issue.description }}</div>
+                <div class="issue-category">{{ issue.channel_name ? '#' + issue.channel_name : 'General Issue' }}</div>
+              </td>
+              <td class="assignee-cell">
+                <div
+                  class="avatar-sm"
+                  [style.background]="getAvatarColor(issue.assigneeName)"
+                >
+                  {{ getInitials(issue.assigneeName) }}
+                </div>
+                <span class="assignee-name">{{ issue.assigneeName }}</span>
+              </td>
+              <td>
+                <span class="priority-badge" [ngClass]="(issue.priority || 'low').toLowerCase()">{{
+                  issue.priority || 'Normal'
+                }}</span>
+              </td>
+              <td>
+                <span class="status-badge" [ngClass]="getStatusClass(issue.status)">{{
+                  issue.status || 'Open'
+                }}</span>
+              </td>
+              <td class="due-date">
+                {{ (issue.created_time || issue.created_at || issue.date) ? ((issue.created_time || issue.created_at || issue.date) | date: 'mediumDate') : '—' }}
+              </td>
+            </tr>
+            <tr *ngIf="filteredIssues().length === 0">
+              <td colspan="5" class="empty-state">No human-assigned issues found matching your filters.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   `,
@@ -129,6 +108,7 @@ import { DashboardService } from '../services/dashboard.service';
       }
       .filters-row {
         display: flex;
+        align-items: center;
         gap: 10px;
         flex-wrap: wrap;
       }
@@ -142,44 +122,27 @@ import { DashboardService } from '../services/dashboard.service';
         cursor: pointer;
         outline: none;
       }
-
-      /* Stats */
-      .issue-stats {
+      .date-filter-group {
         display: flex;
-        gap: 16px;
-        margin-bottom: 24px;
+        align-items: center;
+        gap: 4px;
       }
-      .issue-stat-card {
-        flex: 1;
-        background: white;
-        border: 1px solid #e9ecef;
-        border-radius: 8px;
-        padding: 16px 20px;
+      .clear-date-btn {
+        background: #f0f0f0;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        width: 32px;
+        height: 34px;
+        cursor: pointer;
+        font-size: 13px;
+        color: #555;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
-      .stat-label {
-        font-size: 11px;
-        color: #888;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 4px;
+      .clear-date-btn:hover {
+        background: #e0e0e0;
       }
-      .stat-value {
-        font-size: 26px;
-        font-weight: 700;
-        color: #1a1a2e;
-      }
-      .inprogress-color {
-        color: #5b4fcf;
-      }
-      .critical-color {
-        color: #e53e3e;
-      }
-      .resolved-color {
-        color: #27ae60;
-      }
-
-      /* Table */
       .issues-table-card {
         background: white;
         border: 1px solid #e9ecef;
@@ -189,6 +152,7 @@ import { DashboardService } from '../services/dashboard.service';
       .issues-table {
         width: 100%;
         border-collapse: collapse;
+        table-layout: fixed;
       }
       .issues-table th {
         text-align: left;
@@ -196,57 +160,63 @@ import { DashboardService } from '../services/dashboard.service';
         color: #888;
         font-weight: 600;
         letter-spacing: 0.5px;
-        padding: 14px 16px;
+        padding: 14px 20px;
         border-bottom: 1px solid #f0f0f0;
         background: #fafafa;
       }
       .issues-table td {
-        padding: 14px 16px;
-        font-size: 13px;
+        padding: 14px 20px;
+        font-size: 13.5px;
         color: #333;
-        border-bottom: 1px solid #f5f5f5;
+        border-bottom: 1px solid #f0f0f0;
         vertical-align: middle;
+        text-align: left;
       }
-      .issue-row:last-child td {
+      .issues-table tr:last-child td {
         border-bottom: none;
       }
-      .issue-row:hover {
-        background: #fafafa;
+      .issue-name-cell {
+        padding-right: 16px;
       }
-      .issue-title {
-        font-weight: 500;
+      .issue-name {
+        font-size: 13.5px;
         color: #1a1a2e;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .issue-desc {
-        font-size: 11.5px;
+      .issue-category {
+        font-size: 11px;
         color: #999;
         margin-top: 2px;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-line-orient: vertical;
-        overflow: hidden;
       }
-
       .assignee-cell {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        text-transform: capitalize;
+        white-space: nowrap;
       }
       .avatar-sm {
-        width: 26px;
-        height: 26px;
+        width: 28px;
+        height: 28px;
         border-radius: 50%;
         color: white;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 700;
-        display: flex;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
         flex-shrink: 0;
         text-transform: uppercase;
+        vertical-align: middle;
+        margin-right: 8px;
       }
-
+      .assignee-name {
+        font-size: 13px;
+        color: #333;
+        text-transform: capitalize;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .priority-badge {
         display: inline-block;
         padding: 3px 10px;
@@ -255,25 +225,10 @@ import { DashboardService } from '../services/dashboard.service';
         font-weight: 600;
         text-transform: uppercase;
       }
-      .priority-badge.urgent {
-        background: #ffeaea;
-        color: #e53e3e;
-        font-weight: 700;
-      }
-      .priority-badge.high {
-        background: #fff3e0;
-        color: #e67e22;
-        font-weight: 600;
-      }
-      .priority-badge.medium {
-        background: #fff8e1;
-        color: #f59e0b;
-      }
-      .priority-badge.low {
-        background: #f5f5f5;
-        color: #666;
-      }
-
+      .priority-badge.low { background: #f5f5f5; color: #666; }
+      .priority-badge.medium { background: #fff8e1; color: #f59e0b; }
+      .priority-badge.high { background: #fff3e0; color: #e67e22; }
+      .priority-badge.urgent { background: #ffeaea; color: #e53e3e; }
       .status-badge {
         display: inline-block;
         padding: 4px 12px;
@@ -282,177 +237,166 @@ import { DashboardService } from '../services/dashboard.service';
         font-weight: 600;
         text-transform: capitalize;
       }
-      .status-hold {
-        background: #fff3e0;
-        color: #e07b39;
-      }
-      .status-resolved {
-        background: #e8f5e9;
-        color: #27ae60;
-      }
-
-      .date-cell {
-        color: #999;
-        font-size: 12px;
-        white-space: nowrap;
-      }
-
-      /* Empty State */
-      .empty-state {
-        padding: 48px;
-        text-align: center;
-      }
-      .empty-icon {
-        font-size: 36px;
-        margin-bottom: 12px;
-      }
-      .empty-title {
-        font-size: 15px;
-        font-weight: 600;
-        color: #333;
-        margin-bottom: 6px;
-      }
-      .empty-desc {
-        font-size: 13px;
-        color: #888;
-      }
+      .status-open { background: #e8eeff; color: #5b4fcf; }
+      .status-resolved { background: #e8f5e9; color: #27ae60; }
+      .status-blocked { background: #ffeaea; color: #e53e3e; }
+      .due-date { color: #999; font-size: 13px; }
+      .empty-state { text-align: center; color: #888; padding: 30px !important; }
     `,
   ],
 })
 export class IssuesComponent implements OnInit {
-  dashService = inject(DashboardService);
   http = inject(HttpClient);
+  dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
 
   issues: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  loading = false;
+  private isInitialized = false;
 
   constructor() {
     effect(() => {
+      const globalChannel = this.dashService.selectedChannel();
       const globalDate = this.dashService.selectedDate();
-      this.loadIssues();
+      
+      untracked(() => {
+        if (!this.isInitialized) return;
+        this.loadIssues();
+      });
     });
   }
 
   ngOnInit() {
     this.loadIssues();
+    this.isInitialized = true;
   }
 
   onDateChange(event: Event): void {
     const input = event.target as HTMLInputElement;
-    if (input.value) {
-      this.dashService.setSelectedDate(input.value);
-    }
+    this.dashService.setSelectedDate(input.value);
+    this.loadIssues();
+  }
+
+  clearDateFilter(): void {
+    this.dashService.setSelectedDate('');
+    this.loadIssues();
   }
 
   async loadIssues() {
-    this.loading = true;
     try {
-      const params: any = {};
-      if (this.statusFilter !== 'all') params.status = this.statusFilter;
-      if (this.priorityFilter !== 'all') params.priority = this.priorityFilter;
-      const activeChannel = this.dashService.activeChannelId();
-      if (activeChannel) params.channel = activeChannel;
-      
-      const selectedDate = this.dashService.selectedDate();
-      params.date = selectedDate;
+      const url = this.dashService.getFilteredUrl('/issues');
+      const response: any = await firstValueFrom(this.http.get(url)).catch(() => []);
+      const rawList = Array.isArray(response) ? response : (response?.issues || response?.data || []);
 
-      const response = (await firstValueFrom(this.http.get('/api/issues', { params }))) as any[] || [];
-      
-      // Strict frontend date filter: ensures both stats cards and table only show the selected date
-      this.issues = response.filter(issue => 
-        this.matchesSelectedDate(issue.created_time, selectedDate)
-      );
+      this.issues = rawList
+        .map((item: any) => {
+          const rawAssignee = item.assigned_to || item.owner || item.assignee;
+          if (this.isBotUser(rawAssignee)) return null;
+
+          const assigneeName = this.extractStringName(rawAssignee);
+          if (assigneeName === 'Unassigned' || this.isBotUser(assigneeName)) return null;
+
+          return {
+            ...item,
+            assigneeName
+          };
+        })
+        .filter((item: boolean | Record<string, any>) => item !== null);
 
       this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load issues:', err);
       this.issues = [];
-    } finally {
-      this.loading = false;
       this.cdr.detectChanges();
     }
   }
 
-  filteredIssues(issues: any[]): any[] {
-    if (!issues) return [];
-    return issues.filter((issue) => {
-      const matchStatus = this.statusFilter === 'all' || issue.status === this.statusFilter;
-      const matchPriority = this.priorityFilter === 'all' || issue.priority === this.priorityFilter;
-      return matchStatus && matchPriority;
+  filteredIssues(): any[] {
+    const selectedDate = this.dashService.selectedDate();
+    return this.issues.filter((issue) => {
+      const matchStatus = this.statusFilter === 'all' || (issue.status || '').toLowerCase() === this.statusFilter.toLowerCase();
+      const matchPriority = this.priorityFilter === 'all' || (issue.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
+      const issueDate = issue.created_time || issue.created_at || issue.date || issue.updated_time;
+      const matchDate = this.matchesSelectedDate(issueDate, selectedDate);
+      return matchStatus && matchPriority && matchDate;
     });
   }
 
-  /**
-   * Robust date matcher that handles ISO strings, Unix timestamps (seconds/ms),
-   * and Slack timestamp formats.
-   */
-  private matchesSelectedDate(issueDate: any, targetDateStr: string): boolean {
-    if (!issueDate || !targetDateStr) return false;
+  private isBotUser(m: any): boolean {
+    if (!m) return true;
+    const rawId = (m.id || '').toLowerCase();
+    const rawName = (
+      typeof m === 'string'
+        ? m
+        : (m.real_name || m.display_name || m.name || '')
+    ).toLowerCase();
 
-    // Direct string match if ISO format (e.g. "2026-07-29T10:00:00Z")
-    if (typeof issueDate === 'string' && issueDate.startsWith(targetDateStr)) {
+    return (
+      rawId === 'uslackbot' ||
+      rawName.includes('github') ||
+      rawName.includes('jira') ||
+      rawName.includes('jirabot') ||
+      rawName.includes('slackbot') ||
+      rawName.includes('ai_engineering') ||
+      rawName.includes('bot') ||
+      rawName.includes('app') ||
+      rawName === 'unknown'
+    );
+  }
+
+  private extractStringName(input: any): string {
+    if (!input || this.isBotUser(input)) return 'Unassigned';
+    
+    let raw = '';
+    if (typeof input === 'string') raw = input;
+    else if (typeof input === 'object') {
+      raw = input.real_name || input.display_name || input.name || 'Unassigned';
+    } else {
+      raw = String(input);
+    }
+
+    raw = raw.trim();
+    if (raw.startsWith('<@') && raw.endsWith('>')) {
+      raw = raw.slice(2, -1);
+    }
+    if (raw.includes('@') && !raw.startsWith('<')) {
+      raw = raw.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    } else {
+      raw = raw.replace(/[._-]+/g, ' ').trim();
+    }
+
+    const normalized = raw || 'Unassigned';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
+    if (!targetDateStr) return true; // If no date is selected, show all issues!
+    if (!itemDate) return false;
+    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
       return true;
     }
-
-    let numericDate = Number(issueDate);
+    let numericDate = Number(itemDate);
     let dateObj: Date;
-
     if (!isNaN(numericDate) && numericDate > 0) {
-      // If timestamp is in seconds (10 digits like Slack timestamps), convert to milliseconds
-      if (numericDate < 10000000000) {
-        numericDate *= 1000;
-      }
+      if (numericDate < 10000000000) numericDate *= 1000;
       dateObj = new Date(numericDate);
     } else {
-      dateObj = new Date(issueDate);
+      dateObj = new Date(itemDate);
     }
-
-    if (isNaN(dateObj.getTime())) return false;
-
-    // Convert to YYYY-MM-DD
+    if (isNaN(dateObj.getTime())) return true;
     const yyyy = dateObj.getFullYear();
     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(dateObj.getDate()).padStart(2, '0');
-    const formattedDate = `${yyyy}-${mm}-${dd}`;
-
-    return formattedDate === targetDateStr;
-  }
-
-  countByStatus(issues: any[], status: string): number {
-    if (!issues) return 0;
-    return issues.filter((i) => i.status === status).length;
-  }
-
-  countByPriority(issues: any[], priorities: string[]): number {
-    if (!issues) return 0;
-    return issues.filter((i) => priorities.includes(i.priority)).length;
+    return `${yyyy}-${mm}-${dd}` === targetDateStr;
   }
 
   getStatusClass(status: string): string {
-    return status ? `status-${status.toLowerCase()}` : '';
-  }
-
-  getPersonName(user?: any): string {
-    if (!user) return 'Unassigned';
-    const candidate = user.display_name || user.real_name || user.name || '';
-    return this.normalizeName(candidate) || 'Unassigned';
-  }
-
-  private normalizeName(value?: string): string {
-    if (!value) return '';
-    const trimmed = String(value).trim();
-    if (!trimmed) return '';
-    if (trimmed.includes('@')) {
-      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
-    }
-    return trimmed.replace(/[._-]+/g, ' ').trim();
+    return status ? `status-${status.toLowerCase()}` : 'status-open';
   }
 
   getInitials(name?: string): string {
-    if (!name) return '??';
+    if (!name || name === 'Unassigned') return '??';
     const parts = name.trim().split(' ');
     return parts.length > 1
       ? (parts[0][0] + parts[1][0]).toUpperCase()
@@ -460,7 +404,7 @@ export class IssuesComponent implements OnInit {
   }
 
   getAvatarColor(name?: string): string {
-    if (!name) return '#888';
+    if (!name || name === 'Unassigned') return '#888';
     const colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60'];
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
