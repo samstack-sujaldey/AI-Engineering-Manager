@@ -21,6 +21,26 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
             class="date-input"
           />
         </div>
+
+        <button class="connect-slack-btn" (click)="connectSlack()">
+          <!-- Optional: Simple Slack Hashtag/Logo Icon -->
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M22 9h-4V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2V9z"
+            ></path>
+          </svg>
+          Connect Slack
+        </button>
+
         <button
           class="refresh-btn"
           (click)="dashService.refresh()"
@@ -71,10 +91,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
 
             <div class="standup-entry" *ngFor="let disc of data.discussion_timeline.slice(0, 3)">
               <div class="standup-text">{{ disc.content }}</div>
-               <div class="standup-meta">
-                 <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
-                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
-               </div>
+              <div class="standup-meta">
+                <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
+                <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
+              </div>
             </div>
 
             <div
@@ -130,7 +150,9 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
                     {{ getInitials(w.name) }}
                   </div>
                   <div>
-                    <div class="member-name">{{ displayName({name: w.name}) || 'Unassigned' }}</div>
+                    <div class="member-name">
+                      {{ displayName({ name: w.name }) || 'Unassigned' }}
+                    </div>
                     <div class="member-role">Developer</div>
                   </div>
                 </td>
@@ -187,6 +209,30 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         background: #fafafd;
         cursor: pointer;
       }
+
+      .connect-slack-btn {
+        background: #ffffff;
+        color: #1a1a2e;
+        border: 1px solid #e9ecef;
+        border-radius: 6px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s ease;
+      }
+      .connect-slack-btn:hover {
+        border-color: #5b4fcf;
+        color: #5b4fcf;
+        background: #fafafd;
+      }
+      .connect-slack-btn svg {
+        flex-shrink: 0;
+      }
+
       .refresh-btn {
         background: #5b4fcf;
         color: white;
@@ -453,6 +499,13 @@ export class DashboardComponent implements OnInit {
     this.dashService.load();
   }
 
+  connectSlack(): void {
+    // Redirects the user to your backend endpoint that handles Slack OAuth.
+    // Replace this URL with the actual endpoint you set up for Slack authorization.
+    const slackOAuthUrl = 'http://localhost:4000/api/slack/install';
+    window.location.href = slackOAuthUrl;
+  }
+
   onDateChange(event: Event): void {
     const input = event.target as HTMLInputElement;
     if (input.value) {
@@ -477,7 +530,10 @@ export class DashboardComponent implements OnInit {
     const trimmed = String(value).trim();
     if (!trimmed) return '';
     if (trimmed.includes('@')) {
-      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+      return trimmed
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .trim();
     }
     return trimmed.replace(/[._-]+/g, ' ').trim();
   }
