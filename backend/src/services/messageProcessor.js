@@ -19,19 +19,19 @@ const { findRelatedWorkWithAI } = require("./relatedWork");
 const { newId } = require("../utils/helpers");
 const { invalidateDailySummary } = require("../utils/cacheHelper");
 
-	function hashText(text = "") {
-		return crypto
-			.createHash("sha1")
-			.update(text || "")
-			.digest("hex");
-	}
+function hashText(text = "") {
+	return crypto
+		.createHash("sha1")
+		.update(text || "")
+		.digest("hex");
+}
 
-	function getMessageTime(ctx) {
-		if (!ctx || !ctx.message_ts) return new Date();
-		const parsed = parseFloat(ctx.message_ts);
-		if (isNaN(parsed) || parsed <= 0) return new Date();
-		return new Date(parsed * 1000);
-	}
+function getMessageTime(ctx) {
+	if (!ctx || !ctx.message_ts) return new Date();
+	const parsed = parseFloat(ctx.message_ts);
+	if (isNaN(parsed) || parsed <= 0) return new Date();
+	return new Date(parsed * 1000);
+}
 
 function wasTextAlreadyAnalyzed(doc, message_ts, hash) {
 	if (!doc || !Array.isArray(doc.history) || !message_ts) return false;
@@ -838,6 +838,12 @@ class MessageProcessor {
 			doc.due_date_pending = true;
 		}
 
+		if (ctx.thread_id && doc.thread !== ctx.thread_id) {
+			doc.thread = ctx.thread_id;
+			doc.channel = ctx.channel;
+			doc.slack_message_ts = ctx.message_ts;
+		}
+
 		doc.last_updated_by = senderRef;
 		doc.history.push({
 			event: "UPDATED",
@@ -1154,6 +1160,12 @@ class MessageProcessor {
 
 		if (nextStatus) doc.status = nextStatus;
 		if (nextPriority) doc.priority = nextPriority;
+
+		if (ctx.thread_id && doc.thread !== ctx.thread_id) {
+			doc.thread = ctx.thread_id;
+			doc.channel = ctx.channel;
+			doc.slack_message_ts = ctx.message_ts;
+		}
 
 		if (
 			parsed.discussion ||
