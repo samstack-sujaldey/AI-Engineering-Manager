@@ -45,11 +45,18 @@ function sanitizeLlmOutput(text) {
 }
 
 /**
- * Calls OpenAI's chat completions endpoint with configurable model and timeout.
+ * Helper to pause execution for exponential backoff
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Calls OpenAI's chat completions endpoint with configurable model, timeout, and automatic 429 rate-limit retries.
  */
 async function callOpenAI(
 	messages,
 	{ maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model, response_format } = {},
+	retries = 3,
+	delayMs = 2000
 ) {
 	if (!process.env.OPENAI_API_KEY) {
 		throw new Error("OPENAI_API_KEY is not configured in backend/.env");
@@ -92,7 +99,26 @@ async function callOpenAI(
 		return response_format ? cleanJsonResponse(sanitized) : sanitized;
 	} catch (err) {
 		clearTimeout(timeoutId);
-		if (err.name === "AbortError" || err.code === "ETIMEDOUT") {
+
+		// 🟢 Handle Rate Limits (429) or Server Overload / Timeouts with Exponential Backoff
+		const status = err?.status || err?.statusCode;
+		const isRateLimit = status === 429 || err?.code === 'rate_limit_exceeded';
+		const isTimeout = err.name === "AbortError" || err.code === "ETIMEDOUT";
+
+		if ((isRateLimit || isTimeout || (status >= 500 && status < 600)) && retries > 0) {
+			console.warn(
+				`[callOpenAI Warning]: Encountered ${isRateLimit ? 'Rate Limit (429)' : 'Timeout/Server Error'}. Retrying in ${delayMs / 1000}s... (${retries} attempts left)`
+			);
+			await sleep(delayMs);
+			return callOpenAI(
+				messages,
+				{ maxTokens, temperature, timeoutMs, model, response_format },
+				retries - 1,
+				delayMs * 2
+			);
+		}
+
+		if (isTimeout) {
 			console.warn(
 				`[callOpenAI]: Request timed out after ${timeoutMs / 1000}s.`,
 			);
