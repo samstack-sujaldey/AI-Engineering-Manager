@@ -49,7 +49,7 @@ function sanitizeLlmOutput(text) {
  */
 async function callOpenAI(
 	messages,
-	{ maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model } = {},
+	{ maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model, response_format } = {},
 ) {
 	if (!process.env.OPENAI_API_KEY) {
 		throw new Error("OPENAI_API_KEY is not configured in backend/.env");
@@ -68,6 +68,7 @@ async function callOpenAI(
 				messages: messages,
 				max_completion_tokens: maxTokens,
 				temperature: temperature,
+				...(response_format && { response_format }), // 🟢 Forward response_format to OpenAI
 			},
 			{
 				signal: controller.signal,
@@ -86,7 +87,9 @@ async function callOpenAI(
 			return null;
 		}
 
-		return sanitizeLlmOutput(rawText);
+		// 🟢 Clean markdown code blocks and sanitize output
+		const sanitized = sanitizeLlmOutput(rawText);
+		return response_format ? cleanJsonResponse(sanitized) : sanitized;
 	} catch (err) {
 		clearTimeout(timeoutId);
 		if (err.name === "AbortError" || err.code === "ETIMEDOUT") {

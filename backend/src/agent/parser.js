@@ -170,6 +170,17 @@ const ACK_PATTERNS = [
 	/^\s*(ok|okay|acknowledged|working\s+on\s+it|got\s+it|i'?ll\s+handle\s+it)\s*[.!]?\s*$/i,
 ];
 
+const MULTI_PERSON_DOC_PATTERNS = [
+	/today\s+stand-?up\s+mom/i,
+	/team-wise\s+task\s+updates/i,
+	/present\s+members:/i,
+	/\btask\s+assignments?\b/i,
+	/\bwork\s+assignments?\b/i,
+	/\bdaily\s+updates?\b/i,
+	/\bteam\s+assignments?\b/i,
+	/\baction\s+items?\s+for\b/i,
+];
+
 const WEEKDAYS = {
 	sunday: 0,
 	monday: 1,
@@ -179,6 +190,26 @@ const WEEKDAYS = {
 	friday: 5,
 	saturday: 6,
 };
+
+/**
+ * 🟢 Detects if text or file content is a multi-person MOM or Task Assignment list
+ * rather than a regular single-user Slack message.
+ */
+function isMultiPersonWorkDocument(text = "") {
+	if (!text || typeof text !== "string") return false;
+
+	const matchesHeader = MULTI_PERSON_DOC_PATTERNS.some((pattern) =>
+		pattern.test(text),
+	);
+	if (matchesHeader) return true;
+
+	const boldNameHeaders = (
+		text.match(/^\s*\*\*([A-Za-z\s()-]+)\*\*\s*$/gm) || []
+	).length;
+	if (boldNameHeaders >= 2) return true;
+
+	return false;
+}
 
 function emptyUser() {
 	return { id: "", name: "", display_name: "", email: "" };
@@ -1048,4 +1079,5 @@ module.exports = {
 	isAcknowledgement,
 	normalizePersonName,
 	toUser,
+	isMultiPersonWorkDocument,
 };

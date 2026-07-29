@@ -8,6 +8,7 @@ const {
 	detectStatus,
 	extractDueDate,
 	extractMentionedUsers,
+	isMultiPersonWorkDocument,
 } = require("../agent/parser");
 const {
 	findSimilarTask,
@@ -96,491 +97,549 @@ class MessageProcessor {
 	}
 
 	async process(raw, options = {}) {
-		let {
-			text = "",
-			sender,
-			channel = "",
-			thread_id = "",
-			workspace_id = "",
-			team = "",
-			message_ts = "",
-			is_edit = false,
-			user_directory = {},
-			slack_client = null,
-			local_attachments = [],
-		} = raw;
-		const { quiet = false } = options;
+        let {
+            text = "",
+            sender,
+            channel = "",
+            thread_id = "",
+            workspace_id = "",
+            team = "",
+            message_ts = "",
+            is_edit = false,
+            user_directory = {},
+            slack_client = null,
+            local_attachments = [],
+        } = raw;
+        const { quiet = false } = options;
 
-		// 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
-		if (!team && channel) {
-			try {
-				const cleanChan = channel.replace(/^#/, "").trim();
-				const teamDoc = await Team.findOne({
-					$or: [
-						{ channel_id: cleanChan },
-						{ channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
-						{ team_id: cleanChan },
-					],
-				}).lean();
+        // 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
+        if (!team && channel) {
+            try {
+                const cleanChan = channel.replace(/^#/, "").trim();
+                const teamDoc = await Team.findOne({
+                    $or: [
+                        { channel_id: cleanChan },
+                        { channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
+                        { team_id: cleanChan },
+                    ],
+                }).lean();
 
-				if (teamDoc) {
-					team =
-						teamDoc.channel_name ||
-						teamDoc.team_id ||
-						teamDoc.team ||
-						"";
-				}
-			} catch (e) {
-				console.warn(
-					"[MessageProcessor] Team lookup warning:",
-					e.message,
-				);
-			}
-		}
+                if (teamDoc) {
+                    team =
+                        teamDoc.channel_name ||
+                        teamDoc.team_id ||
+                        teamDoc.team ||
+                        "";
+                }
+            } catch (e) {
+                console.warn(
+                    "[MessageProcessor] Team lookup warning:",
+                    e.message,
+                );
+            }
+        }
 
-		const threadRoot = thread_id || message_ts;
+        const threadRoot = thread_id || message_ts;
 
-		// 🟢 Save message embedding to ChromaDB (for backfilling & real-time)
-		if (text && text.trim().length > 0) {
-			try {
-				const vectorArray = await getEmbedding(text);
-				if (vectorArray) {
-					await vectorDbService.saveMessage({
-						messageId: message_ts || newId("msg"),
-						threadId: threadRoot,
-						text: text,
-						vectorArray: vectorArray,
-						senderId: sender?.id || "unknown",
-						senderName:
-							sender?.display_name ||
-							sender?.real_name ||
-							sender?.name ||
-							"Unknown",
-					});
-				}
-			} catch (vectorErr) {
-				console.warn(
-					"[VectorDB Warning] Failed to index message:",
-					vectorErr.message,
-				);
-			}
-		}
+        // 🟢 Save message embedding to ChromaDB (for backfilling & real-time)
+        if (text && text.trim().length > 0) {
+            try {
+                const vectorArray = await getEmbedding(text);
+                if (vectorArray) {
+                    await vectorDbService.saveMessage({
+                        messageId: message_ts || newId("msg"),
+                        threadId: threadRoot,
+                        text: text,
+                        vectorArray: vectorArray,
+                        senderId: sender?.id || "unknown",
+                        senderName:
+                            sender?.display_name ||
+                            sender?.real_name ||
+                            sender?.name ||
+                            "Unknown",
+                    });
+                }
+            } catch (vectorErr) {
+                console.warn(
+                    "[VectorDB Warning] Failed to index message:",
+                    vectorErr.message,
+                );
+            }
+        }
 
-		let existing_task = null;
-		let existing_issue = null;
+        let existing_task = null;
+        let existing_issue = null;
 
-		const isExplicitCommand =
-			/task\s*-/i.test(text) || /issue\s*-/i.test(text);
-		const textHash = hashText(text);
+        const isExplicitCommand =
+            /task\s*-/i.test(text) || /issue\s*-/i.test(text);
+        const textHash = hashText(text);
 
-		if (is_edit && message_ts) {
-			const byMsg = await findWorkByMessageTs(message_ts, channel);
-			existing_task = byMsg.task;
-			existing_issue = byMsg.issue;
+        if (is_edit && message_ts) {
+            const byMsg = await findWorkByMessageTs(message_ts, channel);
+            existing_task = byMsg.task;
+            existing_issue = byMsg.issue;
 
-			const alreadyAnalyzed =
-				wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
-				wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
+            const alreadyAnalyzed =
+                wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
+                wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
 
-			if (alreadyAnalyzed) {
-				console.log(
-					`[MessageProcessor] Skipping already analyzed message edit (${message_ts})`,
-				);
-			}
-		}
+            if (alreadyAnalyzed) {
+                console.log(
+                    `[MessageProcessor] Skipping already analyzed message edit (${message_ts})`,
+                );
+            }
+        }
 
-		if (
-			!existing_task &&
-			!existing_issue &&
-			threadRoot &&
-			!isExplicitCommand
-		) {
-			const byThread = await findWorkByThread(threadRoot, channel);
-			existing_task = byThread.task;
-			existing_issue = byThread.issue;
-		}
+        if (
+            !existing_task &&
+            !existing_issue &&
+            threadRoot &&
+            !isExplicitCommand
+        ) {
+            const byThread = await findWorkByThread(threadRoot, channel);
+            existing_task = byThread.task;
+            existing_issue = byThread.issue;
+        }
 
-		// 🟢 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
-		if (
-			(existing_task || existing_issue) &&
-			threadRoot &&
-			threadRoot !== message_ts
-		) {
-			const lowerReply = text.toLowerCase().trim();
+        // 🟢 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
+        if (
+            (existing_task || existing_issue) &&
+            threadRoot &&
+            threadRoot !== message_ts
+        ) {
+            const lowerReply = text.toLowerCase().trim();
 
-			// Flexible Regex: Catches 'status - hold', 'status-hold', 'status -hold', etc.
-			const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
-			const priorityMatch = lowerReply.match(
-				/\bpriority\s*-\s*([a-z]+)\b/i,
-			);
+            const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
+            const priorityMatch = lowerReply.match(
+                /\bpriority\s*-\s*([a-z]+)\b/i,
+            );
 
-			if (statusMatch || priorityMatch) {
-				const updates = {};
+            if (statusMatch || priorityMatch) {
+                const updates = {};
 
-				if (statusMatch) {
-					const s = statusMatch[1].trim();
-					if (/^(resolve|resolved|done|completed|finished)$/.test(s))
-						updates.status = existing_issue
-							? "RESOLVED"
-							: "COMPLETED";
-					else if (/^(hold|blocked|block|stuck)$/.test(s))
-						updates.status = existing_issue ? "HOLD" : "BLOCKED";
-					else if (/^(open|processing|doing|wip)$/.test(s))
-						updates.status = existing_issue ? "OPEN" : "PROCESSING";
-				}
+                if (statusMatch) {
+                    const s = statusMatch[1].trim();
+                    if (/^(resolve|resolved|done|completed|finished)$/.test(s))
+                        updates.status = existing_issue
+                            ? "RESOLVED"
+                            : "COMPLETED";
+                    else if (/^(hold|blocked|block|stuck)$/.test(s))
+                        updates.status = existing_issue ? "HOLD" : "BLOCKED";
+                    else if (/^(open|processing|doing|wip)$/.test(s))
+                        updates.status = existing_issue ? "OPEN" : "PROCESSING";
+                }
 
-				if (priorityMatch) {
-					const p = priorityMatch[1].trim();
-					if (/^(urgent|critical|p0)$/.test(p))
-						updates.priority = "URGENT";
-					else if (/^(high|important|p1)$/.test(p))
-						updates.priority = "HIGH";
-					else if (/^(medium|p2)$/.test(p))
-						updates.priority = "MEDIUM";
-					else if (/^(low|minor|p3)$/.test(p))
-						updates.priority = "LOW";
-				}
+                if (priorityMatch) {
+                    const p = priorityMatch[1].trim();
+                    if (/^(urgent|critical|p0)$/.test(p))
+                        updates.priority = "URGENT";
+                    else if (/^(high|important|p1)$/.test(p))
+                        updates.priority = "HIGH";
+                    else if (/^(medium|p2)$/.test(p))
+                        updates.priority = "MEDIUM";
+                    else if (/^(low|minor|p3)$/.test(p))
+                        updates.priority = "LOW";
+                }
 
-				if (Object.keys(updates).length > 0) {
-					// Route the exact update directly into your existing persist pipeline
-					const dummyParsed = {
-						classification: existing_issue ? "ISSUE" : "TASK",
-						action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
-						updates,
-						sender: sender
-							? {
-									id: sender.id,
-									name: sender.name,
-									display_name: sender.display_name,
-									email: "",
-								}
-							: { id: "", name: "" },
-						issue: existing_issue
-							? { id: existing_issue.issue_id }
-							: null,
-						task: existing_task
-							? { id: existing_task.task_id }
-							: null,
-						meta: { needs_human_review: false },
-					};
+                if (Object.keys(updates).length > 0) {
+                    const dummyParsed = {
+                        classification: existing_issue ? "ISSUE" : "TASK",
+                        action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
+                        updates,
+                        sender: sender
+                            ? {
+                                  id: sender.id,
+                                  name: sender.name,
+                                  display_name: sender.display_name,
+                                  email: "",
+                              }
+                            : { id: "", name: "" },
+                        issue: existing_issue
+                            ? { id: existing_issue.issue_id }
+                            : null,
+                        task: existing_task
+                            ? { id: existing_task.task_id }
+                            : null,
+                        meta: { needs_human_review: false },
+                    };
 
-					const result = await this.persist(dummyParsed, {
-						text,
-						sender,
-						channel,
-						thread_id: threadRoot,
-						workspace_id,
-						team,
-						message_ts,
-						text_hash: textHash,
-						slack_client,
-						user_directory,
-					});
+                    const result = await this.persist(dummyParsed, {
+                        text,
+                        sender,
+                        channel,
+                        thread_id: threadRoot,
+                        workspace_id,
+                        team,
+                        message_ts,
+                        text_hash: textHash,
+                        slack_client,
+                        user_directory,
+                    });
 
-					if (this.io && !quiet) {
-						this.io.emit("dashboard:update", {
-							action: result.action,
-							classification: result.classification,
-							task_id: result.task?.id || null,
-							issue_id: result.issue?.id || null,
-							at: new Date().toISOString(),
-						});
-					}
-					return result; // 🛑 Halt processing so it doesn't parse anything else
-				}
-			}
-		}
+                    if (this.io && !quiet) {
+                        this.io.emit("dashboard:update", {
+                            action: result.action,
+                            classification: result.classification,
+                            task_id: result.task?.id || null,
+                            issue_id: result.issue?.id || null,
+                            at: new Date().toISOString(),
+                        });
+                    }
+                    return result;
+                }
+            }
+        }
 
-		// 1. Intercept "accept" command
-		if (text.trim().toLowerCase().startsWith("accept")) {
-			const mentioned = extractMentionedUsers(text, user_directory || {});
-			const targetToTag = mentioned.find(
-				(u) => u.id && u.id !== sender?.id,
-			);
+        // 1. Intercept "accept" command
+        if (text.trim().toLowerCase().startsWith("accept")) {
+            const mentioned = extractMentionedUsers(text, user_directory || {});
+            const targetToTag = mentioned.find(
+                (u) => u.id && u.id !== sender?.id,
+            );
 
-			if (targetToTag && slack_client) {
-				const originalSenderId = targetToTag.id;
-				await slack_client.chat.postMessage({
-					channel: originalSenderId,
-					text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
-				});
-				await slack_client.chat.postMessage({
-					channel: channel,
-					thread_ts: threadRoot || message_ts,
-					text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
-				});
-				return {
-					classification: "GENERAL_DISCUSSION",
-					action: "CONNECT_ACCEPTED",
-					dashboard_update: false,
-				};
-			}
-		}
+            if (targetToTag && slack_client) {
+                const originalSenderId = targetToTag.id;
+                await slack_client.chat.postMessage({
+                    channel: originalSenderId,
+                    text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
+                });
+                await slack_client.chat.postMessage({
+                    channel: channel,
+                    thread_ts: threadRoot || message_ts,
+                    text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
+                });
+                return {
+                    classification: "GENERAL_DISCUSSION",
+                    action: "CONNECT_ACCEPTED",
+                    dashboard_update: false,
+                };
+            }
+        }
 
-		// 2. Intercept "delay" command
-		if (text.trim().toLowerCase().startsWith("delay")) {
-			const mentioned = extractMentionedUsers(text, user_directory || {});
-			const targetToTag = mentioned.find(
-				(u) => u.id && u.id !== sender?.id,
-			);
+        // 2. Intercept "delay" command
+        if (text.trim().toLowerCase().startsWith("delay")) {
+            const mentioned = extractMentionedUsers(text, user_directory || {});
+            const targetToTag = mentioned.find(
+                (u) => u.id && u.id !== sender?.id,
+            );
 
-			if (targetToTag && slack_client) {
-				const originalSenderId = targetToTag.id;
-				const timeInput = text
-					.replace(/^delay/i, "")
-					.replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
-					.replace(/@[A-Za-z0-9_.-]+/g, "")
-					.trim();
+            if (targetToTag && slack_client) {
+                const originalSenderId = targetToTag.id;
+                const timeInput = text
+                    .replace(/^delay/i, "")
+                    .replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
+                    .replace(/@[A-Za-z0-9_.-]+/g, "")
+                    .trim();
 
-				let postAt;
-				let delayText = timeInput;
+                let postAt;
+                let delayText = timeInput;
 
-				const minMatch = timeInput.match(
-					/^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
-				);
-				const hrMatch = timeInput.match(
-					/^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
-				);
+                const minMatch = timeInput.match(
+                    /^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
+                );
+                const hrMatch = timeInput.match(
+                    /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
+                );
 
-				if (minMatch) {
-					const mins = parseInt(minMatch[1], 10);
-					postAt =
-						Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
-					delayText = `in ${mins} minutes`;
-				} else if (hrMatch) {
-					const hrs = parseFloat(hrMatch[1]);
-					postAt =
-						Math.floor(Date.now() / 1000) +
-						Math.max(hrs * 3600, 65);
-					delayText = `in ${hrs} hours`;
-				} else {
-					const parsedDateStr = extractDueDate(timeInput, new Date());
-					if (parsedDateStr) {
-						postAt = Math.floor(
-							new Date(parsedDateStr).getTime() / 1000,
-						);
-						delayText = `at ${timeInput}`;
-						if (postAt <= Math.floor(Date.now() / 1000) + 60) {
-							postAt += 24 * 3600;
-						}
-					} else {
-						await slack_client.chat.postMessage({
-							channel: channel,
-							thread_ts: threadRoot || message_ts,
-							text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
-						});
-						return {
-							classification: "GENERAL_DISCUSSION",
-							action: "CONNECT_DELAY_FAILED",
-							dashboard_update: false,
-						};
-					}
-				}
+                if (minMatch) {
+                    const mins = parseInt(minMatch[1], 10);
+                    postAt =
+                        Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
+                    delayText = `in ${mins} minutes`;
+                } else if (hrMatch) {
+                    const hrs = parseFloat(hrMatch[1]);
+                    postAt =
+                        Math.floor(Date.now() / 1000) +
+                        Math.max(hrs * 3600, 65);
+                    delayText = `in ${hrs} hours`;
+                } else {
+                    const parsedDateStr = extractDueDate(timeInput, new Date());
+                    if (parsedDateStr) {
+                        postAt = Math.floor(
+                            new Date(parsedDateStr).getTime() / 1000,
+                        );
+                        delayText = `at ${timeInput}`;
+                        if (postAt <= Math.floor(Date.now() / 1000) + 60) {
+                            postAt += 24 * 3600;
+                        }
+                    } else {
+                        await slack_client.chat.postMessage({
+                            channel: channel,
+                            thread_ts: threadRoot || message_ts,
+                            text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
+                        });
+                        return {
+                            classification: "GENERAL_DISCUSSION",
+                            action: "CONNECT_DELAY_FAILED",
+                            dashboard_update: false,
+                        };
+                    }
+                }
 
-				await slack_client.chat.postMessage({
-					channel: originalSenderId,
-					text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
-				});
-				await slack_client.chat.postMessage({
-					channel: channel,
-					thread_ts: threadRoot || message_ts,
-					text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
-				});
+                await slack_client.chat.postMessage({
+                    channel: originalSenderId,
+                    text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
+                });
+                await slack_client.chat.postMessage({
+                    channel: channel,
+                    thread_ts: threadRoot || message_ts,
+                    text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
+                });
 
-				try {
-					await slack_client.chat.scheduleMessage({
-						channel: originalSenderId,
-						post_at: postAt,
-						text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
-					});
-					await slack_client.chat.scheduleMessage({
-						channel: sender.id,
-						post_at: postAt,
-						text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
-					});
-				} catch (e) {
-					console.error("[Slack] Scheduler error:", e.message);
-				}
+                try {
+                    await slack_client.chat.scheduleMessage({
+                        channel: originalSenderId,
+                        post_at: postAt,
+                        text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
+                    });
+                    await slack_client.chat.scheduleMessage({
+                        channel: sender.id,
+                        post_at: postAt,
+                        text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
+                    });
+                } catch (e) {
+                    console.error("[Slack] Scheduler error:", e.message);
+                }
 
-				return {
-					classification: "GENERAL_DISCUSSION",
-					action: "CONNECT_DELAYED",
-					dashboard_update: false,
-				};
-			}
-		}
+                return {
+                    classification: "GENERAL_DISCUSSION",
+                    action: "CONNECT_DELAYED",
+                    dashboard_update: false,
+                };
+            }
+        }
 
-		// 3. Intercept "connect" command
-		const connectMatch = text.match(
-			/\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
-		);
-		if (connectMatch) {
-			try {
-				const mentioned = extractMentionedUsers(
-					text,
-					user_directory || {},
-				);
-				const senderId = sender?.id || "unknown";
-				const targetUser = mentioned.find(
-					(u) => u.id && u.id !== senderId,
-				);
+        // 3. Intercept "connect" command
+        const connectMatch = text.match(
+            /\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
+        );
+        if (connectMatch) {
+            try {
+                const mentioned = extractMentionedUsers(
+                    text,
+                    user_directory || {},
+                );
+                const senderId = sender?.id || "unknown";
+                const targetUser = mentioned.find(
+                    (u) => u.id && u.id !== senderId,
+                );
 
-				if (targetUser && this.connect) {
-					const request = this.connect.createRequest({
-						senderId,
-						senderName:
-							sender?.display_name || sender?.name || senderId,
-						targetUserId: targetUser.id,
-						targetUserName:
-							targetUser.display_name ||
-							targetUser.name ||
-							targetUser.id,
-						channel: channel,
-						threadTs: threadRoot || message_ts,
-					});
+                if (targetUser && this.connect) {
+                    const request = this.connect.createRequest({
+                        senderId,
+                        senderName:
+                            sender?.display_name || sender?.name || senderId,
+                        targetUserId: targetUser.id,
+                        targetUserName:
+                            targetUser.display_name ||
+                            targetUser.name ||
+                            targetUser.id,
+                        channel: channel,
+                        threadTs: threadRoot || message_ts,
+                    });
 
-					return {
-						classification: "GENERAL_DISCUSSION",
-						action: "CONNECT_REQUEST",
-						dashboard_update: false,
-						connect: {
-							requestId: request.id,
-							senderId: request.senderId,
-							senderName: request.senderName,
-							targetUserId: request.targetUserId,
-							targetUserName: request.targetUserName,
-							channel: request.channel,
-							threadTs: request.threadTs,
-						},
-					};
-				}
-			} catch (err) {
-				console.error("[Connect] FATAL ERROR:", err.message);
-			}
-		}
+                    return {
+                        classification: "GENERAL_DISCUSSION",
+                        action: "CONNECT_REQUEST",
+                        dashboard_update: false,
+                        connect: {
+                            requestId: request.id,
+                            senderId: request.senderId,
+                            senderName: request.senderName,
+                            targetUserId: request.targetUserId,
+                            targetUserName: request.targetUserName,
+                            channel: request.channel,
+                            threadTs: request.threadTs,
+                        },
+                    };
+                }
+            } catch (err) {
+                console.error("[Connect] FATAL ERROR:", err.message);
+            }
+        }
 
-		// Baseline parser
-		const parsed = await parseMessage({
-			text,
-			sender,
-			channel,
-			thread_id: threadRoot,
-			workspace_id,
-			team,
-			message_ts,
-			is_edit,
-			user_directory,
-			existing_task,
-			existing_issue,
-			now: new Date(),
-		});
+        // 🟢 4. CHECK 1: Is the channel text a multi-person MOM or Task Assignment document?
+        if (isMultiPersonWorkDocument(text)) {
+            console.log(`[MessageProcessor] 📋 Multi-person MOM/Task Assignment text detected. Routing to bulk assignment engine...`);
+            const { processMOMAndAssignWork } = require("../services/momParser");
 
-		if (
-			parsed.classification === "TASK" &&
-			parsed.action === "CREATE_TASK" &&
-			parsed.task
-		) {
-			const sim = await findSimilarTask(
-				parsed.task.title,
-				parsed.task.description,
-				workspace_id,
-				channel,
-				0.6,
-			);
-			if (sim) {
-				parsed.action = "UPDATE_TASK";
-				parsed.task_created = false;
-				parsed.task_updated = true;
-				parsed.task.id = sim.task.task_id;
-				existing_task = sim.task;
+            const result = await processMOMAndAssignWork({
+                rawText: text,
+                channel,
+                workspace_id,
+                team,
+                message_ts: threadRoot,
+                user_directory,
+                messageProcessor: this,
+            });
 
-				if (parsed.task.status && parsed.task.status !== "TODO") {
-					parsed.updates = {
-						...parsed.updates,
-						status: parsed.task.status,
-					};
-				}
-			}
-		}
+            return {
+                classification: "MOM_DOCUMENT",
+                action: "PARSED_AND_ASSIGNED_MOM",
+                metadata: result.metadata,
+                created: result.created,
+                dashboard_update: true,
+            };
+        }
 
-		if (
-			parsed.classification === "GENERAL_DISCUSSION" &&
-			parsed.action === "STORE_DISCUSSION"
-		) {
-			const statusMatch = detectStatus(text);
-			if (statusMatch !== "TODO") {
-				const sim = await findSimilarTask(
-					text,
-					"",
-					workspace_id,
-					channel,
-					0.75,
-				);
-				if (sim) {
-					parsed.classification = "TASK";
-					parsed.action = "UPDATE_TASK";
-					parsed.task_created = false;
-					parsed.task_updated = true;
-					parsed.task = {
-						...sim.task,
-						id: sim.task.task_id,
-						status: statusMatch,
-					};
-					parsed.updates = { status: statusMatch };
-					existing_task = sim.task;
-				}
-			}
-		}
+        // 🟢 5. CHECK 2: Was a file (PDF, DOCX, TXT) uploaded containing MOM / Task Assignments?
+        if (local_attachments && local_attachments.length > 0) {
+            const { extractAttachments } = require("../helpers/extractor.helper");
+            const extractedFiles = await extractAttachments(local_attachments);
+            const validDoc = extractedFiles.find((f) => f.extracted && f.content);
 
-		if (
-			parsed.classification === "ISSUE" &&
-			parsed.action === "CREATE_ISSUE" &&
-			parsed.issue
-		) {
-			const sim = await findSimilarIssue(
-				parsed.issue.title,
-				parsed.issue.description,
-				workspace_id,
-				channel,
-				0.6,
-			);
-			if (sim) {
-				parsed.action = "UPDATE_ISSUE";
-				parsed.issue_created = false;
-				parsed.issue_updated = true;
-				parsed.issue.id = sim.issue.issue_id;
-				existing_issue = sim.issue;
-			}
-		}
+            if (validDoc) {
+                const rawDocText = typeof validDoc.content === "string"
+                    ? validDoc.content
+                    : JSON.stringify(validDoc.content);
 
-		const result = await this.persist(parsed, {
-			text,
-			sender,
-			channel,
-			thread_id: threadRoot,
-			workspace_id,
-			team,
-			message_ts,
-			text_hash: textHash,
-			slack_client,
-			user_directory: raw.user_directory || {},
-			existing_task,
-			existing_issue,
-			local_attachments,
-		});
+                if (isMultiPersonWorkDocument(rawDocText)) {
+                    console.log(`[MessageProcessor] 📄 Uploaded multi-person document detected (${validDoc.fileName}). Routing to bulk assignment engine...`);
+                    const { processMOMAndAssignWork } = require("../services/momParser");
 
-		if (this.io && !quiet) {
-			this.io.emit("dashboard:update", {
-				action: result.action,
-				classification: result.classification,
-				task_id: result.task?.id || null,
-				issue_id: result.issue?.id || null,
-				at: new Date().toISOString(),
-			});
-		}
+                    const result = await processMOMAndAssignWork({
+                        rawText: rawDocText,
+                        channel,
+                        workspace_id,
+                        team,
+                        message_ts: threadRoot,
+                        user_directory,
+                        messageProcessor: this,
+                    });
 
-		return result;
-	}
+                    return {
+                        classification: "MOM_DOCUMENT",
+                        action: "PARSED_AND_ASSIGNED_MOM_FILE",
+                        metadata: result.metadata,
+                        created: result.created,
+                        dashboard_update: true,
+                    };
+                }
+            }
+        }
+
+        // Baseline parser
+        const parsed = await parseMessage({
+            text,
+            sender,
+            channel,
+            thread_id: threadRoot,
+            workspace_id,
+            team,
+            message_ts,
+            is_edit,
+            user_directory,
+            existing_task,
+            existing_issue,
+            now: new Date(),
+        });
+
+        if (
+            parsed.classification === "TASK" &&
+            parsed.action === "CREATE_TASK" &&
+            parsed.task
+        ) {
+            const sim = await findSimilarTask(
+                parsed.task.title,
+                parsed.task.description,
+                workspace_id,
+                channel,
+                0.6,
+            );
+            if (sim) {
+                parsed.action = "UPDATE_TASK";
+                parsed.task_created = false;
+                parsed.task_updated = true;
+                parsed.task.id = sim.task.task_id;
+                existing_task = sim.task;
+
+                if (parsed.task.status && parsed.task.status !== "TODO") {
+                    parsed.updates = {
+                        ...parsed.updates,
+                        status: parsed.task.status,
+                    };
+                }
+            }
+        }
+
+        if (
+            parsed.classification === "GENERAL_DISCUSSION" &&
+            parsed.action === "STORE_DISCUSSION"
+        ) {
+            const statusMatch = detectStatus(text);
+            if (statusMatch !== "TODO") {
+                const sim = await findSimilarTask(
+                    text,
+                    "",
+                    workspace_id,
+                    channel,
+                    0.75,
+                );
+                if (sim) {
+                    parsed.classification = "TASK";
+                    parsed.action = "UPDATE_TASK";
+                    parsed.task_created = false;
+                    parsed.task_updated = true;
+                    parsed.task = {
+                        ...sim.task,
+                        id: sim.task.task_id,
+                        status: statusMatch,
+                    };
+                    parsed.updates = { status: statusMatch };
+                    existing_task = sim.task;
+                }
+            }
+        }
+
+        if (
+            parsed.classification === "ISSUE" &&
+            parsed.action === "CREATE_ISSUE" &&
+            parsed.issue
+        ) {
+            const sim = await findSimilarIssue(
+                parsed.issue.title,
+                parsed.issue.description,
+                workspace_id,
+                channel,
+                0.6,
+            );
+            if (sim) {
+                parsed.action = "UPDATE_ISSUE";
+                parsed.issue_created = false;
+                parsed.issue_updated = true;
+                parsed.issue.id = sim.issue.issue_id;
+                existing_issue = sim.issue;
+            }
+        }
+
+        const result = await this.persist(parsed, {
+            text,
+            sender,
+            channel,
+            thread_id: threadRoot,
+            workspace_id,
+            team,
+            message_ts,
+            text_hash: textHash,
+            slack_client,
+            user_directory: raw.user_directory || {},
+            existing_task,
+            existing_issue,
+            local_attachments,
+        });
+
+        if (this.io && !quiet) {
+            this.io.emit("dashboard:update", {
+                action: result.action,
+                classification: result.classification,
+                task_id: result.task?.id || null,
+                issue_id: result.issue?.id || null,
+                at: new Date().toISOString(),
+            });
+        }
+
+        return result;
+    }
 
 	async cleanupAttachments(localAttachments = []) {
 		for (const attachment of localAttachments) {

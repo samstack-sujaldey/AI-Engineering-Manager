@@ -18,191 +18,104 @@ function createApiRouter({ messageProcessor }) {
 
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   // Replace GET /discussions/daily-summary in routes/api.js with this:
-  
-router.get("/discussions/daily-summary", async (req, res) => {
-  try {
-    const { getTargetSummaryDate } = require("../jobs/standupScheduler");
 
-    // 1. Receive the raw date passed from frontend (or default to today's raw date)
-    const rawDateStr = req.query.date
-      ? String(req.query.date).split("T")[0].trim()
-      : new Date().toISOString().split("T")[0];
+  router.get("/discussions/daily-summary", async (req, res) => {
+    try {
+      const { getTargetSummaryDate } = require("../jobs/standupScheduler");
 
-    // 2. Convert the raw date to the target business date (Yesterday / Friday on Mondays)
-    const rawDateObj = new Date(rawDateStr);
-    const targetBusinessDateStr = getTargetSummaryDate(rawDateObj);
+      // 1. Receive the raw date passed from frontend (or default to today's raw date)
+      const rawDateStr = req.query.date
+        ? String(req.query.date).split("T")[0].trim()
+        : new Date().toISOString().split("T")[0];
 
-    const channel = req.query.channel ? String(req.query.channel).trim() : null;
+      // 2. Convert the raw date to the target business date (Yesterday / Friday on Mondays)
+      const rawDateObj = new Date(rawDateStr);
+      const targetBusinessDateStr = getTargetSummaryDate(rawDateObj);
 
-    // 3. Query MongoDB for the converted target business date
-    const cacheKey = channel 
-      ? { date: targetBusinessDateStr, channel: channel }
-      : { date: targetBusinessDateStr, $or: [{ channel: null }, { channel: "" }] };
+      const channel = req.query.channel
+        ? String(req.query.channel).trim()
+        : null;
 
-    const cachedDoc = await DailySummary.findOne(cacheKey).lean();
+      // 3. Query MongoDB for the converted target business date
+      const cacheKey = channel
+        ? { date: targetBusinessDateStr, channel: channel }
+        : {
+            date: targetBusinessDateStr,
+            $or: [{ channel: null }, { channel: "" }],
+          };
 
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
+      const cachedDoc = await DailySummary.findOne(cacheKey).lean();
 
-    if (cachedDoc && cachedDoc.summary) {
+      res.setHeader(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate, proxy-revalidate",
+      );
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      if (cachedDoc && cachedDoc.summary) {
+        return res.json({
+          raw_date: rawDateStr,
+          date: targetBusinessDateStr,
+          channel: channel || null,
+          summary: cachedDoc.summary,
+          tasks_count: cachedDoc.tasks_count || 0,
+          issues_count: cachedDoc.issues_count || 0,
+          cached: true,
+          last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+        });
+      }
+
+      // 4. Return fallback if no pre-cached document exists for that business date
       return res.json({
         raw_date: rawDateStr,
         date: targetBusinessDateStr,
         channel: channel || null,
-        summary: cachedDoc.summary,
-        tasks_count: cachedDoc.tasks_count || 0,
-        issues_count: cachedDoc.issues_count || 0,
-        cached: true,
-        last_updated_at: cachedDoc.updatedAt || cachedDoc.createdAt,
+        summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetBusinessDateStr}\nSummary for ${targetBusinessDateStr} is not cached.`,
+        tasks_count: 0,
+        issues_count: 0,
+        cached: false,
+        last_updated_at: new Date(),
       });
+    } catch (err) {
+      console.error("[daily-summary route error]:", err);
+      res.status(500).json({ error: "Failed to fetch daily summary cache" });
     }
-
-    // 4. Return fallback if no pre-cached document exists for that business date
-    return res.json({
-      raw_date: rawDateStr,
-      date: targetBusinessDateStr,
-      channel: channel || null,
-      summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetBusinessDateStr}\nSummary for ${targetBusinessDateStr} is not cached.`,
-      tasks_count: 0,
-      issues_count: 0,
-      cached: false,
-      last_updated_at: new Date(),
-    });
-  } catch (err) {
-    console.error("[daily-summary route error]:", err);
-    res.status(500).json({ error: "Failed to fetch daily summary cache" });
-  }
-});
+  });
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
+  // POST: Parse Raw Unstructured MOM Message / Document and Auto-Assign Items by First Name
   router.post("/discussions/parse-mom", async (req, res) => {
     try {
-      const { rawText } = req.body;
+      const { rawText, channel, workspace_id, user_directory, team } = req.body;
 
       if (!rawText || typeof rawText !== "string") {
         return res.status(400).json({ error: "rawText parameter is required" });
       }
 
-      const prompt = `
-You are an expert AI Engineering Manager. Parse the following Stand-up MOM message into structured categories per team member.
+      const { processMOMAndAssignWork } = require("../services/momParser");
 
-Raw MOM Message:
-"""
-${rawText}
-"""
-
-Instructions:
-1. Extract metadata: Date (in YYYY-MM-DD format), Duration, and Present Members array.
-2. For each member under "Team-wise Task Updates", group their bullet points into:
-   - "tasks": Completed, in-progress, or planned work items.
-   - "issues": Bugs, data mismatches, blockers, or errors being analyzed/retested.
-   - "discussions": Meetings, discussions with leads/management, or general administrative notes.
-`;
-
-      const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
-        maxTokens: 1000,
-        temperature: 0.1,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "mom_parsed_structure",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                metadata: {
-                  type: "object",
-                  properties: {
-                    date: { type: "string" },
-                    duration: { type: "string" },
-                    present_members: {
-                      type: "array",
-                      items: { type: "string" },
-                    },
-                  },
-                  required: ["date", "duration", "present_members"],
-                  additionalProperties: false,
-                },
-                member_updates: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      member_name: { type: "string" },
-                      tasks: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      issues: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      discussions: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                    },
-                    required: ["member_name", "tasks", "issues", "discussions"],
-                    additionalProperties: false,
-                  },
-                },
-              },
-              required: ["metadata", "member_updates"],
-              additionalProperties: false,
-            },
-          },
-        },
+      // Process MOM: Matches first names against Slack usernames & saves tasks in DB
+      const result = await processMOMAndAssignWork({
+        rawText,
+        channel: channel || "",
+        workspace_id: workspace_id || "",
+        team: team || channel || "",
+        message_ts: `mom_${Date.now()}`,
+        user_directory: user_directory || {},
+        messageProcessor,
       });
-
-      const parsedData =
-        typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
-
-      let formattedText = `Hi Everyone, please find Today Stand-up MOM\n\n`;
-      formattedText += `Date: ${parsedData.metadata.date}\n`;
-      formattedText += `Duration: ${parsedData.metadata.duration}\n`;
-      formattedText += `Present Members: ${parsedData.metadata.present_members.join(", ")}\n`;
-      formattedText += `Team-wise Task Updates\n\n`;
-
-      parsedData.member_updates.forEach((m) => {
-        formattedText += `**${m.member_name}**\n`;
-        m.tasks.forEach((t) => (formattedText += `- ${t}\n`));
-        m.issues.forEach((i) => (formattedText += `- 🚨 Issue: ${i}\n`));
-        m.discussions.forEach((d) => (formattedText += `- 💬 Note: ${d}\n`));
-        formattedText += `\n`;
-      });
-
-      const updatedDoc = await DailySummary.findOneAndUpdate(
-        { date: parsedData.metadata.date },
-        {
-          summary: formattedText.trim(),
-          tasks_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.tasks.length,
-            0,
-          ),
-          issues_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.issues.length,
-            0,
-          ),
-          discussions_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.discussions.length,
-            0,
-          ),
-          is_stale: false,
-        },
-        { upsert: true, returnDocument: "after" },
-      );
 
       return res.json({
         success: true,
-        metadata: parsedData.metadata,
-        member_updates: parsedData.member_updates,
-        formatted_summary: formattedText.trim(),
-        saved_doc: updatedDoc,
+        metadata: result.metadata,
+        created: result.created,
       });
     } catch (err) {
       console.error("[parse-mom route error]:", err);
-      res.status(500).json({ error: "Failed to parse stand-up MOM message" });
+      res
+        .status(500)
+        .json({ error: "Failed to parse and assign stand-up MOM message" });
     }
   });
 
