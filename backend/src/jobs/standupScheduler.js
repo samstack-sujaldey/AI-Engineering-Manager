@@ -111,7 +111,7 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
     discussionFilter.channel = channel;
   }
 
-  // 🟢 Fetch Tasks (including description), Issues (including description), and Discussions
+  // 🟢 Fetch Tasks, Issues, and Discussions with proper field projections
   const [tasks, issues, discussions] = await Promise.all([
     Task.find(taskFilter, {
       title: 1, description: 1, status: 1, priority: 1, blocked_reason: 1,
@@ -126,7 +126,8 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       _id: 0,
     }).lean().catch(() => []),
     Discussion.find(discussionFilter, {
-      content: 1, "author.name": 1, "author.display_name": 1, "author.real_name": 1,
+      content: 1, 
+      "author.name": 1, "author.display_name": 1, "author.real_name": 1,
       _id: 0,
     }).lean().catch(() => []),
   ]);
@@ -172,7 +173,10 @@ INSTRUCTIONS:
 ${momHeader}
 
 2. Group strictly by member name using bold headers (**Member Name**).
-3. Under each member, combine tasks, issues (including descriptions), and discussions cleanly as bullet points (* ).
+3. Under each member, provide separate subsections if items exist:
+   - "Tasks:" followed by bullet points (* )
+   - "Issues:" followed by bullet points (* ) if any issues exist
+   - "Discussions:" followed by bullet points (* ) if any discussions exist
 4. Do NOT add a "Present Members" line.
 5. Write each bullet as a natural, concise sentence.
 
@@ -199,11 +203,17 @@ ${rawPayload}`;
         for (const t of data.tasks) {
           fallbackBody += `* ${t.title}${t.description && t.description !== t.title ? ` — ${t.description}` : ''}${t.status ? ` [${t.status}]` : ''}${t.blocked_reason ? ` 🚨 Blocker: ${t.blocked_reason}` : ''}\n`;
         }
-        for (const i of data.issues) {
-          fallbackBody += `* 🚨 Issue: ${i.title}${i.description && i.description !== i.title ? ` — ${i.description}` : ''}${i.status ? ` [${i.status}]` : ''}${i.blocked_reason ? ` 🚨 Blocker: ${i.blocked_reason}` : ''}\n`;
+        if (data.issues.length > 0) {
+          fallbackBody += `  Issues:\n`;
+          for (const i of data.issues) {
+            fallbackBody += `  * ${i.title}${i.description && i.description !== i.title ? ` — ${i.description}` : ''}${i.status ? ` [${i.status}]` : ''}${i.blocked_reason ? ` 🚨 Blocker: ${i.blocked_reason}` : ''}\n`;
+          }
         }
-        for (const d of data.discussions) {
-          fallbackBody += `* 💬 Note: ${d.content}\n`;
+        if (data.discussions.length > 0) {
+          fallbackBody += `  Discussions:\n`;
+          for (const d of data.discussions) {
+            fallbackBody += `  * ${d.content}\n`;
+          }
         }
       }
       summaryText = `${momHeader}\n${fallbackBody}`;
