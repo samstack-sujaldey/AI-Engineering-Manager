@@ -10,6 +10,7 @@ const {
     extractDueDate,
     extractMentionedUsers,
 } = require("../agent/parser");
+const { processWorkWithAttachments } = require("../utils/workParser.util");
 const {
     findSimilarTask,
     findSimilarIssue,
@@ -126,21 +127,6 @@ class MessageProcessor {
         if (text) {
             text = text.replace(/<@[A-Z0-9]+>/g, "").trim();
         }
-
-        // 🟢 FIX 1 & 3: Only process complex documents here (slack.js handles images and plain text)
-        if (local_attachments && local_attachments.length > 0) {
-    const extractedFiles = await extractAttachments(local_attachments);
-    
-    for (const file of extractedFiles) {
-        if (file.extracted && file.content) {
-            const contentStr = typeof file.content === "string" 
-                ? file.content 
-                : JSON.stringify(file.content, null, 2);
-                
-            text += `\n\n[Attachment: ${file.fileName}]\n${contentStr.trim()}`;
-        }
-    }
-}
 
         // 🟢 TEAM RESOLUTION
         if (!team && channel) {
@@ -510,21 +496,41 @@ class MessageProcessor {
             }
         }
 
-        // Baseline parser
-        const parsed = await parseMessage({
-            text,
-            sender,
-            channel,
-            thread_id: threadRoot,
-            workspace_id,
-            team,
-            message_ts,
-            is_edit,
-            user_directory,
-            existing_task,
-            existing_issue,
-            now: new Date(),
-        });
+        // 🟢 DELEGATE TO WORKPARSER UTILITY IF FILES EXIST, OTHERWISE PARSE NORMALLY
+
+        let parsed;
+
+        if (local_attachments && local_attachments.length > 0) {
+            parsed = await processWorkWithAttachments({
+                text,
+                sender,
+                channel,
+                thread_id: threadRoot,
+                workspace_id,
+                team,
+                message_ts,
+                is_edit,
+                user_directory: raw.user_directory || {},
+                existing_task,
+                existing_issue,
+                local_attachments,
+            });
+        } else {
+            parsed = await parseMessage({
+                text,
+                sender,
+                channel,
+                thread_id: threadRoot,
+                workspace_id,
+                team,
+                message_ts,
+                is_edit,
+                user_directory: raw.user_directory || {},
+                existing_task,
+                existing_issue,
+                now: new Date(),
+            });
+        }
 
         // 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
         if (parsed.task?.title) {
