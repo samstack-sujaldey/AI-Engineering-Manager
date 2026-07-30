@@ -141,19 +141,33 @@ function createSlackApp({
  const isDM = channelId.startsWith("D");
     const isBotTagged = botUserId && text.includes(`<@${botUserId}>`);
     const hasAiemKeyword = text.toLowerCase().includes("@aiem");
+
+    // 2. Check if this message is a reply inside a thread that already tracks a task or issue
+    const threadRoot = event.thread_ts || event.ts;
+    const isThreadReply = event.thread_ts && event.thread_ts !== event.ts;
     
-    const isBotInvoked = isDM || isBotTagged || hasAiemKeyword;
-
-    const pendingConnect = connect.getByTarget(event.user);
-    const relatedWorkPrompt = (event.thread_ts && event.thread_ts !== event.ts) 
-        ? connect.getRelatedWorkRequest(event.thread_ts) 
-        : null;
-
-    if (!isBotInvoked && !pendingConnect && !relatedWorkPrompt) {
-        return null; // Silently ignores untagged messages
+    let hasExistingWorkInThread = false;
+    if (isThreadReply) {
+        // Query your database helpers to see if a task or issue is tied to this thread root
+        const { findWorkByThread } = require("../services/similarity");
+        const existingWork = await findWorkByThread(threadRoot, channelId);
+        hasExistingWorkInThread = !!(existingWork.task || existingWork.issue);
     }
 
-	
+    const pendingConnect = connect.getByTarget(event.user);
+    const relatedWorkPrompt = isThreadReply ? connect.getRelatedWorkRequest(event.thread_ts) : null;
+
+    // 🟢 ALLOW INVOCATION IF TAGGED, IN A DM, OR IF IT'S A THREAD REPLY TO AN EXISTING TASK/ISSUE
+    const isBotInvoked = isDM || isBotTagged || hasAiemKeyword || hasExistingWorkInThread;
+
+    if (!isBotInvoked && !pendingConnect && !relatedWorkPrompt) {
+        return null; // Silently ignore untagged channel chatter
+    }
+
+    // Strip out the bot's user tag if present so the parser gets clean text
+    if (botUserId) {
+        text = text.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim();
+    }
     // 🟢 GATEKEEPER END 🟢
 
 
