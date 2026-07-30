@@ -396,7 +396,7 @@ function extractDueDate(text, now = new Date()) {
 		else {
 			const withTime = parseTimeOfDay(text, d);
 			if (withTime) return withTime.toISOString();
-			d.setHours(17, 0, 0, 0);
+			d.setHours(18, 0, 0, 0);
 		}
 		return d.toISOString();
 	}

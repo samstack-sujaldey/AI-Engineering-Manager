@@ -127,13 +127,36 @@ function createSlackApp({
     return workspaceUsersCache;
   }
 
-  async function handleMessage(event, client, { is_edit = false } = {}) {
+  async function handleMessage(event, client, { is_edit = false,botUserId = null } = {}) {
     console.log(
       `[Connect] handleMessage called - channel: ${event.channel}, user: ${event.user}, subtype: ${event.subtype || "none"}, bot_id: ${event.bot_id || "none"}`,
     );
     if (event.bot_id || event.subtype === "bot_message") return null;
 
 	let text = event.text || "";
+	const lowerText = text.toLowerCase();
+    const channelId = event.channel || "";
+
+	// 🟢 GATEKEEPER START 🟢
+ const isDM = channelId.startsWith("D");
+    const isBotTagged = botUserId && text.includes(`<@${botUserId}>`);
+    const hasAiemKeyword = text.toLowerCase().includes("@aiem");
+    
+    const isBotInvoked = isDM || isBotTagged || hasAiemKeyword;
+
+    const pendingConnect = connect.getByTarget(event.user);
+    const relatedWorkPrompt = (event.thread_ts && event.thread_ts !== event.ts) 
+        ? connect.getRelatedWorkRequest(event.thread_ts) 
+        : null;
+
+    if (!isBotInvoked && !pendingConnect && !relatedWorkPrompt) {
+        return null; // Silently ignores untagged messages
+    }
+
+	
+    // 🟢 GATEKEEPER END 🟢
+
+
     const sender = await resolveSender(client, event.user);
     const user_directory = await getWorkspaceUsers(client);
 
@@ -230,9 +253,6 @@ function createSlackApp({
     }
 }
 
-    const lowerText = text.toLowerCase();
-    const pendingConnect = connect.getByTarget(event.user);
-    const channelId = event.channel || "";
 
     console.log(`[DEBUG Lookup] event.user (Sender): ${event.user}`);
     console.log(`[DEBUG Lookup] pendingConnect found? ${!!pendingConnect}`);
@@ -798,7 +818,7 @@ function createSlackApp({
     return result;
   }
 
-  app.event("message", async ({ event, client }) => {
+  app.event("message", async ({ event, client, context }) => {
     try {
       // 🟢 DEBUG LOG: Catch everything hitting the bot before filters apply
       console.log(`\n=== 🚨 INCOMING SLACK EVENT 🚨 ===`);
@@ -819,7 +839,7 @@ function createSlackApp({
             ts: event.message.ts,
           },
           client,
-          { is_edit: true },
+          { is_edit: true, botUserId: context.botUserId },
         );
         return;
       }
@@ -835,7 +855,7 @@ function createSlackApp({
       }
 
       // This will now successfully trigger for your undefined subtype messages
-      await handleMessage(event, client, { is_edit: false });
+      await handleMessage(event, client, { is_edit: false, botUserId: context.botUserId });
     } catch (err) {
       console.error("[slack] message handler error:", err);
     }
