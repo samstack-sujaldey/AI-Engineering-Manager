@@ -58,4 +58,5 @@ Thumbs.db
 
 .kilo
 
-docker
+# ChromaDB
+docker/chromadb

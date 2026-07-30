@@ -243,6 +243,15 @@
         <div><dt>Due</dt><dd>{{ t.due_date ? (t.due_date | date: 'medium') : 'Pending' }}</dd></div>
         <div><dt>Blocked reason</dt><dd>{{ t.blocked_reason || '—' }}</dd></div>
       </dl>
+      @if (t.status === 'BLOCKED') {
+        <h3>🚨 Block Details</h3>
+        <p><strong>Status:</strong> <span class="pill warn">{{ t.status }}</span></p>
+        @if (t.blocked_reason) {
+          <p><strong>Reason:</strong> {{ t.blocked_reason }}</p>
+        } @else {
+          <p class="warn-text">No reason provided — awaiting block reason.</p>
+        }
+      }
       @if (t.dependencies?.length) {
         <h3>Dependencies</h3>
         <p>{{ t.dependencies?.join(', ') }}</p>
