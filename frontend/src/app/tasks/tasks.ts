@@ -1,13 +1,12 @@
 import { Component, inject, OnInit, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
 import { PageHeaderComponent } from '../shared/page-header';
 import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-tasks',
   standalone: true,
-  imports: [CommonModule, RouterLink, PageHeaderComponent],
+  imports: [CommonModule, PageHeaderComponent],
   providers: [DatePipe],
   template: `
     <app-page-header title="Tasks Management" searchPlaceholder="Search tasks or assignees...">
@@ -57,7 +56,19 @@ import { DashboardService } from '../services/dashboard.service';
             </thead>
             <tbody>
               <tr *ngFor="let task of getCleanTasks(data.tasks)">
-                <td class="task-title-cell">{{ task.title || task.summary || task.name || 'Untitled Task' }}</td>
+                <td class="task-title-cell">
+                  <div class="task-text-container" (click)="toggleTask(getTaskId(task))">
+                    <div class="task-text" [class.collapsed]="isLongTask(getTaskTitle(task)) && !isTaskExpanded(getTaskId(task))">
+                      {{ getTaskTitle(task) }}
+                    </div>
+                    <button 
+                      class="expand-toggle-btn" 
+                      *ngIf="isLongTask(getTaskTitle(task))"
+                    >
+                      {{ isTaskExpanded(getTaskId(task)) ? 'Show less' : 'Click to expand' }}
+                    </button>
+                  </div>
+                </td>
                 <td class="member-cell">
                   <div class="avatar" [style.background]="getAvatarColor(displayName(task.assigned_to || task.owner || task.assignee))">
                     {{ getInitials(displayName(task.assigned_to || task.owner || task.assignee)) }}
@@ -110,14 +121,40 @@ import { DashboardService } from '../services/dashboard.service';
       .task-table-card { background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; }
       .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
       .card-title { font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; }
-      .task-title-cell { font-weight: 500; color: #1a1a2e; }
+      
+      .task-title-cell { font-weight: 500; color: #1a1a2e; max-width: 350px; }
+      .task-text-container { cursor: pointer; padding: 4px 0; }
+      .task-text { word-break: break-word; white-space: pre-wrap; line-height: 1.4; }
+      .task-text.collapsed {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: normal;
+      }
+      .expand-toggle-btn {
+        font-size: 11px;
+        color: #5b4fcf;
+        background: none;
+        border: none;
+        padding: 0;
+        margin-top: 4px;
+        cursor: pointer;
+        font-weight: 600;
+        display: block;
+      }
+      .expand-toggle-btn:hover {
+        text-decoration: underline;
+      }
+
       .timestamp-cell { color: #555; font-size: 13px; }
       .status-pill { background: #eef2ff; color: #5b4fcf; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
       .blocked-pill { background: #fff0f0; color: #e53e3e; }
 
       .team-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
       .team-table th { text-align: left; font-size: 11px; color: #888; font-weight: 600; letter-spacing: 0.5px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-      .team-table td { padding: 14px 0; font-size: 13.5px; color: #333; border-bottom: 1px solid #f5f5f5; }
+      .team-table td { padding: 14px 0; font-size: 13.5px; color: #333; border-bottom: 1px solid #f5f5f5; vertical-align: top; }
       .member-cell { display: flex; align-items: center; gap: 12px; }
       .avatar { width: 34px; height: 34px; border-radius: 50%; color: white; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-transform: uppercase; }
       .member-name { font-size: 13.5px; font-weight: 500; color: #1a1a2e; text-transform: capitalize; }
@@ -126,6 +163,7 @@ import { DashboardService } from '../services/dashboard.service';
 })
 export class TasksComponent implements OnInit {
   dashService = inject(DashboardService);
+  expandedTaskIds = new Set<string>();
 
   constructor() {
     effect(() => {
@@ -150,6 +188,30 @@ export class TasksComponent implements OnInit {
   clearDate(): void {
     this.dashService.setSelectedDate('');
     this.dashService.load();
+  }
+
+  getTaskId(task: any): string {
+    return task.id || task._id || task.title;
+  }
+
+  getTaskTitle(task: any): string {
+    return task.title || task.summary || task.name || 'Untitled Task';
+  }
+
+  isLongTask(title: string): boolean {
+    return title.length > 50;
+  }
+
+  toggleTask(taskId: string): void {
+    if (this.expandedTaskIds.has(taskId)) {
+      this.expandedTaskIds.delete(taskId);
+    } else {
+      this.expandedTaskIds.add(taskId);
+    }
+  }
+
+  isTaskExpanded(taskId: string): boolean {
+    return this.expandedTaskIds.has(taskId);
   }
 
   isBotUser(m: any): boolean {
@@ -216,7 +278,6 @@ export class TasksComponent implements OnInit {
       return this.matchesSelectedDate(taskDate, selectedDate);
     });
 
-    // Sort descending by creation timestamp (newest first)
     return filtered.sort((a, b) => {
       const timeA = new Date(a.created_time || a.created_at || a.date || a.updated_time || 0).getTime();
       const timeB = new Date(b.created_time || b.created_at || b.date || b.updated_time || 0).getTime();
