@@ -655,7 +655,7 @@ function buildNotificationHints({
 			target_user_id: owner.id,
 			target_user_name: owner.name || owner.display_name || "",
 			message:
-				"Your task is marked as blocked. Please tell me what is blocking it.",
+				`Your task '${title}' is marked as blocked. Please tell me what is blocking it.`,
 			immediate: true,
 		});
 	}

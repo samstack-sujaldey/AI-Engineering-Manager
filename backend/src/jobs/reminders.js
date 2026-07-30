@@ -33,8 +33,7 @@ function startReminderScheduler(notificationService) {
 					type: "BLOCK_REASON_REMINDER",
 					target_user_id: t.owner.id,
 					target_user_name: t.owner.name,
-					message:
-						"Your task is marked as blocked. Please tell me what is blocking it.",
+					message: `Your task '${t.title}' is marked as blocked. Please tell me what is blocking it.`,
 					task_id: t.task_id,
 					scheduleReminder: true,
 				});

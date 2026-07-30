@@ -275,7 +275,7 @@ class MessageProcessor {
                             type: "MISSING_BLOCK_REASON",
                             target_user_id: sender?.id,
                             target_user_name: sender?.name || "User",
-                            message: "Your task is marked as blocked. Please tell me what is blocking it.",
+                            message: `Your task '${existing_task.title}' is marked as blocked. Please tell me what is blocking it.`,
                             immediate: true,
                         });
                     }
