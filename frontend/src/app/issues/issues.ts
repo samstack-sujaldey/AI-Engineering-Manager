@@ -54,18 +54,23 @@ import { DashboardService } from '../services/dashboard.service';
         <table class="issues-table">
           <thead>
             <tr>
-              <th style="width: 40%;">ISSUE / BLOCKER TITLE</th>
-              <th style="width: 25%;">ASSIGNED TO</th>
-              <th style="width: 15%;">PRIORITY</th>
-              <th style="width: 10%;">STATUS</th>
-              <th style="width: 10%;">DATE</th>
+              <th style="width: 35%;">ISSUE / BLOCKER TITLE</th>
+              <th style="width: 22%;">ASSIGNED TO</th>
+              <th style="width: 12%;">PRIORITY</th>
+              <th style="width: 11%;">STATUS</th>
+              <th style="width: 13%;">CREATED AT</th>
+              <th style="width: 7%; text-align: center;">ACTIONS</th>
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let issue of filteredIssues()">
+            <tr
+              *ngFor="let issue of filteredIssues()"
+              class="clickable-row"
+              (click)="openIssueModal(issue)"
+            >
               <td class="issue-name-cell">
-                <div class="issue-name">{{ issue.title || issue.description }}</div>
-                <div class="issue-category">{{ issue.channel_name ? '#' + issue.channel_name : 'General Issue' }}</div>
+                <div class="issue-name">{{ issue.title || issue.description || 'Untitled Issue' }}</div>
+                <div class="issue-category">{{ issue.channel_name ? '#' + issue.channel_name : 'Click to view details...' }}</div>
               </td>
               <td class="assignee-cell">
                 <div
@@ -87,14 +92,88 @@ import { DashboardService } from '../services/dashboard.service';
                 }}</span>
               </td>
               <td class="due-date">
-                {{ (issue.created_time || issue.created_at || issue.date) ? ((issue.created_time || issue.created_at || issue.date) | date: 'mediumDate') : '—' }}
+                {{ (issue.created_time || issue.created_at || issue.date || issue.updated_time) ? ((issue.created_time || issue.created_at || issue.date || issue.updated_time) | date: 'MMM d, y, h:mm a') : '—' }}
+              </td>
+              <td style="text-align: center;" (click)="$event.stopPropagation()">
+                <button 
+                  class="delete-icon-btn" 
+                  (click)="confirmDelete(issue)" 
+                  title="Delete Issue"
+                >
+                  🗑️
+                </button>
               </td>
             </tr>
             <tr *ngIf="filteredIssues().length === 0">
-              <td colspan="5" class="empty-state">No human-assigned issues found matching your filters.</td>
+              <td colspan="6" class="empty-state">No human-assigned issues found matching your filters.</td>
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ISSUE DETAILS MODAL OVERLAY -->
+    <div class="modal-overlay" *ngIf="selectedIssue && !issueToDelete" (click)="closeModal()">
+      <div class="modal-content" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon" *ngIf="selectedIssue.status === 'BLOCKED'">🚨</span>
+            <span class="alert-icon" *ngIf="selectedIssue.status !== 'BLOCKED'">📋</span>
+            <h2 class="modal-title">Issue Details</h2>
+          </div>
+          <button class="close-btn" (click)="closeModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="info-group">
+            <h3 class="info-label">Full Issue Description</h3>
+            <p class="info-value" style="white-space: pre-wrap; word-break: break-word; line-height: 1.5;">
+              {{ selectedIssue.description || selectedIssue.text || selectedIssue.title }}
+            </p>
+          </div>
+
+          <!-- ONLY show if the issue is BLOCKED -->
+          <div class="info-group" *ngIf="selectedIssue.status === 'BLOCKED'">
+            <h3 class="info-label">Blocker Reason</h3>
+            <div class="reason-box">
+              <p class="reason-text">
+                {{
+                  selectedIssue.blocked_reason ||
+                    'No reason provided yet. Awaiting reply in Slack.'
+                }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-primary" (click)="closeModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DELETE CONFIRMATION MODAL -->
+    <div class="modal-overlay" *ngIf="issueToDelete" (click)="cancelDelete()">
+      <div class="modal-content delete-modal" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon">⚠️</span>
+            <h2 class="modal-title">Confirm Deletion</h2>
+          </div>
+          <button class="close-btn" (click)="cancelDelete()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <p class="delete-msg">Are you sure you want to delete this issue? This action cannot be undone.</p>
+          <div class="preview-box">
+            <strong>{{ issueToDelete.title || issueToDelete.description }}</strong>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="cancelDelete()">Cancel</button>
+          <button class="btn-danger" (click)="executeDelete()">Yes, Delete</button>
+        </div>
       </div>
     </div>
   `,
@@ -172,24 +251,37 @@ import { DashboardService } from '../services/dashboard.service';
         vertical-align: middle;
         text-align: left;
       }
+      .issues-table tr {
+        transition: background-color 0.2s ease;
+      }
       .issues-table tr:last-child td {
         border-bottom: none;
       }
+      .clickable-row {
+        cursor: pointer;
+      }
+      .clickable-row:hover td {
+        background-color: #fff9f9;
+      }
       .issue-name-cell {
         padding-right: 16px;
+        overflow: hidden;
       }
       .issue-name {
         font-size: 13.5px;
         color: #1a1a2e;
-        font-weight: 500;
+        font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .issue-category {
-        font-size: 11px;
-        color: #999;
-        margin-top: 2px;
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .assignee-cell {
         white-space: nowrap;
@@ -236,12 +328,174 @@ import { DashboardService } from '../services/dashboard.service';
         font-size: 11px;
         font-weight: 600;
         text-transform: capitalize;
+        white-space: nowrap;
       }
       .status-open { background: #e8eeff; color: #5b4fcf; }
       .status-resolved { background: #e8f5e9; color: #27ae60; }
       .status-blocked { background: #ffeaea; color: #e53e3e; }
-      .due-date { color: #999; font-size: 13px; }
+      .due-date { color: #999; font-size: 13px; white-space: nowrap; }
       .empty-state { text-align: center; color: #888; padding: 30px !important; }
+
+      .delete-icon-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 15px;
+        padding: 6px;
+        border-radius: 4px;
+        transition: background 0.2s;
+      }
+      .delete-icon-btn:hover {
+        background: #ffeaea;
+      }
+
+      /* Modal Styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        backdrop-filter: blur(2px);
+      }
+      .modal-content {
+        background: #ffffff;
+        border-radius: 10px;
+        width: 100%;
+        max-width: 450px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+        animation: slideIn 0.2s ease-out forwards;
+      }
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(15px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 18px 24px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .modal-title-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .alert-icon { font-size: 18px; }
+      .modal-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a1a2e;
+      }
+      .close-btn {
+        background: none;
+        border: none;
+        font-size: 24px;
+        color: #999;
+        cursor: pointer;
+        line-height: 1;
+        transition: color 0.2s;
+      }
+      .close-btn:hover { color: #333; }
+      .modal-body { padding: 24px; }
+      .info-group { margin-bottom: 20px; }
+      .info-group:last-child { margin-bottom: 0; }
+      .info-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 0 0 6px 0;
+      }
+      .info-value {
+        margin: 0;
+        font-size: 14px;
+        color: #333;
+        font-weight: 500;
+      }
+      .reason-box {
+        background: #fff9f9;
+        border: 1px solid #ffeaea;
+        border-radius: 6px;
+        padding: 12px 16px;
+      }
+      .reason-text {
+        margin: 0;
+        color: #c0392b;
+        font-size: 13.5px;
+        line-height: 1.5;
+      }
+      .delete-msg {
+        margin: 0 0 12px 0;
+        font-size: 14px;
+        color: #333;
+      }
+      .preview-box {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        padding: 10px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        color: #555;
+      }
+      .modal-footer {
+        padding: 16px 24px;
+        background: #fafafa;
+        border-top: 1px solid #f0f0f0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .btn-primary {
+        background: #1a1a2e;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-primary:hover { background: #2a2a4a; }
+      .btn-secondary {
+        background: #f0f0f0;
+        color: #333;
+        border: 1px solid #d0d0d0;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .btn-secondary:hover { background: #e0e0e0; }
+      .btn-danger {
+        background: #e53e3e;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-danger:hover { background: #c53030; }
     `,
   ],
 })
@@ -254,6 +508,9 @@ export class IssuesComponent implements OnInit {
   statusFilter = 'all';
   priorityFilter = 'all';
   private isInitialized = false;
+
+  selectedIssue: any = null;
+  issueToDelete: any = null;
 
   constructor() {
     effect(() => {
@@ -294,11 +551,15 @@ export class IssuesComponent implements OnInit {
           const rawAssignee = item.assigned_to || item.owner || item.assignee;
           if (this.isBotUser(rawAssignee)) return null;
 
-          const assigneeName = this.extractStringName(rawAssignee);
+          let assigneeName = this.extractStringName(rawAssignee);
           if (assigneeName === 'Unassigned' || this.isBotUser(assigneeName)) return null;
+
+          let cleanTitle = item.title || item.description || '';
+          cleanTitle = cleanTitle.replace(/<@[A-Z0-9]+>/g, '').trim();
 
           return {
             ...item,
+            title: cleanTitle,
             assigneeName
           };
         })
@@ -371,7 +632,7 @@ export class IssuesComponent implements OnInit {
   }
 
   private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
-    if (!targetDateStr) return true; // If no date is selected, show all issues!
+    if (!targetDateStr) return true; 
     if (!itemDate) return false;
     if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
       return true;
@@ -409,5 +670,42 @@ export class IssuesComponent implements OnInit {
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
+  }
+
+  openIssueModal(issue: any) {
+    this.selectedIssue = issue;
+  }
+
+  closeModal() {
+    this.selectedIssue = null;
+  }
+
+  confirmDelete(issue: any) {
+    this.issueToDelete = issue;
+  }
+
+  cancelDelete() {
+    this.issueToDelete = null;
+  }
+
+  async executeDelete() {
+    if (!this.issueToDelete) return;
+    const issueId = this.issueToDelete._id || this.issueToDelete.id;
+
+    try {
+      // Call backend delete route (adjust endpoint if your backend uses a different path like /issues/:id)
+      await firstValueFrom(this.http.delete(`/api/issues/${issueId}`)).catch(() => {});
+      
+      // Remove locally from table array
+      this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
+      this.issueToDelete = null;
+      this.cdr.detectChanges();
+    } catch (err) {
+      console.error('Failed to delete issue:', err);
+      // Fallback local removal even if endpoint fails or differs
+      this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
+      this.issueToDelete = null;
+      this.cdr.detectChanges();
+    }
   }
 }

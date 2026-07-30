@@ -382,6 +382,22 @@ Instructions:
     }
   });
 
+  router.delete('/tasks/:id', async (req, res) => {
+    try {
+        const issue_id = req.params.id;
+        const result = await Task.findByIdAndDelete(issue_id);
+        
+        if (!result) {
+            return res.status(404).json({ error: "Issue not found" });
+        }
+        
+        return res.status(200).json({ success: true, message: "Issue deleted successfully directly from database" });
+    } catch (err) {
+        console.error("Failed to delete issue from database:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
   router.all("/slack/standup-briefing", async (req, res) => {
     try {
       const { team, userId, hours, meetingTime } = {
@@ -515,6 +531,22 @@ Instructions:
       next(err);
     }
   });
+
+  router.delete('/issues/:id', async (req, res) => {
+    try {
+        const issue_id = req.params.id;
+        const result = await Issue.findByIdAndDelete(issue_id);
+        
+        if (!result) {
+            return res.status(404).json({ error: "Issue not found" });
+        }
+        
+        return res.status(200).json({ success: true, message: "Issue deleted successfully directly from database" });
+    } catch (err) {
+        console.error("Failed to delete issue from database:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
 
   router.get("/discussions", async (req, res, next) => {
     try {
