@@ -1,335 +1,633 @@
-import { Component, inject, OnInit, effect } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
+import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-tasks',
   standalone: true,
-  imports: [CommonModule, PageHeaderComponent],
+  imports: [CommonModule, PageHeaderComponent, FormsModule],
   providers: [DatePipe],
   template: `
-    <app-page-header title="Tasks Management" searchPlaceholder="Search tasks or assignees...">
-      <div class="header-controls">
-        <div class="date-picker-wrapper">
-          <label for="taskDate">Date:</label>
-          <input
-            type="date"
-            id="taskDate"
-            [value]="dashService.selectedDate()"
-            (change)="onDateChange($event)"
-            class="date-input"
-          />
-          <button 
-            class="clear-date-btn" 
-            *ngIf="dashService.selectedDate()" 
-            (click)="clearDate()" 
-            title="Show All Dates"
-          >✕</button>
-        </div>
-
-        <button class="refresh-btn" (click)="refreshAll()" [disabled]="dashService.loading()">
-          {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
-        </button>
-      </div>
-    </app-page-header>
+    <app-page-header
+      title="Tasks"
+      searchPlaceholder="Search tasks, PRs, or team..."
+    ></app-page-header>
 
     <div class="tasks-body">
-      <div *ngIf="dashService.error()" class="error-banner">
-        {{ dashService.error() }}
+      <div class="filters-row">
+        <select class="filter-select" [(ngModel)]="statusFilter" (change)="loadTasks()">
+          <option value="all">Status: All</option>
+          <option value="TODO">To Do</option>
+          <option value="PROCESSING">In Progress</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="BLOCKED">Blocked</option>
+        </select>
+        
+        <select class="filter-select" [(ngModel)]="priorityFilter" (change)="loadTasks()">
+          <option value="all">Priority: All</option>
+          <option value="LOW">Low</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="HIGH">High</option>
+          <option value="URGENT">Urgent</option>
+        </select>
+
+        <select class="filter-select" [(ngModel)]="dateFilterType" (change)="loadTasks()">
+          <option value="all">Date: Any Match</option>
+          <option value="due">Date: Due Only</option>
+          <option value="created">Date: Created Only</option>
+        </select>
+        
+        <input
+          type="date"
+          class="filter-select"
+          [value]="dashService.selectedDate()"
+          (change)="onDateChange($event)"
+        />
       </div>
 
-      <div *ngIf="dashService.data() as data; else loadingTpl">
-        <div class="task-table-card">
-          <div class="card-header">
-            <span class="card-title">All Tasks ({{ getCleanTasks(data.tasks).length }})</span>
+      <div class="tasks-table-card">
+        <table class="tasks-table">
+          <thead>
+            <tr>
+              <th style="width: 30%;">TASK NAME</th>
+              <th style="width: 20%;">ASSIGNED TO</th>
+              <th style="width: 10%;">PRIORITY</th>
+              <th style="width: 10%;">STATUS</th>
+              <th style="width: 15%;">DUE DATE</th>
+              <th style="width: 15%;">CREATED AT</th>
+            </tr>
+          </thead>
+          <tbody *ngIf="dashService.data()?.tasks || [] as tasks">
+            <tr
+              *ngFor="let task of filteredTasks(tasks)"
+              class="clickable-row"
+              (click)="openTaskModal(task)"
+            >
+              <td class="task-name-cell">
+                <div class="task-name">{{ task.title || 'Untitled Task' }}</div>
+                <div class="task-category">{{ task.description || 'Click to view details...' }}</div>
+              </td>
+              <td class="assignee-cell">
+                <div
+                  class="avatar-sm"
+                  [style.background]="getAvatarColor(getPersonName(task.owner))"
+                >
+                  {{ getInitials(getPersonName(task.owner)) }}
+                </div>
+                <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
+              </td>
+              <td>
+                <span class="priority-badge" [ngClass]="task.priority?.toLowerCase()">{{
+                  task.priority
+                }}</span>
+              </td>
+              <td>
+                <span class="status-badge" [ngClass]="getStatusClass(task.status)">{{
+                  task.status
+                }}</span>
+              </td>
+              <td class="due-date" [ngClass]="{ 'overdue-text': isOverdue(task) }">
+                <span *ngIf="isOverdue(task)" class="alert-icon-small">⚠️</span>
+                {{ task.due_date ? (task.due_date | date: 'MMM d, y, h:mm a') : '—' }}
+              </td>
+              <td class="due-date">
+                {{ (task.created_time || task.created_at || task.date || task.updated_time) | date: 'MMM d, y, h:mm a' }}
+              </td>
+            </tr>
+            <tr *ngIf="filteredTasks(tasks).length === 0">
+              <td colspan="6" class="empty-state">No tasks found matching your filters.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TASK DETAILS MODAL OVERLAY -->
+    <div class="modal-overlay" *ngIf="selectedTask" (click)="closeModal()">
+      <div class="modal-content" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon" *ngIf="selectedTask.status === 'BLOCKED'">🚨</span>
+            <span class="alert-icon" *ngIf="selectedTask.status !== 'BLOCKED'">📋</span>
+            <h2 class="modal-title">Task Details</h2>
           </div>
-          <table class="team-table">
-            <thead>
-              <tr>
-                <th>TASK</th>
-                <th>ASSIGNEE</th>
-                <th>STATUS</th>
-                <th>DUE DATE</th>
-                <th>CREATED AT</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let task of getCleanTasks(data.tasks); let i = index">
-                <td class="task-title-cell">
-                  <div class="task-text-container" (click)="toggleTask(getTaskId(task, i))">
-                    <div class="task-text" [class.collapsed]="isLongTask(task) && !isTaskExpanded(getTaskId(task, i))">
-                      {{ getTaskDisplayContent(task, getTaskId(task, i)) }}
-                    </div>
-                    <button 
-                      class="expand-toggle-btn" 
-                      *ngIf="isLongTask(task)"
-                    >
-                      {{ isTaskExpanded(getTaskId(task, i)) ? 'Show less' : 'Click to expand' }}
-                    </button>
-                  </div>
-                </td>
-                <td class="member-cell">
-                  <div class="avatar" [style.background]="getAvatarColor(displayName(task.assigned_to || task.owner || task.assignee))">
-                    {{ getInitials(displayName(task.assigned_to || task.owner || task.assignee)) }}
-                  </div>
-                  <div>
-                    <div class="member-name">{{ displayName(task.assigned_to || task.owner || task.assignee) }}</div>
-                  </div>
-                </td>
-                <td>
-                  <span class="status-pill" [class.blocked-pill]="(task.status || '').toUpperCase() === 'BLOCKED'">
-                    {{ task.status || 'OPEN' }}
-                  </span>
-                </td>
-                <td class="timestamp-cell">
-                  {{ (task.due_date || task.duedate || task.due || task.deadline) ? ((task.due_date || task.duedate || task.due || task.deadline) | date: 'MMM d, y') : '-' }}
-                </td>
-                <td class="timestamp-cell">
-                  {{ (task.created_time || task.created_at || task.date || task.updated_time) | date: 'MMM d, y, h:mm:ss a' }}
-                </td>
-              </tr>
-              <tr *ngIf="getCleanTasks(data.tasks).length === 0">
-                <td colspan="5" class="empty-text" style="padding: 24px 0; text-align: center;">
-                  No tasks found for the selected date.
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <button class="close-btn" (click)="closeModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="info-group">
+            <h3 class="info-label">Full Task Description</h3>
+            <p class="info-value" style="white-space: pre-wrap; word-break: break-word; line-height: 1.5;">
+              {{ selectedTask.description || selectedTask.text || selectedTask.title }}
+            </p>
+          </div>
+
+          <!-- ONLY show if the task is BLOCKED -->
+          <div class="info-group" *ngIf="selectedTask.status === 'BLOCKED'">
+            <h3 class="info-label">Blocker Reason</h3>
+            <div class="reason-box">
+              <p class="reason-text">
+                {{
+                  selectedTask.blocked_reason ||
+                    'No reason provided yet. Awaiting reply in Slack.'
+                }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-primary" (click)="closeModal()">Close</button>
         </div>
       </div>
-
-      <ng-template #loadingTpl>
-        <div class="loading-state">Loading tasks data...</div>
-      </ng-template>
     </div>
   `,
   styles: [
     `
-      .tasks-body { padding: 24px 32px; display: flex; flex-direction: column; gap: 20px; }
-      .header-controls { display: flex; align-items: center; gap: 12px; }
-      .date-picker-wrapper { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; font-weight: 500; }
-      .date-input { border: 1px solid #5b4fcf; border-radius: 6px; padding: 6px 12px; font-size: 13px; color: #1a1a2e; outline: none; background: #fafafd; cursor: pointer; }
-      .clear-date-btn { background: #f0f0f0; border: 1px solid #d0d0d0; border-radius: 6px; width: 28px; height: 32px; cursor: pointer; font-size: 12px; color: #555; display: flex; align-items: center; justify-content: center; }
-      .clear-date-btn:hover { background: #e0e0e0; }
-      .refresh-btn { background: #5b4fcf; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
-      .refresh-btn:hover:not(:disabled) { background: #4a3ebc; }
-      .error-banner { background: #ffeaea; color: #e53e3e; padding: 12px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
-      .loading-state { color: #888; font-size: 14px; padding: 40px; text-align: center; background: white; border-radius: 8px; border: 1px solid #e9ecef; }
-      .empty-text { color: #888; font-size: 13px; font-style: italic; }
-      
-      .task-table-card { background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; }
-      .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-      .card-title { font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; }
-      
-      .task-title-cell { font-weight: 500; color: #1a1a2e; max-width: 380px; }
-      .task-text-container { cursor: pointer; padding: 4px 0; }
-      
-      .task-text {
-        word-break: break-word;
-        white-space: pre-wrap;
-        line-height: 1.4;
+      .tasks-body {
+        padding: 24px 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
       }
-      .task-text.collapsed {
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
+      .filters-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .filter-select {
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 7px 12px;
+        font-size: 13px;
+        color: #333;
+        background: white;
+        cursor: pointer;
+        outline: none;
+      }
+      .tasks-table-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .tasks-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed; /* Forces strict widths for truncation */
+      }
+      .tasks-table th {
+        text-align: left;
+        font-size: 11px;
+        color: #888;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        padding: 14px 20px;
+        border-bottom: 1px solid #f0f0f0;
+        background: #fafafa;
+      }
+      .tasks-table td {
+        padding: 14px 20px;
+        font-size: 13.5px;
+        color: #333;
+        border-bottom: 1px solid #f0f0f0;
+        vertical-align: middle;
+        text-align: left;
+      }
+      .tasks-table tr {
+        transition: background-color 0.2s ease;
+      }
+      .tasks-table tr:last-child td {
+        border-bottom: none;
+      }
+      .clickable-row {
+        cursor: pointer;
+      }
+      .clickable-row:hover td {
+        background-color: #fff9f9;
+      }
+      
+      /* STRICT TRUNCATION (COLLAPSED BLOCKS) */
+      .task-name-cell {
+        padding-right: 16px;
+        overflow: hidden;
+      }
+      .task-name {
+        font-size: 13.5px;
+        color: #1a1a2e;
+        font-weight: 600;
+        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .task-category {
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* END TRUNCATION */
 
-      .expand-toggle-btn {
+      .assignee-cell {
+        align-items: center;
+        white-space: nowrap;
+        gap: 8px;
+      }
+      .avatar-sm {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        color: white;
         font-size: 11px;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        text-transform: uppercase;
+        vertical-align: middle;
+        margin-right: 8px;
+      }
+      .assignee-name {
+        font-size: 13px;
+        color: #333;
+        text-transform: capitalize;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .priority-badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .priority-badge.low {
+        background: #f5f5f5;
+        color: #666;
+      }
+      .priority-badge.medium {
+        background: #fff8e1;
+        color: #f59e0b;
+      }
+      .priority-badge.high {
+        background: #fff3e0;
+        color: #e67e22;
+      }
+      .priority-badge.urgent {
+        background: #ffeaea;
+        color: #e53e3e;
+      }
+      .status-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 5px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: capitalize;
+        white-space: nowrap;
+      }
+      .status-todo {
+        background: #f5f5f5;
+        color: #666;
+      }
+      .status-completed {
+        background: #e8f5e9;
+        color: #27ae60;
+      }
+      .status-processing {
+        background: #e8eeff;
         color: #5b4fcf;
+      }
+      .status-blocked {
+        background: #ffeaea;
+        color: #e53e3e;
+      }
+      .due-date {
+        color: #999;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .overdue-text {
+        color: #e53e3e !important;
+        font-weight: 600;
+      }
+      .alert-icon-small {
+        font-size: 11px;
+        margin-right: 4px;
+      }
+      .empty-state {
+        text-align: center;
+        color: #888;
+        padding: 30px !important;
+      }
+
+      /* Modal Styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.4);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        backdrop-filter: blur(2px);
+      }
+      .modal-content {
+        background: #ffffff;
+        border-radius: 10px;
+        width: 100%;
+        max-width: 450px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+        animation: slideIn 0.2s ease-out forwards;
+      }
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(15px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 18px 24px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .modal-title-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .alert-icon {
+        font-size: 18px;
+      }
+      .modal-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a1a2e;
+      }
+      .close-btn {
         background: none;
         border: none;
-        padding: 0;
-        margin-top: 4px;
+        font-size: 24px;
+        color: #999;
         cursor: pointer;
+        line-height: 1;
+        transition: color 0.2s;
+      }
+      .close-btn:hover {
+        color: #333;
+      }
+      .modal-body {
+        padding: 24px;
+      }
+      .info-group {
+        margin-bottom: 20px;
+      }
+      .info-group:last-child {
+        margin-bottom: 0;
+      }
+      .info-label {
+        font-size: 11px;
         font-weight: 600;
-        display: block;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin: 0 0 6px 0;
       }
-      .expand-toggle-btn:hover {
-        text-decoration: underline;
+      .info-value {
+        margin: 0;
+        font-size: 14px;
+        color: #333;
+        font-weight: 500;
       }
-
-      .timestamp-cell { color: #555; font-size: 13px; }
-      .status-pill { background: #eef2ff; color: #5b4fcf; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
-      .blocked-pill { background: #fff0f0; color: #e53e3e; }
-
-      .team-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-      .team-table th { text-align: left; font-size: 11px; color: #888; font-weight: 600; letter-spacing: 0.5px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-      .team-table td { padding: 14px 0; font-size: 13.5px; color: #333; border-bottom: 1px solid #f5f5f5; vertical-align: top; }
-      .member-cell { display: flex; align-items: center; gap: 12px; }
-      .avatar { width: 34px; height: 34px; border-radius: 50%; color: white; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-transform: uppercase; }
-      .member-name { font-size: 13.5px; font-weight: 500; color: #1a1a2e; text-transform: capitalize; }
+      .reason-box {
+        background: #fff9f9;
+        border: 1px solid #ffeaea;
+        border-radius: 6px;
+        padding: 12px 16px;
+      }
+      .reason-text {
+        margin: 0;
+        color: #c0392b;
+        font-size: 13.5px;
+        line-height: 1.5;
+      }
+      .modal-footer {
+        padding: 16px 24px;
+        background: #fafafa;
+        border-top: 1px solid #f0f0f0;
+        display: flex;
+        justify-content: flex-end;
+      }
+      .btn-primary {
+        background: #1a1a2e;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-primary:hover {
+        background: #2a2a4a;
+      }
     `,
   ],
 })
 export class TasksComponent implements OnInit {
+  http = inject(HttpClient);
   dashService = inject(DashboardService);
-  expandedTaskIds = new Set<string>();
+  private cdr = inject(ChangeDetectorRef);
+
+  tasks: any[] | null = null;
+  statusFilter = 'all';
+  priorityFilter = 'all';
+  dateFilterType = 'all';
+
+  selectedTask: any = null;
 
   constructor() {
     effect(() => {
-      this.dashService.load();
+      this.loadTasks();
     });
   }
 
   ngOnInit() {
-    this.dashService.load();
-  }
-
-  refreshAll(): void {
-    this.dashService.refresh();
+    this.loadTasks();
   }
 
   onDateChange(event: Event): void {
     const input = event.target as HTMLInputElement;
-    this.dashService.setSelectedDate(input.value);
-    this.dashService.load();
-  }
-
-  clearDate(): void {
-    this.dashService.setSelectedDate('');
-    this.dashService.load();
-  }
-
-  getTaskId(task: any, index: number): string {
-    return `${index}_${task.id || task._id || 'task'}`;
-  }
-
-  getTaskDisplayContent(task: any, taskId: string): string {
-    const fullText = task.description || task.text || task.message || task.content || task.original_text || task.title || task.summary || task.name;
-    const shortText = task.title || task.summary || task.name || fullText;
-
-    if (this.isTaskExpanded(taskId)) {
-      return fullText || 'Untitled Task';
-    }
-    return shortText || 'Untitled Task';
-  }
-
-  isLongTask(task: any): boolean {
-    const fullText = task.description || task.text || task.message || task.content || task.original_text || '';
-    const shortText = task.title || task.summary || task.name || '';
-    return fullText.length > 50 || shortText.length > 50 || (fullText && fullText !== shortText);
-  }
-
-  toggleTask(taskId: string): void {
-    if (this.expandedTaskIds.has(taskId)) {
-      this.expandedTaskIds.delete(taskId);
-    } else {
-      this.expandedTaskIds.add(taskId);
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+      this.loadTasks();
     }
   }
 
-  isTaskExpanded(taskId: string): boolean {
-    return this.expandedTaskIds.has(taskId);
+  async loadTasks() {
+    try {
+      const params: any = {};
+      const activeChannel = this.dashService.activeChannelId();
+      if (activeChannel) params.channel = activeChannel;
+
+      const selectedDate = this.dashService.selectedDate();
+      params.date = selectedDate;
+
+      const response: any = (await firstValueFrom(this.http.get('/api/tasks', { params }))) || [];
+
+      this.tasks = (Array.isArray(response) ? response : []).filter((t: any) => {
+        if (!selectedDate) return true;
+        
+        if (this.dateFilterType === 'due') {
+          return this.matchesSelectedDate(t.due_date, selectedDate);
+        } else if (this.dateFilterType === 'created') {
+          return this.matchesSelectedDate(t.updated_time, selectedDate) || 
+                 this.matchesSelectedDate(t.created_time, selectedDate);
+        }
+        
+        return this.matchesSelectedDate(t.updated_time, selectedDate) ||
+               this.matchesSelectedDate(t.created_time, selectedDate) ||
+               this.matchesSelectedDate(t.due_date, selectedDate);
+      });
+      this.cdr.detectChanges();
+    } catch (err) {
+      console.error('Failed to load tasks:', err);
+      this.tasks = [];
+      this.cdr.detectChanges();
+    }
   }
 
-  isBotUser(m: any): boolean {
-    if (!m) return true;
-    const rawId = (typeof m === 'object' && m?.id ? m.id : '').toLowerCase();
-    const rawName = (typeof m === 'string' ? m : (m.real_name || m.display_name || m.name || '')).toLowerCase();
+  filteredTasks(tasks: any[]): any[] {
+    const list = this.tasks !== null ? this.tasks : tasks || [];
+    if (!list) return [];
 
-    return (
-      rawId === 'uslackbot' ||
-      rawName.includes('github') ||
-      rawName.includes('jira') ||
-      rawName.includes('jirabot') ||
-      rawName.includes('slackbot') ||
-      rawName.includes('ai_engineering') ||
-      rawName.includes('bot') ||
-      rawName.includes('app') ||
-      rawName === 'unknown'
-    );
+    const selectedDate = this.dashService.selectedDate();
+    return list.filter((task) => {
+      const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
+      const matchPriority = this.priorityFilter === 'all' || task.priority === this.priorityFilter;
+      
+      let matchDate = true;
+      if (selectedDate) {
+        if (this.dateFilterType === 'due') {
+          matchDate = this.matchesSelectedDate(task.due_date, selectedDate);
+        } else if (this.dateFilterType === 'created') {
+          const taskDate = task.created_time || task.created_at || task.date || task.updated_time;
+          matchDate = this.matchesSelectedDate(taskDate, selectedDate);
+        } else {
+          const taskDate = task.created_time || task.created_at || task.date || task.updated_time;
+          matchDate = this.matchesSelectedDate(taskDate, selectedDate) || 
+                      this.matchesSelectedDate(task.due_date, selectedDate);
+        }
+      }
+      
+      return matchStatus && matchPriority && matchDate;
+    });
   }
 
   private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
-    if (!targetDateStr) return true;
-    if (!itemDate) return false;
+    if (!itemDate || !targetDateStr) return false;
+
     if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
       return true;
     }
+
     let numericDate = Number(itemDate);
     let dateObj: Date;
+
     if (!isNaN(numericDate) && numericDate > 0) {
-      if (numericDate < 10000000000) numericDate *= 1000;
+      if (numericDate < 10000000000) {
+        numericDate *= 1000;
+      }
       dateObj = new Date(numericDate);
     } else {
       dateObj = new Date(itemDate);
     }
-    if (isNaN(dateObj.getTime())) return true;
+
+    if (isNaN(dateObj.getTime())) return false;
+
     const yyyy = dateObj.getFullYear();
     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(dateObj.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}` === targetDateStr;
+    const formattedDate = `${yyyy}-${mm}-${dd}`;
+
+    return formattedDate === targetDateStr;
   }
 
-  private removeDuplicates(items: any[]): any[] {
-    if (!items) return [];
-    const seen = new Map();
-    return items.filter(item => {
-      const key = item.id || item._id;
-      if (!key) return true;
-      if (seen.has(key)) return false;
-      seen.set(key, true);
-      return true;
-    });
+  getStatusClass(status: string): string {
+    return status ? `status-${status.toLowerCase()}` : '';
   }
 
-  getCleanTasks(tasks: any[]): any[] {
-    if (!tasks) return [];
-    const uniqueTasks = this.removeDuplicates(tasks);
-    const selectedDate = this.dashService.selectedDate();
-    
-    const filtered = uniqueTasks.filter((t) => {
-      const assignee = t.assigned_to || t.owner || t.assignee;
-      if (this.isBotUser(assignee)) return false;
-
-      const taskDate = t.created_time || t.created_at || t.date || t.updated_time;
-      return this.matchesSelectedDate(taskDate, selectedDate);
-    });
-
-    return filtered.sort((a, b) => {
-      const timeA = new Date(a.created_time || a.created_at || a.date || a.updated_time || 0).getTime();
-      const timeB = new Date(b.created_time || b.created_at || b.date || b.updated_time || 0).getTime();
-      return timeB - timeA;
-    });
-  }
-
-  displayName(user: any): string {
+  getPersonName(user?: any): string {
     if (!user) return 'Unassigned';
     const candidate = user.display_name || user.real_name || user.name || '';
     return this.normalizeName(candidate) || 'Unassigned';
   }
 
-  private normalizeName(value: string): string {
+  private normalizeName(value?: string): string {
     if (!value) return '';
     const trimmed = String(value).trim();
     if (!trimmed) return '';
     if (trimmed.includes('@')) {
-      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+      return trimmed
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .trim();
     }
     return trimmed.replace(/[._-]+/g, ' ').trim();
   }
 
-  getInitials(name: string): string {
-    if (!name) return '??';
+  getInitials(name?: string): string {
+    if (!name || name === 'Unassigned') return '??';
     const parts = name.trim().split(' ');
-    if (parts.length > 1) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return name.substring(0, 2).toUpperCase();
+    return parts.length > 1
+      ? (parts[0][0] + parts[1][0]).toUpperCase()
+      : name.substring(0, 2).toUpperCase();
   }
 
-  getAvatarColor(name: string): string {
-    if (!name) return '#888';
-    const colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60', '#e67e22'];
+  getAvatarColor(name?: string): string {
+    if (!name || name === 'Unassigned') return '#888';
+    const colors = ['#e07b39', '#e05050', '#1abaab', '#5b4fcf', '#27ae60'];
     let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    }
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
+  }
+
+  isOverdue(task: any): boolean {
+    if (!task.due_date || task.status === 'COMPLETED' || task.status === 'RESOLVED') {
+      return false;
+    }
+    const due = new Date(task.due_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); 
+    return due < today;
+  }
+
+  openTaskModal(task: any) {
+    this.selectedTask = task;
+  }
+
+  closeModal() {
+    this.selectedTask = null;
   }
 }

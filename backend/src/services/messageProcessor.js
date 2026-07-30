@@ -690,7 +690,13 @@ class MessageProcessor {
     async createTask(parsed, ctx, senderRef) {
         const t = parsed.task || {};
         const taskId = newId("tsk");
-        const dueDate = t.due_date ? new Date(t.due_date) : null;
+        let dueDate;
+        if (t.due_date) {
+            dueDate = new Date(t.due_date);
+        } else {
+            dueDate = new Date();
+            dueDate.setHours(18, 0, 0, 0); // 18 = 6 PM, 0 mins, 0 secs, 0 ms
+        }
         const messageTime = getMessageTime(ctx);
 
         // 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
