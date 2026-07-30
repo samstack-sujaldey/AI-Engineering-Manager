@@ -22,7 +22,7 @@ function startReminderScheduler(notificationService) {
 				block_reason_pending: true,
 				status: "BLOCKED",
 				"owner.id": { $ne: "" },
-			}).limit(50);
+			});
 
 			for (const t of tasksMissingBlock) {
 				const last = t.block_reason_notification_at
