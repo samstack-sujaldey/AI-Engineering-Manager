@@ -3,7 +3,7 @@ const { Task, Issue, Notification } = require("../models");
 const config = require("../config");
 
 /**
- * Hourly reminder loop for:
+ * Reminder loop for:
  * - Missing due dates
  * - Missing block reasons
  * - Unacknowledged dependent-user notifications
@@ -14,8 +14,8 @@ function startReminderScheduler(notificationService) {
 		return null;
 	}
 
-	// Every 5 minutes check; interval between reminder resends controlled by next_reminder_at
-	const job = cron.schedule("*/60 * * * *", async () => {
+	// 🟢 FIX 1: Run every single minute so tasks trigger exactly when due
+	const job = cron.schedule("* * * * *", async () => {
 		try {
 			// Re-assert pending flags from tasks/issues that still need data
 			const tasksMissingBlock = await Task.find({
@@ -53,22 +53,28 @@ function startReminderScheduler(notificationService) {
 			}).limit(50);
 
 			for (const t of overdueTasks) {
-				// Prevent spam: Check if we already sent an overdue notice in the last 24 hours
+				// 🟢 FIX 2: Check for 59 minutes to prevent cron overlap skips
 				const recentNotice = await Notification.findOne({
 					task_id: t.task_id,
 					type: "GENERAL",
 					message: { $regex: /Overdue/i },
 					createdAt: {
-						$gte: new Date(Date.now() - 24 * 60 * 60 * 1000),
+						$gte: new Date(Date.now() - 59 * 60 * 1000),
 					},
 				});
 
 				if (!recentNotice) {
+					// 🟢 FIX 3: Force Indian Standard Time (IST) formatting
+					const formattedTime = new Date(t.due_date).toLocaleString(
+						"en-IN",
+						{ timeZone: "Asia/Kolkata" },
+					);
+
 					await notificationService.createAndSend({
 						type: "GENERAL",
 						target_user_id: t.owner.id,
 						target_user_name: t.owner.name,
-						message: `🚨 *Overdue Task:* Your task '${t.title}' was due on ${new Date(t.due_date).toLocaleDateString()}. Please update the status to "done" or reply with a new due date!`,
+						message: `🚨 *Overdue Task:* Your task '${t.title}' was due on ${formattedTime}. Please update the status to "done" or reply with a new due date!`,
 						task_id: t.task_id,
 						scheduleReminder: false,
 					});
@@ -99,9 +105,7 @@ function startReminderScheduler(notificationService) {
 		}
 	});
 
-	console.log(
-		"[reminders] Hourly reminder scheduler started (checks every 5 min)",
-	);
+	console.log("[reminders] Reminder scheduler started (checks every 1 min)");
 	return job;
 }
 
