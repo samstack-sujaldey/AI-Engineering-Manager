@@ -12,7 +12,7 @@ services:
       - "8000:8000"
 
     volumes:
-      - ./docker/chromadb:/chroma/chroma
+      - ./docker/chromadb:/data
 
     environment:
       - IS_PERSISTENT=TRUE
