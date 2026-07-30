@@ -55,17 +55,17 @@ import { DashboardService } from '../services/dashboard.service';
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let task of getCleanTasks(data.tasks)">
+              <tr *ngFor="let task of getCleanTasks(data.tasks); let i = index">
                 <td class="task-title-cell">
-                  <div class="task-text-container" (click)="toggleTask(getTaskId(task))">
-                    <div class="task-text" [class.collapsed]="isLongTask(getTaskTitle(task)) && !isTaskExpanded(getTaskId(task))">
-                      {{ getTaskTitle(task) }}
+                  <div class="task-text-container" (click)="toggleTask(getTaskId(task, i))">
+                    <div class="task-text" [class.collapsed]="isLongTask(task) && !isTaskExpanded(getTaskId(task, i))">
+                      {{ getTaskDisplayContent(task, getTaskId(task, i)) }}
                     </div>
                     <button 
                       class="expand-toggle-btn" 
-                      *ngIf="isLongTask(getTaskTitle(task))"
+                      *ngIf="isLongTask(task)"
                     >
-                      {{ isTaskExpanded(getTaskId(task)) ? 'Show less' : 'Click to expand' }}
+                      {{ isTaskExpanded(getTaskId(task, i)) ? 'Show less' : 'Click to expand' }}
                     </button>
                   </div>
                 </td>
@@ -122,17 +122,22 @@ import { DashboardService } from '../services/dashboard.service';
       .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
       .card-title { font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; }
       
-      .task-title-cell { font-weight: 500; color: #1a1a2e; max-width: 350px; }
+      .task-title-cell { font-weight: 500; color: #1a1a2e; max-width: 380px; }
       .task-text-container { cursor: pointer; padding: 4px 0; }
-      .task-text { word-break: break-word; white-space: pre-wrap; line-height: 1.4; }
+      
+      .task-text {
+        word-break: break-word;
+        white-space: pre-wrap;
+        line-height: 1.4;
+      }
       .task-text.collapsed {
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
         text-overflow: ellipsis;
-        white-space: normal;
       }
+
       .expand-toggle-btn {
         font-size: 11px;
         color: #5b4fcf;
@@ -190,16 +195,24 @@ export class TasksComponent implements OnInit {
     this.dashService.load();
   }
 
-  getTaskId(task: any): string {
-    return task.id || task._id || task.title;
+  getTaskId(task: any, index: number): string {
+    return `${index}_${task.id || task._id || 'task'}`;
   }
 
-  getTaskTitle(task: any): string {
-    return task.title || task.summary || task.name || 'Untitled Task';
+  getTaskDisplayContent(task: any, taskId: string): string {
+    const fullText = task.description || task.text || task.message || task.content || task.original_text || task.title || task.summary || task.name;
+    const shortText = task.title || task.summary || task.name || fullText;
+
+    if (this.isTaskExpanded(taskId)) {
+      return fullText || 'Untitled Task';
+    }
+    return shortText || 'Untitled Task';
   }
 
-  isLongTask(title: string): boolean {
-    return title.length > 50;
+  isLongTask(task: any): boolean {
+    const fullText = task.description || task.text || task.message || task.content || task.original_text || '';
+    const shortText = task.title || task.summary || task.name || '';
+    return fullText.length > 50 || shortText.length > 50 || (fullText && fullText !== shortText);
   }
 
   toggleTask(taskId: string): void {
