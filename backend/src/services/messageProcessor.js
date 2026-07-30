@@ -58,6 +58,16 @@ class MessageProcessor {
     async checkAndPromptMissingInfo(doc, ctx) {
         let threadPrompt = "";
 
+        // 🟢 FIX 2: Bulletproof check for empty reasons
+        const isBlockedOrHold = doc.status === "BLOCKED" || doc.status === "HOLD";
+        const isReasonMissing = !doc.blocked_reason || doc.blocked_reason.trim() === "";
+
+        if (isBlockedOrHold && isReasonMissing) {
+            doc.block_reason_pending = true;
+            const statusLabel = doc.status === "HOLD" ? "HOLD" : "BLOCKED";
+            threadPrompt += `⚠️ <@${ctx.sender?.id}> This item is marked as *${statusLabel}*. Please reply directly to this thread with the reason.`;
+        }
+
         if (
             !doc.due_date &&
             doc.status !== "COMPLETED" &&
@@ -128,7 +138,7 @@ class MessageProcessor {
     }
 }
 
-        // 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
+        // 🟢 TEAM RESOLUTION
         if (!team && channel) {
             try {
                 const cleanChan = channel.replace(/^#/, "").trim();
@@ -157,7 +167,7 @@ class MessageProcessor {
 
         const threadRoot = thread_id || message_ts;
 
-        // 🟢 Save message embedding to ChromaDB (for backfilling & real-time)
+        // 🟢 Save message embedding to ChromaDB
         if (text && text.trim().length > 0) {
             try {
                 const vectorArray = await getEmbedding(text);
@@ -258,6 +268,27 @@ class MessageProcessor {
                 }
 
                 if (Object.keys(updates).length > 0) {
+                    // 🟢 FIX 1: Generate missing notifications explicitly for strict overrides
+                    const dummyNotifications = [];
+                    if (updates.status === "BLOCKED" && existing_task && (!existing_task.blocked_reason || existing_task.blocked_reason.trim() === "")) {
+                        dummyNotifications.push({
+                            type: "MISSING_BLOCK_REASON",
+                            target_user_id: sender?.id,
+                            target_user_name: sender?.name || "User",
+                            message: "Your task is marked as blocked. Please tell me what is blocking it.",
+                            immediate: true,
+                        });
+                    }
+                    if (existing_task && !existing_task.due_date && updates.status !== "COMPLETED") {
+                         dummyNotifications.push({
+                            type: "MISSING_DUE_DATE",
+                            target_user_id: sender?.id,
+                            target_user_name: sender?.name || "User",
+                            message: `I couldn't determine the due date for your task. Please reply with the due date.`,
+                            immediate: true,
+                         });
+                    }
+
                     const dummyParsed = {
                         classification: existing_issue ? "ISSUE" : "TASK",
                         action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
@@ -277,6 +308,7 @@ class MessageProcessor {
                             ? { id: existing_task.task_id }
                             : null,
                         meta: { needs_human_review: false },
+                        notifications: dummyNotifications, 
                     };
 
                     const result = await this.persist(dummyParsed, {
@@ -840,13 +872,31 @@ class MessageProcessor {
             }
         }
         if (nextBlock) {
+            // 🟢 FIX 3: Restore the confirmation message so the user knows it was tracked
+            const isNewBlockReason = doc.blocked_reason !== nextBlock;
             doc.blocked_reason = nextBlock;
             doc.block_reason_pending = false;
+            
             if (this.notifications) {
                 await this.notifications.cancelForEntity({
                     task_id: doc.task_id,
                     types: ["MISSING_BLOCK_REASON", "BLOCK_REASON_REMINDER"],
                 });
+            }
+
+            if (isNewBlockReason && ctx.slack_client) {
+                try {
+                    await ctx.slack_client.chat.postMessage({
+                        channel: ctx.channel,
+                        thread_ts: ctx.thread_id || ctx.message_ts,
+                        text: `✅ Block reason recorded for *${doc.title}*: _${nextBlock}_`,
+                    });
+                } catch (err) {
+                    console.error(
+                        "[MessageProcessor] Failed to send block reason confirmation:",
+                        err.message,
+                    );
+                }
             }
         }
 
@@ -856,7 +906,7 @@ class MessageProcessor {
             ];
         }
 
-        if (doc.status === "BLOCKED" && !doc.blocked_reason) {
+        if (doc.status === "BLOCKED" && (!doc.blocked_reason || doc.blocked_reason.trim() === "")) {
             doc.block_reason_pending = true;
         }
         if (!doc.due_date) {
@@ -1182,9 +1232,14 @@ class MessageProcessor {
 
         const nextStatus = updates.status || i.status;
         const nextPriority = updates.priority || i.priority;
+        const nextBlock = updates.blocked_reason || i.blocked_reason;
 
         if (nextStatus) doc.status = nextStatus;
         if (nextPriority) doc.priority = nextPriority;
+        if (nextBlock) {
+            doc.blocked_reason = nextBlock;
+            doc.block_reason_pending = false;
+        }
 
         if (ctx.thread_id && doc.thread !== ctx.thread_id) {
             doc.thread = ctx.thread_id;
@@ -1463,8 +1518,8 @@ class MessageProcessor {
             due_date: doc.due_date ? doc.due_date.toISOString() : "",
             due_date_pending: doc.due_date_pending,
             root_cause: doc.root_cause || "",
-            blocked_reason: "",
-            block_reason_pending: false,
+            blocked_reason: doc.blocked_reason || "",
+            block_reason_pending: doc.block_reason_pending,
             owner: doc.owner,
             assigned_to: doc.assigned_to,
             reporter: doc.reporter,

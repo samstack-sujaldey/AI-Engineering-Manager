@@ -544,6 +544,20 @@ function extractEntities(text) {
 
 function classifyMessage(text) {
 	const lowerText = text.toLowerCase().trim();
+
+	// 🟢 FIX 1: Prevent reason replies from triggering new issues/tasks
+	if (
+		lowerText.startsWith("reason -") ||
+		lowerText.startsWith("reason:") ||
+		lowerText.includes(" reason -")
+	) {
+		return {
+			classification: "GENERAL_DISCUSSION",
+			confidence: 0.99,
+			needs_human_review: false,
+		};
+	}
+
 	if (
 		lowerText.startsWith("task -") ||
 		lowerText.includes(" task -") ||
@@ -842,7 +856,7 @@ async function parseMessage(input) {
 		});
 	}
 
-	if (
+if (
 		(linkingTask || linkingIssue) &&
 		classification === "GENERAL_DISCUSSION" &&
 		thread_id
@@ -850,6 +864,9 @@ async function parseMessage(input) {
 		const updates = {};
 
 		if (dueDate && linkingTask) updates.due_date = dueDate;
+        
+        // 🟢 FIX 2: Ensure the extracted reason is passed into the update payload
+		if (blockedReason && linkingTask) updates.blocked_reason = blockedReason;
 
 		if (Object.keys(updates).length > 0 || text.trim()) {
 			return buildResponse({
