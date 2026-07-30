@@ -54,12 +54,11 @@ import { DashboardService } from '../services/dashboard.service';
         <table class="issues-table">
           <thead>
             <tr>
-              <th style="width: 35%;">ISSUE / BLOCKER TITLE</th>
-              <th style="width: 22%;">ASSIGNED TO</th>
-              <th style="width: 12%;">PRIORITY</th>
-              <th style="width: 11%;">STATUS</th>
-              <th style="width: 13%;">CREATED AT</th>
-              <th style="width: 7%; text-align: center;">ACTIONS</th>
+              <th style="width: 38%;">ISSUE / BLOCKER TITLE</th>
+              <th style="width: 24%;">ASSIGNED TO</th>
+              <th style="width: 14%;">PRIORITY</th>
+              <th style="width: 10%;">STATUS</th>
+              <th style="width: 14%; padding-right: 28px;">CREATED AT</th>
             </tr>
           </thead>
           <tbody>
@@ -91,28 +90,19 @@ import { DashboardService } from '../services/dashboard.service';
                   issue.status || 'Open'
                 }}</span>
               </td>
-              <td class="due-date">
+              <td class="due-date" style="padding-right: 28px;">
                 {{ (issue.created_time || issue.created_at || issue.date || issue.updated_time) ? ((issue.created_time || issue.created_at || issue.date || issue.updated_time) | date: 'MMM d, y, h:mm a') : '—' }}
-              </td>
-              <td style="text-align: center;" (click)="$event.stopPropagation()">
-                <button 
-                  class="delete-icon-btn" 
-                  (click)="confirmDelete(issue)" 
-                  title="Delete Issue"
-                >
-                  🗑️
-                </button>
               </td>
             </tr>
             <tr *ngIf="filteredIssues().length === 0">
-              <td colspan="6" class="empty-state">No human-assigned issues found matching your filters.</td>
+              <td colspan="5" class="empty-state">No human-assigned issues found matching your filters.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- ISSUE DETAILS MODAL OVERLAY -->
+    <!-- ISSUE DETAILS MODAL OVERLAY (WITH DELETE BUTTON INSIDE) -->
     <div class="modal-overlay" *ngIf="selectedIssue && !issueToDelete" (click)="closeModal()">
       <div class="modal-content" (click)="$event.stopPropagation()">
         <div class="modal-header">
@@ -146,13 +136,16 @@ import { DashboardService } from '../services/dashboard.service';
           </div>
         </div>
 
-        <div class="modal-footer">
+        <div class="modal-footer modal-footer-between">
+          <button class="btn-danger-outline" (click)="confirmDelete(selectedIssue)">
+            🗑️ Delete Issue
+          </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
         </div>
       </div>
     </div>
 
-    <!-- DELETE CONFIRMATION MODAL -->
+    <!-- DELETE CONFIRMATION POPUP -->
     <div class="modal-overlay" *ngIf="issueToDelete" (click)="cancelDelete()">
       <div class="modal-content delete-modal" (click)="$event.stopPropagation()">
         <div class="modal-header">
@@ -336,19 +329,6 @@ import { DashboardService } from '../services/dashboard.service';
       .due-date { color: #999; font-size: 13px; white-space: nowrap; }
       .empty-state { text-align: center; color: #888; padding: 30px !important; }
 
-      .delete-icon-btn {
-        background: none;
-        border: none;
-        cursor: pointer;
-        font-size: 15px;
-        padding: 6px;
-        border-radius: 4px;
-        transition: background 0.2s;
-      }
-      .delete-icon-btn:hover {
-        background: #ffeaea;
-      }
-
       /* Modal Styles */
       .modal-overlay {
         position: fixed;
@@ -461,6 +441,10 @@ import { DashboardService } from '../services/dashboard.service';
         justify-content: flex-end;
         gap: 10px;
       }
+      .modal-footer-between {
+        justify-content: space-between;
+        align-items: center;
+      }
       .btn-primary {
         background: #1a1a2e;
         color: white;
@@ -484,6 +468,20 @@ import { DashboardService } from '../services/dashboard.service';
         cursor: pointer;
       }
       .btn-secondary:hover { background: #e0e0e0; }
+      .btn-danger-outline {
+        background: transparent;
+        color: #e53e3e;
+        border: 1px solid #e53e3e;
+        padding: 7px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .btn-danger-outline:hover {
+        background: #ffeaea;
+      }
       .btn-danger {
         background: #e53e3e;
         color: white;
@@ -693,18 +691,17 @@ export class IssuesComponent implements OnInit {
     const issueId = this.issueToDelete._id || this.issueToDelete.id;
 
     try {
-      // Call backend delete route (adjust endpoint if your backend uses a different path like /issues/:id)
       await firstValueFrom(this.http.delete(`/api/issues/${issueId}`)).catch(() => {});
       
-      // Remove locally from table array
       this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
       this.issueToDelete = null;
+      this.selectedIssue = null;
       this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to delete issue:', err);
-      // Fallback local removal even if endpoint fails or differs
       this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
       this.issueToDelete = null;
+      this.selectedIssue = null;
       this.cdr.detectChanges();
     }
   }
