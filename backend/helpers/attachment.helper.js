@@ -1,28 +1,52 @@
 const fs = require("fs/promises");
+const crypto = require("crypto");
 const path = require("path");
 const mammoth = require("mammoth");
 const XLSX = require("xlsx");
 const { parse } = require("csv-parse/sync");
 const NodeCache = require("node-cache");
+const OpenAI = require("openai");
 
-// Correct relative import path to openai.js
-const { analyzeImage: analyzeImageWithGemini } = require("../src/ai/openai.js");
 const {
   MAX_ATTACHMENT_SIZE,
   EXTRACTION_TIMEOUT,
 } = require("../constants/attachment.constant.js");
 
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 // Initialize In-Memory Cache: Auto-expire (TTL) items after 1 hour (3600s)
 const attachmentCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
 
 /**
- * Read plain text, log, xml, html files
+ * Utility: Compute MD5 Hash of local file buffer to ensure reliable caching
+ */
+async function getFileContentHash(filePath) {
+  const buffer = await fs.readFile(filePath);
+  const hash = crypto.createHash("md5").update(buffer).digest("hex");
+  return { buffer, hash };
+}
+
+/**
+ * Read plain text, log, xml, html files with MD5 Caching
  */
 async function readTextFile(file) {
   validateAttachment(file);
+  const { hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `text_extraction_${hash}`;
+
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached text extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Reading text file ${file.fileName}...`);
   const content = await fs.readFile(file.localPath, "utf8");
 
-  return {
+  const result = {
     extracted: true,
     type: "TEXT",
     content,
@@ -33,17 +57,30 @@ async function readTextFile(file) {
     },
     error: null,
   };
+
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Read JSON files
+ * Read JSON files with MD5 Caching
  */
 async function readJsonFile(file) {
   validateAttachment(file);
+  const { hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `json_extraction_${hash}`;
+
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached JSON extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Reading JSON file ${file.fileName}...`);
   const content = await fs.readFile(file.localPath, "utf8");
   const json = JSON.parse(content);
 
-  return {
+  const result = {
     extracted: true,
     type: "JSON",
     content: json,
@@ -54,13 +91,26 @@ async function readJsonFile(file) {
     },
     error: null,
   };
+
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Read CSV files
+ * Read CSV files with MD5 Caching
  */
 async function readCsvFile(file) {
   validateAttachment(file);
+  const { hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `csv_extraction_${hash}`;
+
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached CSV extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Reading CSV file ${file.fileName}...`);
   const csv = await fs.readFile(file.localPath, "utf8");
 
   const rows = parse(csv, {
@@ -68,7 +118,7 @@ async function readCsvFile(file) {
     skip_empty_lines: true,
   });
 
-  return {
+  const result = {
     extracted: true,
     type: "CSV",
     content: rows,
@@ -79,15 +129,26 @@ async function readCsvFile(file) {
     },
     error: null,
   };
+
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Extract text from PDF (Supports pdf-parse v1.x and v2.x APIs safely)
+ * Extract text from PDF (Supports pdf-parse v1.x and v2.x APIs safely) with MD5 Caching
  */
 async function extractPdf(file) {
   validateAttachment(file);
-  const buffer = await fs.readFile(file.localPath);
+  const { buffer, hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `pdf_extraction_${hash}`;
 
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached PDF extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Extracting PDF ${file.fileName}...`);
   const pdfParseLib = require("pdf-parse");
 
   let text = "";
@@ -96,13 +157,11 @@ async function extractPdf(file) {
 
   try {
     if (typeof pdfParseLib === "function") {
-      // Legacy pdf-parse v1.x API
       const pdfData = await withTimeout(pdfParseLib(buffer), EXTRACTION_TIMEOUT);
       text = pdfData.text || "";
       numpages = pdfData.numpages || 0;
       info = pdfData.info || {};
     } else if (pdfParseLib.PDFParse) {
-      // Modern pdf-parse v2.x Class API
       const uint8Data = new Uint8Array(buffer);
       const parser = new pdfParseLib.PDFParse(uint8Data);
       
@@ -125,8 +184,9 @@ async function extractPdf(file) {
     };
   }
 
+  let result;
   if (text.trim().length > 20) {
-    return {
+    result = {
       extracted: true,
       type: "PDF",
       content: text,
@@ -137,52 +197,77 @@ async function extractPdf(file) {
       },
       error: null,
     };
+  } else {
+    result = {
+      extracted: false,
+      type: "PDF",
+      content: null,
+      metadata: {
+        fileName: file.fileName,
+        pages: numpages,
+        scanned: true,
+      },
+      error: "Scanned PDF extraction is not implemented yet.",
+    };
   }
 
-  return {
-    extracted: false,
-    type: "PDF",
-    content: null,
-    metadata: {
-      fileName: file.fileName,
-      pages: numpages,
-      scanned: true,
-    },
-    error: "Scanned PDF extraction is not implemented yet.",
-  };
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Extract DOCX text
+ * Extract DOCX text with MD5 Caching
  */
 async function extractDocx(file) {
   validateAttachment(file);
-  const result = await withTimeout(
+  const { hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `docx_extraction_${hash}`;
+
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached DOCX extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Extracting DOCX ${file.fileName}...`);
+  const extractionResult = await withTimeout(
     mammoth.extractRawText({
       path: file.localPath,
     }),
     EXTRACTION_TIMEOUT,
   );
 
-  return {
+  const result = {
     extracted: true,
     type: "DOCX",
-    content: result.value,
+    content: extractionResult.value,
     metadata: {
       fileName: file.fileName,
-      warnings: result.messages,
+      warnings: extractionResult.messages,
     },
     error: null,
   };
+
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
- * Extract Excel workbook
+ * Extract Excel workbook with MD5 Caching
  */
 async function extractExcel(file) {
   validateAttachment(file);
-  const workbook = XLSX.readFile(file.localPath);
+  const { hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `excel_extraction_${hash}`;
 
+  const cached = attachmentCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit]: Returning cached Excel extraction for ${file.fileName}`);
+    return cached;
+  }
+
+  console.log(`[Cache Miss]: Extracting Excel ${file.fileName}...`);
+  const workbook = XLSX.readFile(file.localPath);
   const sheets = {};
 
   workbook.SheetNames.forEach((sheetName) => {
@@ -191,7 +276,7 @@ async function extractExcel(file) {
     });
   });
 
-  return {
+  const result = {
     extracted: true,
     type: "XLSX",
     content: sheets,
@@ -201,6 +286,9 @@ async function extractExcel(file) {
     },
     error: null,
   };
+
+  attachmentCache.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -220,18 +308,19 @@ async function extractPresentation(file) {
 }
 
 /**
- * Image analysis via OpenRouter / Gemini Vision with In-Memory Caching & Immediate Disk Cleanup
+ * Image analysis via OpenAI Vision (gpt-4o) with Content-Hash Caching & Cleanup
  */
 async function analyzeImage(file) {
   validateAttachment(file);
 
-  // Generate a unique cache key
-  const cacheKey = `attachment_analysis_${file.fileId || file.fileName}`;
+  const { buffer, hash } = await getFileContentHash(file.localPath);
+  const cacheKey = `attachment_analysis_hash_${hash}`;
 
   // 1. Check In-Memory Cache
   const cachedAnalysis = attachmentCache.get(cacheKey);
   if (cachedAnalysis) {
-    console.log(`[Cache Hit]: Returning in-memory analysis for ${file.fileName}`);
+    console.log(`[Cache Hit]: Image content already analyzed! (Hash: ${hash})`);
+    await fs.unlink(file.localPath).catch(() => {});
     return {
       extracted: true,
       type: "IMAGE",
@@ -241,14 +330,52 @@ async function analyzeImage(file) {
     };
   }
 
-  // 2. Cache Miss: Run Vision Analysis
-  console.log(`[Cache Miss]: Analyzing image attachment ${file.fileName}...`);
+  // 2. Cache Miss: Run Vision Analysis via OpenAI gpt-4o
+  console.log(`[Cache Miss]: Analyzing image attachment with OpenAI ${file.fileName} (Hash: ${hash})...`);
   try {
-    const result = await withTimeout(
-      analyzeImageWithGemini(file.localPath, file.mimeType),
+    const base64Image = buffer.toString("base64");
+    const mimeType = file.mimeType || "image/png";
+
+    const response = await withTimeout(
+      openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `You are an AI task extraction assistant analyzing an attached image for an engineering manager dashboard.
+Extract a brief summary and structured detail from this image. Respond STRICTLY in valid JSON format with these exact keys:
+{
+  "summary": "Short 1-sentence description of the image content or bug",
+  "text": "Full extracted visible text or OCR transcription",
+  "containsCode": boolean,
+  "containsError": boolean,
+  "containsUI": boolean,
+  "containsDiagram": boolean,
+  "importantEntities": ["array of key terms, filenames, or error codes"],
+  "confidence": 0.95
+}`,
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:${mimeType};base64,${base64Image}`,
+                },
+              },
+            ],
+          },
+        ],
+        response_format: { type: "json_object" },
+      }),
       EXTRACTION_TIMEOUT
     );
 
+    const jsonString = response.choices[0]?.message?.content || "{}";
+    const result = JSON.parse(jsonString);
+
+    // Save result to cache
     attachmentCache.set(cacheKey, result);
 
     await fs.unlink(file.localPath).catch(() => {});
@@ -278,7 +405,7 @@ async function analyzeImage(file) {
         skipped: true,
       },
       metadata: { fileName: file.fileName, cached: false, skipped: true },
-      error: null,
+      error: err.message,
     };
   }
 }

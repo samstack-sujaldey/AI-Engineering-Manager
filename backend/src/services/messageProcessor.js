@@ -19,6 +19,7 @@ const {
 const { findRelatedWorkWithAI } = require("./relatedWork");
 const { newId } = require("../utils/helpers");
 const { invalidateDailySummary } = require("../utils/cacheHelper");
+const {extractAttachments}=require('../attachments/extractor')
 
 function hashText(text = "") {
     return crypto
@@ -112,41 +113,20 @@ class MessageProcessor {
         } = raw;
         const { quiet = false } = options;
 
-        // 🟢 AI Extraction Pipeline: Parse text or analyze files/images via OpenAI/Gemini first
+        // 🟢 FIX 1 & 3: Only process complex documents here (slack.js handles images and plain text)
         if (local_attachments && local_attachments.length > 0) {
-            const { extractPdf, extractDocx, extractExcel, analyzeImage, readTextFile } = require("../../helpers/attachment.helper");
-            
-            for (const file of local_attachments) {
-                try {
-                    let extractedResult = null;
-                    const mime = (file.mimeType || "").toLowerCase();
-                    const ext = (path.extname(file.fileName || "")).toLowerCase();
-
-                    if (mime.startsWith("image/")) {
-                        extractedResult = await analyzeImage(file);
-                    } else if (mime === "application/pdf" || ext === ".pdf") {
-                        extractedResult = await extractPdf(file);
-                    } else if (ext === ".docx") {
-                        extractedResult = await extractDocx(file);
-                    } else if (ext === ".xlsx" || ext === ".xls") {
-                        extractedResult = await extractExcel(file);
-                    } else {
-                        extractedResult = await readTextFile(file);
-                    }
-
-                    if (extractedResult && extractedResult.content) {
-                        const fileContentStr = typeof extractedResult.content === "string" 
-                            ? extractedResult.content 
-                            : JSON.stringify(extractedResult.content);
-                            
-                        // 🟢 Force the parser to evaluate the image/document as an actionable item
-                        text += `\nTask/Issue requirement based on attached file (${file.fileName}):\n${fileContentStr}`;
-                    }
-                } catch (fileErr) {
-                    console.error(`[MessageProcessor] Failed to extract file ${file.fileName}:`, fileErr.message);
-                }
-            }
+    const extractedFiles = await extractAttachments(local_attachments);
+    
+    for (const file of extractedFiles) {
+        if (file.extracted && file.content) {
+            const contentStr = typeof file.content === "string" 
+                ? file.content 
+                : JSON.stringify(file.content, null, 2);
+                
+            text += `\n\n[Attachment: ${file.fileName}]\n${contentStr.trim()}`;
         }
+    }
+}
 
         // 🟢 TEAM RESOLUTION: If team is empty or workspace fallback, auto-resolve from Team collection
         if (!team && channel) {
@@ -237,7 +217,7 @@ class MessageProcessor {
             existing_issue = byThread.issue;
         }
 
-        // 🟢 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
+        // 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
         if (
             (existing_task || existing_issue) &&
             threadRoot &&
@@ -245,7 +225,6 @@ class MessageProcessor {
         ) {
             const lowerReply = text.toLowerCase().trim();
 
-            // Flexible Regex: Catches 'status - hold', 'status-hold', 'status -hold', etc.
             const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
             const priorityMatch = lowerReply.match(
                 /\bpriority\s*-\s*([a-z]+)\b/i,
@@ -279,18 +258,17 @@ class MessageProcessor {
                 }
 
                 if (Object.keys(updates).length > 0) {
-                    // Route the exact update directly into your existing persist pipeline
                     const dummyParsed = {
                         classification: existing_issue ? "ISSUE" : "TASK",
                         action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
                         updates,
                         sender: sender
                             ? {
-                                    id: sender.id,
-                                    name: sender.name,
-                                    display_name: sender.display_name,
-                                    email: "",
-                                }
+                                  id: sender.id,
+                                  name: sender.name,
+                                  display_name: sender.display_name,
+                                  email: "",
+                              }
                             : { id: "", name: "" },
                         issue: existing_issue
                             ? { id: existing_issue.issue_id }
@@ -323,7 +301,7 @@ class MessageProcessor {
                             at: new Date().toISOString(),
                         });
                     }
-                    return result; // 🛑 Halt processing so it doesn't parse anything else
+                    return result;
                 }
             }
         }
@@ -511,6 +489,16 @@ class MessageProcessor {
             existing_issue,
             now: new Date(),
         });
+
+        // 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
+        if (parsed.task?.title) {
+            parsed.task.title = parsed.task.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
+            if (parsed.task.title.length < 3) parsed.task.title = "Task from attached file";
+        }
+        if (parsed.issue?.title) {
+            parsed.issue.title = parsed.issue.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
+            if (parsed.issue.title.length < 3) parsed.issue.title = "Issue from attached file";
+        }
 
         if (
             parsed.classification === "TASK" &&
