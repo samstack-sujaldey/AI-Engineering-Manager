@@ -123,6 +123,10 @@ class MessageProcessor {
         } = raw;
         const { quiet = false } = options;
 
+        if (text) {
+            text = text.replace(/<@[A-Z0-9]+>/g, "").trim();
+        }
+
         // 🟢 FIX 1 & 3: Only process complex documents here (slack.js handles images and plain text)
         if (local_attachments && local_attachments.length > 0) {
     const extractedFiles = await extractAttachments(local_attachments);
