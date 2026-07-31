@@ -16,8 +16,12 @@ async function processWorkWithAttachments({
   existing_issue = null,
   local_attachments = [],
 }) {
-  let combinedFallbackText = text.trim() ? `[Caption]: ${text.trim()}\n` : "";
+  let combinedFallbackText = text.trim() ? `${text.trim()}` : "";
   let batchItems = [];
+  let documentDiscussions = [];
+  
+  // 🟢 NEW: A separate variable to hold the massive text for the backend only
+  let hiddenFullDocumentText = "";
 
   if (local_attachments && local_attachments.length > 0) {
     const validAttachments = [];
@@ -31,25 +35,31 @@ async function processWorkWithAttachments({
     }
 
     if (validAttachments.length > 0) {
-      // 🟢 PASS THE CAPTION TEXT TO THE AI EXTRACTOR
       const extractedFiles = await extractAttachments(validAttachments, text);
       
       for (const file of extractedFiles) {
         if (file.extracted) {
-          // 🟢 CHECK FOR SMART AI BATCH
-          if (file.ai_batch && file.ai_batch.action === "CREATE_BATCH" && Array.isArray(file.ai_batch.items)) {
-            batchItems = batchItems.concat(file.ai_batch.items);
-          } else if (file.content) {
-            // 🟢 FALLBACK: Only append raw text if AI batch extraction failed/skipped
-            const contentStr = typeof file.content === "string" ? file.content : JSON.stringify(file.content, null, 2);
-            combinedFallbackText += `\n--- Content from ${file.fileName} ---\n${contentStr.trim()}`;
+          const itemsSource = file.ai_batch?.items || file.content?.items;
+          const actionSource = file.ai_batch?.action || file.content?.action;
+
+          if (actionSource === "CREATE_BATCH" && Array.isArray(itemsSource) && itemsSource.length > 0) {
+            batchItems = batchItems.concat(itemsSource);
+          } else {
+            // 🟢 Extract BOTH the short summary and the massive text
+            const docSummary = file.ai_batch?.summary || file.content?.summary || file.fileName;
+            const docText = file.ai_batch?.text || file.content?.text || (typeof file.content === "string" ? file.content : "");
+            
+            // 1. Push ONLY the clean, short summary to the UI text
+            documentDiscussions.push(`📄 Attached Document: ${file.fileName}\n📌 Summary: ${docSummary}`);
+            
+            // 2. Save the massive text dump to our hidden backend string
+            hiddenFullDocumentText += `\n\n--- ${file.fileName} Full Text ---\n${docText}`;
           }
         }
       }
     }
   }
 
-  // 🟢 IF AI SUCCEEDED, BYPASS REGEX AND RETURN BATCH
   if (batchItems.length > 0) {
     return {
       action: "CREATE_BATCH",
@@ -57,9 +67,13 @@ async function processWorkWithAttachments({
     };
   }
 
-  // 🟢 FALLBACK: Regex parser for attachments if AI failed
+  if (documentDiscussions.length > 0) {
+    combinedFallbackText += `\n\n${documentDiscussions.join("\n\n")}`;
+  }
+
   combinedFallbackText = combinedFallbackText.trim();
-  if (local_attachments.length > 0 && !/task\s*-|issue\s*-/i.test(combinedFallbackText)) {
+  
+  if (local_attachments.length > 0 && documentDiscussions.length === 0 && !/task\s*-|issue\s*-/i.test(combinedFallbackText)) {
     if (/\b(error|bug|fail|crash|exception|issue|broken)\b/i.test(combinedFallbackText)) {
       combinedFallbackText = `issue - ${combinedFallbackText}`;
     } else {
@@ -67,6 +81,7 @@ async function processWorkWithAttachments({
     }
   }
 
+  // Generate the standard payload for the database
   const parsed = await parseMessage({
     text: combinedFallbackText,
     sender,
@@ -81,6 +96,11 @@ async function processWorkWithAttachments({
     existing_issue,
     now: new Date(),
   });
+
+  // 🟢 NEW: Attach the massive hidden text to the final object before returning it!
+  if (hiddenFullDocumentText.trim()) {
+    parsed.full_document_text = hiddenFullDocumentText.trim();
+  }
 
   return parsed;
 }
