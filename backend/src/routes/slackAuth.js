@@ -44,7 +44,7 @@ router.get("/oauth_redirect", async (req, res) => {
 			const teamName = response.data.team.name;
 
 			// TODO: Save the accessToken and teamId to your database (e.g., in a Workspace model)
-			// Example: await Workspace.findOneAndUpdate({ teamId }, { accessToken, teamName }, { upsert: true });
+			// Example: await Workspace.findOneAndReplace({ teamId }, { accessToken, teamName }, { upsert: true });
 
 			res.send(`
                 <html>

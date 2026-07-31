@@ -235,7 +235,7 @@ async function main() {
 				}));
 
 				const teamId = `team_${channelId}`;
-				await Team.findOneAndUpdate(
+				await Team.findOneAndReplace(
 					{ channel_id: channelId },
 					{
 						team_id: teamId,

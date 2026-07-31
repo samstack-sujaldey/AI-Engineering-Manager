@@ -98,7 +98,7 @@ Issues: ${JSON.stringify(formattedIssues)}
     );
 
     if (summaryText) {
-      await DailySummary.findOneAndUpdate(
+      await DailySummary.findOneAndReplace(
         { date: targetDate },
         {
           summary: summaryText,

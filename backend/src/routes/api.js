@@ -232,7 +232,7 @@ Instructions:
         formattedText += `\n`;
       });
 
-      const updatedDoc = await DailySummary.findOneAndUpdate(
+      const updatedDoc = await DailySummary.findOneAndReplace(
         { date: parsedData.metadata.date },
         {
           summary: formattedText.trim(),
@@ -482,7 +482,7 @@ Instructions:
         ],
       };
 
-      const updatedTask = await Task.findOneAndUpdate(query, updateData, {
+      const updatedTask = await Task.findOneAndReplace(query, updateData, {
         returnDocument: "after",
       });
 
