@@ -256,7 +256,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
       }
 
       const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
-      await Team.findOneAndUpdate(
+      await Team.findOneAndReplace(
         { channel_id: channel.id },
         {
           team_id: `team_${channel.id}`,

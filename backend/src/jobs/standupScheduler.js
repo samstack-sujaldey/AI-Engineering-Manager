@@ -222,7 +222,7 @@ ${rawPayload}`;
 
   const cacheKey = channel ? { date: targetDateStr, channel } : { date: targetDateStr, $or: [{ channel: null }, { channel: "" }] };
 
-  await DailySummary.findOneAndUpdate(
+  await DailySummary.findOneAndReplace(
     cacheKey,
     {
       date: targetDateStr,
