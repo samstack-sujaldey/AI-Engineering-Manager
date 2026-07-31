@@ -33,7 +33,7 @@ import { DashboardService } from '../services/dashboard.service';
           <option value="HIGH">High</option>
           <option value="Urgent">Urgent</option>
         </select>
-        
+
         <!-- Date Filter with Clear Button -->
         <div class="date-filter-group">
           <input
@@ -42,10 +42,10 @@ import { DashboardService } from '../services/dashboard.service';
             [value]="dashService.selectedDate()"
             (change)="onDateChange($event)"
           />
-          <button 
-            class="clear-date-btn" 
-            *ngIf="dashService.selectedDate()" 
-            (click)="clearDateFilter()" 
+          <button
+            class="clear-date-btn"
+            *ngIf="dashService.selectedDate()"
+            (click)="clearDateFilter()"
             title="Show All Dates"
           >✕</button>
         </div>
@@ -522,7 +522,7 @@ export class TasksComponent implements OnInit {
     effect(() => {
       const globalChannel = this.dashService.selectedChannel();
       const globalDate = this.dashService.selectedDate();
-      
+
       untracked(() => {
         if (!this.isInitialized) return;
         this.loadTasks();
@@ -584,7 +584,7 @@ export class TasksComponent implements OnInit {
     return this.tasks.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
-      const taskDate = task.due_date || task.created_time || task.created_at;
+      const taskDate = task.created_time || task.created_at;
       const matchDate = this.matchesSelectedDate(taskDate, selectedDate);
       return matchStatus && matchPriority && matchDate;
     });
@@ -621,7 +621,7 @@ export class TasksComponent implements OnInit {
 
   private extractStringName(input: any): string {
     if (!input || this.isBotUser(input)) return 'Unassigned';
-    
+
     let raw = '';
     if (typeof input === 'string') raw = input;
     else if (typeof input === 'object') {
@@ -645,7 +645,7 @@ export class TasksComponent implements OnInit {
   }
 
   private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
-    if (!targetDateStr) return true; 
+    if (!targetDateStr) return true;
     if (!itemDate) return false;
     if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
       return true;
@@ -707,7 +707,7 @@ export class TasksComponent implements OnInit {
 
     try {
       await firstValueFrom(this.http.delete(`/api/tasks/${taskId}`)).catch(() => {});
-      
+
       this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
       this.taskToDelete = null;
       this.selectedTask = null;
