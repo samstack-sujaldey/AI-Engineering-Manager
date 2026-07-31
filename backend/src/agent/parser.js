@@ -392,8 +392,8 @@ function extractDueDate(text, now = new Date()) {
 		.replace(/\b(\d{1,2})\s+(\d{2})\s*(am|pm)\b/gi, "$1:$2 $3")
 
 		// Office Slang & Casual Routines (Customize these times as needed for your team)
-		.replace(/\beod\b/gi, "5:00 pm")
-		.replace(/\bend of (the )?day\b/gi, "5:00 pm")
+		.replace(/\beod\b/gi, "6:00 pm")
+		.replace(/\bend of (the )?day\b/gi, "6:00 pm")
 		.replace(/\bafter lunch\b/gi, "2:00 pm")
 		.replace(/\bbefore lunch\b/gi, "11:30 am")
 		.replace(/\bbeforenoon\b/gi, "11:59 am");
@@ -418,7 +418,7 @@ function extractDueDate(text, now = new Date()) {
 
 		// 3. Default to 5:00 PM if they only provided a date (no specific time)
 		if (!parsedResults[0].start.isCertain("hour")) {
-			parsedDate.setHours(17, 0, 0, 0);
+			parsedDate.setHours(18, 0, 0, 0);
 		}
 
 		return parsedDate.toISOString();
