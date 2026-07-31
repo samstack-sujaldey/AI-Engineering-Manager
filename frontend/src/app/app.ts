@@ -1,18 +1,20 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { DashboardService } from './services/dashboard.service';
+import { AuthService } from './services/auth.service';
 
 @Component({
   selector: 'app-root',
+  standalone: true,
   imports: [RouterOutlet, RouterLink, RouterLinkActive, CommonModule],
   template: `
-    <div class="app-container">
+    <div class="app-container" *ngIf="auth.user(); else loginTpl">
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="sidebar-brand">
           <span class="brand-name">Ai Engineering Manager</span>
-          <span class="brand-role">Engineering Lead</span>
+          <span class="brand-role">{{ auth.user()?.role || 'User' }}</span>
         </div>
 
         <!-- Navigation Menu -->
@@ -43,14 +45,18 @@ import { DashboardService } from './services/dashboard.service';
         <router-outlet />
       </main>
     </div>
+
+    <ng-template #loginTpl>
+      <router-outlet />
+    </ng-template>
   `,
    styles: [
     `
       :host {
         display: block;
         min-height: 100vh;
-        caret-color: transparent; /* Hides the blinking text caret globally */
-        user-select: none;        /* Prevents accidental text highlighting */
+        caret-color: transparent;
+        user-select: none;
       }
       .app-container {
         display: flex;
@@ -87,6 +93,7 @@ import { DashboardService } from './services/dashboard.service';
         font-size: 11.5px;
         color: #888;
         margin-top: 2px;
+        text-transform: capitalize;
       }
 
       .sidebar-nav {
@@ -139,7 +146,6 @@ import { DashboardService } from './services/dashboard.service';
         overflow: auto;
       }
 
-      /* Re-enable text cursor for actual inputs or text fields if any exist */
       input, textarea, [contenteditable="true"] {
         caret-color: auto;
         user-select: text;
@@ -147,13 +153,19 @@ import { DashboardService } from './services/dashboard.service';
     `,
   ],
 })
-export class App implements OnInit {
+export class App {
   dashService = inject(DashboardService);
+  auth = inject(AuthService);
 
   ngOnInit() {
-    // Fetches the data for the rest of your app components
-    this.dashService.load();
-    // Connects to socket for real-time updates
-    this.dashService.connectLive();
+    this.auth.checkAuth().then(() => {
+      this.dashService.load();
+      this.dashService.connectLive();
+    });
+  }
+
+  logout(): void {
+    this.auth.logout();
   }
 }
+
