@@ -46,21 +46,24 @@ async function analyzeTextDocument(rawText, captionText, fileName) {
   // Truncate to ~40,000 characters to keep API response times extremely fast for large PDFs (50+ pages)
   const safeTextLength = String(rawText).substring(0, 40000); 
 
-  const prompt = `You are an AI task extraction assistant analyzing a document ("${fileName}").
+  const prompt = `You are an AI engineering manager assistant analyzing a document ("${fileName}").
 ${captionText ? `\nUser's message/instruction: "${captionText}"\n` : ""}
 
 Document Content (Truncated for speed):
 ${safeTextLength}
 
 Instructions:
-1. Extract all distinct Tasks, Issues, or Discussions visible in the document.
-2. If a person's name (e.g. "Name: Nandani") is listed above tasks, assign those tasks to them.
-3. Apply any instructions from the user's message (like "by EOD") to the due dates.
+1. Determine the document type:
+   - If it is a Task Assignment sheet, Team Workload list, or Bug list with explicit owners/tasks, set action to "CREATE_BATCH" and extract the items.
+   - If it is a Reference Document, Functional Requirements Document (FRD), Architecture Spec, Design Note, or general documentation, set action to "STORE_DISCUSSION" and provide a clear summary and text overview instead of creating tasks.
+2. If assigning tasks ("CREATE_BATCH"), map person names listed above tasks to them and apply caption rules (like "by EOD").
 Current date/time is ${nowISO}. "EOD" means 23:59:59 today.
 
 Respond STRICTLY in valid JSON format with these exact keys:
 {
-  "action": "CREATE_BATCH",
+  "action": "CREATE_BATCH" or "STORE_DISCUSSION",
+  "summary": "Short 1-sentence description of the document or overview",
+  "text": "Core summary, requirements overview, or notes content",
   "items": [
     {
       "type": "TASK",
@@ -87,7 +90,12 @@ Respond STRICTLY in valid JSON format with these exact keys:
     return JSON.parse(response.choices[0]?.message?.content || "{}");
   } catch (err) {
     console.warn(`[analyzeTextDocument] AI extraction failed for ${fileName}:`, err.message);
-    return { action: "NONE", items: [] };
+    return { 
+      action: "STORE_DISCUSSION", 
+      summary: `Document reference: ${fileName}`, 
+      text: String(rawText).substring(0, 1000), 
+      items: [] 
+    };
   }
 }
 
