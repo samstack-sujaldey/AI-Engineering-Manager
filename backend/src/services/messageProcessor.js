@@ -124,186 +124,450 @@ class MessageProcessor {
         } = raw;
         const { quiet = false } = options;
 
-        if (text) {
-            text = text.replace(/<@[A-Z0-9]+>/g, "").trim();
-        }
-
-        // 🟢 TEAM RESOLUTION
-        if (!team && channel) {
-            try {
-                const cleanChan = channel.replace(/^#/, "").trim();
-                const teamDoc = await Team.findOne({
-                    $or: [
-                        { channel_id: cleanChan },
-                        { channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
-                        { team_id: cleanChan },
-                    ],
-                }).lean();
-
-                if (teamDoc) {
-                    team =
-                        teamDoc.channel_name ||
-                        teamDoc.team_id ||
-                        teamDoc.team ||
-                        "";
-                }
-            } catch (e) {
-                console.warn(
-                    "[MessageProcessor] Team lookup warning:",
-                    e.message,
-                );
+        try {
+            if (text) {
+                text = text.replace(/<@[A-Z0-9]+>/g, "").trim();
             }
-        }
 
-        const threadRoot = thread_id || message_ts;
+            // 🟢 TEAM RESOLUTION
+            if (!team && channel) {
+                try {
+                    const cleanChan = channel.replace(/^#/, "").trim();
+                    const teamDoc = await Team.findOne({
+                        $or: [
+                            { channel_id: cleanChan },
+                            { channel_name: new RegExp(`^#?${cleanChan}$`, "i") },
+                            { team_id: cleanChan },
+                        ],
+                    }).lean();
 
-        // 🟢 Save message embedding to ChromaDB
-        if (text && text.trim().length > 0) {
-            try {
-                const vectorArray = await getEmbedding(text);
-                if (vectorArray) {
-                    await vectorDbService.saveMessage({
-                        messageId: message_ts || newId("msg"),
-                        threadId: threadRoot,
-                        text: text,
-                        vectorArray: vectorArray,
-                        senderId: sender?.id || "unknown",
-                        senderName:
-                            sender?.display_name ||
-                            sender?.real_name ||
-                            sender?.name ||
-                            "Unknown",
-                    });
+                    if (teamDoc) {
+                        team =
+                            teamDoc.channel_name ||
+                            teamDoc.team_id ||
+                            teamDoc.team ||
+                            "";
+                    }
+                } catch (e) {
+                    console.warn(
+                        "[MessageProcessor] Team lookup warning:",
+                        e.message,
+                    );
                 }
-            } catch (vectorErr) {
-                console.warn(
-                    "[VectorDB Warning] Failed to index message:",
-                    vectorErr.message,
-                );
             }
-        }
 
-        let existing_task = null;
-        let existing_issue = null;
+            const threadRoot = thread_id || message_ts;
 
-        const isExplicitCommand =
-            /task\s*-/i.test(text) || /issue\s*-/i.test(text);
-        const textHash = hashText(text);
-
-        if (is_edit && message_ts) {
-            const byMsg = await findWorkByMessageTs(message_ts, channel);
-            existing_task = byMsg.task;
-            existing_issue = byMsg.issue;
-
-            const alreadyAnalyzed =
-                wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
-                wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
-
-            if (alreadyAnalyzed) {
-                console.log(
-                    `[MessageProcessor] Skipping already analyzed message edit (${message_ts})`,
-                );
-            }
-        }
-
-        if (
-            !existing_task &&
-            !existing_issue &&
-            threadRoot &&
-            !isExplicitCommand
-        ) {
-            const byThread = await findWorkByThread(threadRoot, channel);
-            existing_task = byThread.task;
-            existing_issue = byThread.issue;
-        }
-
-        // 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
-        if (
-            (existing_task || existing_issue) &&
-            threadRoot &&
-            threadRoot !== message_ts
-        ) {
-            const lowerReply = text.toLowerCase().trim();
-
-            const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
-            const priorityMatch = lowerReply.match(
-                /\bpriority\s*-\s*([a-z]+)\b/i,
-            );
-
-            if (statusMatch || priorityMatch) {
-                const updates = {};
-
-                if (statusMatch) {
-                    const s = statusMatch[1].trim();
-                    if (/^(resolve|resolved|done|completed|finished)$/.test(s))
-                        updates.status = existing_issue
-                            ? "RESOLVED"
-                            : "COMPLETED";
-                    else if (/^(hold|blocked|block|stuck)$/.test(s))
-                        updates.status = existing_issue ? "HOLD" : "BLOCKED";
-                    else if (/^(open|processing|doing|wip)$/.test(s))
-                        updates.status = existing_issue ? "OPEN" : "PROCESSING";
-                }
-
-                if (priorityMatch) {
-                    const p = priorityMatch[1].trim();
-                    if (/^(urgent|critical|p0)$/.test(p))
-                        updates.priority = "URGENT";
-                    else if (/^(high|important|p1)$/.test(p))
-                        updates.priority = "HIGH";
-                    else if (/^(medium|p2)$/.test(p))
-                        updates.priority = "MEDIUM";
-                    else if (/^(low|minor|p3)$/.test(p))
-                        updates.priority = "LOW";
-                }
-
-                if (Object.keys(updates).length > 0) {
-                    // 🟢 FIX 1: Generate missing notifications explicitly for strict overrides
-                    const dummyNotifications = [];
-                    if (updates.status === "BLOCKED" && existing_task && (!existing_task.blocked_reason || existing_task.blocked_reason.trim() === "")) {
-                        dummyNotifications.push({
-                            type: "MISSING_BLOCK_REASON",
-                            target_user_id: sender?.id,
-                            target_user_name: sender?.name || "User",
-                            message: `Your task '${existing_task.title}' is marked as blocked. Please tell me what is blocking it.`,
-                            immediate: true,
+            // 🟢 Save message embedding to ChromaDB
+            if (text && text.trim().length > 0) {
+                try {
+                    const vectorArray = await getEmbedding(text);
+                    if (vectorArray) {
+                        await vectorDbService.saveMessage({
+                            messageId: message_ts || newId("msg"),
+                            threadId: threadRoot,
+                            text: text,
+                            vectorArray: vectorArray,
+                            senderId: sender?.id || "unknown",
+                            senderName:
+                                sender?.display_name ||
+                                sender?.real_name ||
+                                sender?.name ||
+                                "Unknown",
                         });
                     }
-                    if (existing_task && !existing_task.due_date && updates.status !== "COMPLETED") {
-                         dummyNotifications.push({
-                            type: "MISSING_DUE_DATE",
-                            target_user_id: sender?.id,
-                            target_user_name: sender?.name || "User",
-                            message: `I couldn't determine the due date for your task. Please reply with the due date.`,
-                            immediate: true,
-                         });
+                } catch (vectorErr) {
+                    console.warn(
+                        "[VectorDB Warning] Failed to index message:",
+                        vectorErr.message,
+                    );
+                }
+            }
+
+            let existing_task = null;
+            let existing_issue = null;
+
+            const isExplicitCommand =
+                /task\s*-/i.test(text) || /issue\s*-/i.test(text);
+            const textHash = hashText(text);
+
+            if (is_edit && message_ts) {
+                const byMsg = await findWorkByMessageTs(message_ts, channel);
+                existing_task = byMsg.task;
+                existing_issue = byMsg.issue;
+
+                const alreadyAnalyzed =
+                    wasTextAlreadyAnalyzed(existing_task, message_ts, textHash) ||
+                    wasTextAlreadyAnalyzed(existing_issue, message_ts, textHash);
+
+                if (alreadyAnalyzed) {
+                    console.log(
+                        `[MessageProcessor] Skipping already analyzed message edit (${message_ts})`,
+                    );
+                }
+            }
+
+            if (
+                !existing_task &&
+                !existing_issue &&
+                threadRoot &&
+                !isExplicitCommand
+            ) {
+                const byThread = await findWorkByThread(threadRoot, channel);
+                existing_task = byThread.task;
+                existing_issue = byThread.issue;
+            }
+
+            // 0. STRICT PREFIX OVERRIDES (Bulletproof Status/Priority Updates)
+            if (
+                (existing_task || existing_issue) &&
+                threadRoot &&
+                threadRoot !== message_ts
+            ) {
+                const lowerReply = text.toLowerCase().trim();
+
+                const statusMatch = lowerReply.match(/\bstatus\s*-\s*([a-z]+)\b/i);
+                const priorityMatch = lowerReply.match(
+                    /\bpriority\s*-\s*([a-z]+)\b/i,
+                );
+
+                if (statusMatch || priorityMatch) {
+                    const updates = {};
+
+                    if (statusMatch) {
+                        const s = statusMatch[1].trim();
+                        if (/^(resolve|resolved|done|completed|finished)$/.test(s))
+                            updates.status = existing_issue
+                                ? "RESOLVED"
+                                : "COMPLETED";
+                        else if (/^(hold|blocked|block|stuck)$/.test(s))
+                            updates.status = existing_issue ? "HOLD" : "BLOCKED";
+                        else if (/^(open|processing|doing|wip)$/.test(s))
+                            updates.status = existing_issue ? "OPEN" : "PROCESSING";
                     }
 
-                    const dummyParsed = {
-                        classification: existing_issue ? "ISSUE" : "TASK",
-                        action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
-                        updates,
-                        sender: sender
-                            ? {
-                                  id: sender.id,
-                                  name: sender.name,
-                                  display_name: sender.display_name,
-                                  email: "",
-                              }
-                            : { id: "", name: "" },
-                        issue: existing_issue
-                            ? { id: existing_issue.issue_id }
-                            : null,
-                        task: existing_task
-                            ? { id: existing_task.task_id }
-                            : null,
-                        meta: { needs_human_review: false },
-                        notifications: dummyNotifications, 
+                    if (priorityMatch) {
+                        const p = priorityMatch[1].trim();
+                        if (/^(urgent|critical|p0)$/.test(p))
+                            updates.priority = "URGENT";
+                        else if (/^(high|important|p1)$/.test(p))
+                            updates.priority = "HIGH";
+                        else if (/^(medium|p2)$/.test(p))
+                            updates.priority = "MEDIUM";
+                        else if (/^(low|minor|p3)$/.test(p))
+                            updates.priority = "LOW";
+                    }
+
+                    if (Object.keys(updates).length > 0) {
+                        const dummyNotifications = [];
+                        if (updates.status === "BLOCKED" && existing_task && (!existing_task.blocked_reason || existing_task.blocked_reason.trim() === "")) {
+                            dummyNotifications.push({
+                                type: "MISSING_BLOCK_REASON",
+                                target_user_id: sender?.id,
+                                target_user_name: sender?.name || "User",
+                                message: `Your task '${existing_task.title}' is marked as blocked. Please tell me what is blocking it.`,
+                                immediate: true,
+                            });
+                        }
+                        if (existing_task && !existing_task.due_date && updates.status !== "COMPLETED") {
+                             dummyNotifications.push({
+                                type: "MISSING_DUE_DATE",
+                                target_user_id: sender?.id,
+                                target_user_name: sender?.name || "User",
+                                message: `I couldn't determine the due date for your task. Please reply with the due date.`,
+                                immediate: true,
+                             });
+                        }
+
+                        const dummyParsed = {
+                            classification: existing_issue ? "ISSUE" : "TASK",
+                            action: existing_issue ? "UPDATE_ISSUE" : "UPDATE_TASK",
+                            updates,
+                            sender: sender
+                                ? {
+                                      id: sender.id,
+                                      name: sender.name,
+                                      display_name: sender.display_name,
+                                      email: "",
+                                  }
+                                : { id: "", name: "" },
+                            issue: existing_issue
+                                ? { id: existing_issue.issue_id }
+                                : null,
+                            task: existing_task
+                                ? { id: existing_task.task_id }
+                                : null,
+                            meta: { needs_human_review: false },
+                            notifications: dummyNotifications, 
+                        };
+
+                        const result = await this.persist(dummyParsed, {
+                            text,
+                            sender,
+                            channel,
+                            thread_id: threadRoot,
+                            workspace_id,
+                            team,
+                            message_ts,
+                            text_hash: textHash,
+                            slack_client,
+                            user_directory,
+                        });
+
+                        if (this.io && !quiet) {
+                            this.io.emit("dashboard:update", {
+                                action: result.action,
+                                classification: result.classification,
+                                task_id: result.task?.id || null,
+                                issue_id: result.issue?.id || null,
+                                at: new Date().toISOString(),
+                            });
+                        }
+                        return result;
+                    }
+                }
+            }
+
+            // 1. Intercept "accept" command
+            if (text.trim().toLowerCase().startsWith("accept")) {
+                const mentioned = extractMentionedUsers(text, user_directory || {});
+                const targetToTag = mentioned.find(
+                    (u) => u.id && u.id !== sender?.id,
+                );
+
+                if (targetToTag && slack_client) {
+                    const originalSenderId = targetToTag.id;
+                    await slack_client.chat.postMessage({
+                        channel: originalSenderId,
+                        text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
+                    });
+                    await slack_client.chat.postMessage({
+                        channel: channel,
+                        thread_ts: threadRoot || message_ts,
+                        text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
+                    });
+                    return {
+                        classification: "GENERAL_DISCUSSION",
+                        action: "CONNECT_ACCEPTED",
+                        dashboard_update: false,
+                    };
+                }
+            }
+
+            // 2. Intercept "delay" command
+            if (text.trim().toLowerCase().startsWith("delay")) {
+                const mentioned = extractMentionedUsers(text, user_directory || {});
+                const targetToTag = mentioned.find(
+                    (u) => u.id && u.id !== sender?.id,
+                );
+
+                if (targetToTag && slack_client) {
+                    const originalSenderId = targetToTag.id;
+                    const timeInput = text
+                        .replace(/^delay/i, "")
+                        .replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
+                        .replace(/@[A-Za-z0-9_.-]+/g, "")
+                        .trim();
+
+                    let postAt;
+                    let delayText = timeInput;
+
+                    const minMatch = timeInput.match(
+                        /^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
+                    );
+                    const hrMatch = timeInput.match(
+                        /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
+                    );
+
+                    if (minMatch) {
+                        const mins = parseInt(minMatch[1], 10);
+                        postAt =
+                            Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
+                        delayText = `in ${mins} minutes`;
+                    } else if (hrMatch) {
+                        const hrs = parseFloat(hrMatch[1]);
+                        postAt =
+                            Math.floor(Date.now() / 1000) +
+                            Math.max(hrs * 3600, 65);
+                        delayText = `in ${hrs} hours`;
+                    } else {
+                        const parsedDateStr = extractDueDate(timeInput, new Date());
+                        if (parsedDateStr) {
+                            postAt = Math.floor(
+                                new Date(parsedDateStr).getTime() / 1000,
+                            );
+                            delayText = `at ${timeInput}`;
+                            if (postAt <= Math.floor(Date.now() / 1000) + 60) {
+                                postAt += 24 * 3600;
+                            }
+                        } else {
+                            await slack_client.chat.postMessage({
+                                channel: channel,
+                                thread_ts: threadRoot || message_ts,
+                                text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
+                            });
+                            return {
+                                classification: "GENERAL_DISCUSSION",
+                                action: "CONNECT_DELAY_FAILED",
+                                dashboard_update: false,
+                            };
+                        }
+                    }
+
+                    await slack_client.chat.postMessage({
+                        channel: originalSenderId,
+                        text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
+                    });
+                    await slack_client.chat.postMessage({
+                        channel: channel,
+                        thread_ts: threadRoot || message_ts,
+                        text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
+                    });
+
+                    try {
+                        await slack_client.chat.scheduleMessage({
+                            channel: originalSenderId,
+                            post_at: postAt,
+                            text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
+                        });
+                        await slack_client.chat.scheduleMessage({
+                            channel: sender.id,
+                            post_at: postAt,
+                            text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
+                        });
+                    } catch (e) {
+                        console.error("[Slack] Scheduler error:", e.message);
+                    }
+
+                    return {
+                        classification: "GENERAL_DISCUSSION",
+                        action: "CONNECT_DELAYED",
+                        dashboard_update: false,
+                    };
+                }
+            }
+
+            // 3. Intercept "connect" command
+            const connectMatch = text.match(
+                /\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
+            );
+            if (connectMatch) {
+                try {
+                    const mentioned = extractMentionedUsers(
+                        text,
+                        user_directory || {},
+                    );
+                    const senderId = sender?.id || "unknown";
+                    const targetUser = mentioned.find(
+                        (u) => u.id && u.id !== senderId,
+                    );
+
+                    if (targetUser && this.connect) {
+                        const request = this.connect.createRequest({
+                            senderId,
+                            senderName:
+                                sender?.display_name || sender?.name || senderId,
+                            targetUserId: targetUser.id,
+                            targetUserName:
+                                targetUser.display_name ||
+                                targetUser.name ||
+                                targetUser.id,
+                            channel: channel,
+                            threadTs: threadRoot || message_ts,
+                        });
+
+                        return {
+                            classification: "GENERAL_DISCUSSION",
+                            action: "CONNECT_REQUEST",
+                            dashboard_update: false,
+                            connect: {
+                                requestId: request.id,
+                                senderId: request.senderId,
+                                senderName: request.senderName,
+                                targetUserId: request.targetUserId,
+                                targetUserName: request.targetUserName,
+                                channel: request.channel,
+                                threadTs: request.threadTs,
+                            },
+                        };
+                    }
+                } catch (err) {
+                    console.error("[Connect] FATAL ERROR:", err.message);
+                }
+            }
+
+            // 🟢 DELEGATE TO WORKPARSER UTILITY IF FILES EXIST, OTHERWISE PARSE NORMALLY
+            let parsed;
+
+            if (local_attachments && local_attachments.length > 0) {
+                parsed = await processWorkWithAttachments({
+                    text,
+                    sender,
+                    channel,
+                    thread_id: threadRoot,
+                    workspace_id,
+                    team,
+                    message_ts,
+                    is_edit,
+                    user_directory: raw.user_directory || {},
+                    existing_task,
+                    existing_issue,
+                    local_attachments,
+                });
+            } else {
+                parsed = await parseMessage({
+                    text,
+                    sender,
+                    channel,
+                    thread_id: threadRoot,
+                    workspace_id,
+                    team,
+                    message_ts,
+                    is_edit,
+                    user_directory: raw.user_directory || {},
+                    existing_task,
+                    existing_issue,
+                    now: new Date(),
+                });
+            }
+
+            // 🟢 BATCH PERSISTENCE LOOP: Handles multiple assigned users from documents
+            if (parsed.action === "CREATE_BATCH" && Array.isArray(parsed.items)) {
+                let lastResult = null;
+                const userDir = raw.user_directory || {};
+                const senderRef = sender || { id: "", name: "Unassigned" }; // 🟢 Ensure senderRef is safely set
+
+                for (const item of parsed.items) {
+                    let assignedUser = { id: "", name: "Unassigned" };
+                    if (item.assigned_to?.name) {
+                        const searchName = item.assigned_to.name.toLowerCase();
+                        const foundUser = Object.values(userDir).find(
+                            (u) => (u.name || "").toLowerCase().includes(searchName) ||
+                                   (u.display_name || "").toLowerCase().includes(searchName) ||
+                                   (u.real_name || "").toLowerCase().includes(searchName)
+                        );
+                        assignedUser = foundUser || { id: "", name: item.assigned_to.name };
+                    } else {
+                        assignedUser = senderRef;
+                    }
+
+                    const subParsed = {
+                        ...parsed,
+                        classification: item.type || "TASK",
+                        action: item.type === "ISSUE" ? "CREATE_ISSUE" : "CREATE_TASK",
+                        sender: senderRef, // 🟢 Explicitly pass sender down
+                        owner: assignedUser,
+                        assigned_to: assignedUser,
+                        assigned_by: senderRef,
+                        reporter: senderRef,
+                        task: item.type === "TASK" ? { title: item.title, description: item.description, priority: item.priority, status: item.status, due_date: item.due_date } : null,
+                        issue: item.type === "ISSUE" ? { title: item.title, description: item.description, priority: item.priority, status: item.status, due_date: item.due_date } : null,
+                        confidence: 0.99
                     };
 
-                    const result = await this.persist(dummyParsed, {
-                        text,
-                        sender,
+                    lastResult = await this.persist(subParsed, {
+                        text: item.title,
+                        sender: senderRef, // 🟢 Pass sender in context as well
                         channel,
                         thread_id: threadRoot,
                         workspace_id,
@@ -311,197 +575,114 @@ class MessageProcessor {
                         message_ts,
                         text_hash: textHash,
                         slack_client,
-                        user_directory,
+                        user_directory: userDir,
+                        local_attachments,
+                        existing_task,
+                        existing_issue
                     });
 
                     if (this.io && !quiet) {
                         this.io.emit("dashboard:update", {
-                            action: result.action,
-                            classification: result.classification,
-                            task_id: result.task?.id || null,
-                            issue_id: result.issue?.id || null,
+                            action: lastResult.action,
+                            classification: lastResult.classification,
+                            task_id: lastResult.task?.id || null,
+                            issue_id: lastResult.issue?.id || null,
                             at: new Date().toISOString(),
                         });
                     }
-                    return result;
                 }
+                return lastResult; 
             }
-        }
 
-        // 1. Intercept "accept" command
-        if (text.trim().toLowerCase().startsWith("accept")) {
-            const mentioned = extractMentionedUsers(text, user_directory || {});
-            const targetToTag = mentioned.find(
-                (u) => u.id && u.id !== sender?.id,
-            );
-
-            if (targetToTag && slack_client) {
-                const originalSenderId = targetToTag.id;
-                await slack_client.chat.postMessage({
-                    channel: originalSenderId,
-                    text: `🔔 Good news! <@${sender.id}> is available and will connect with you right now.`,
-                });
-                await slack_client.chat.postMessage({
-                    channel: channel,
-                    thread_ts: threadRoot || message_ts,
-                    text: `✅ Thanks <@${sender.id}>! I've let <@${originalSenderId}> know you are ready.`,
-                });
-                return {
-                    classification: "GENERAL_DISCUSSION",
-                    action: "CONNECT_ACCEPTED",
-                    dashboard_update: false,
-                };
+            // 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
+            if (parsed.task?.title) {
+                parsed.task.title = parsed.task.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
+                if (parsed.task.title.length < 3) parsed.task.title = "Task from attached file";
             }
-        }
+            if (parsed.issue?.title) {
+                parsed.issue.title = parsed.issue.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
+                if (parsed.issue.title.length < 3) parsed.issue.title = "Issue from attached file";
+            }
 
-        // 2. Intercept "delay" command
-        if (text.trim().toLowerCase().startsWith("delay")) {
-            const mentioned = extractMentionedUsers(text, user_directory || {});
-            const targetToTag = mentioned.find(
-                (u) => u.id && u.id !== sender?.id,
-            );
-
-            if (targetToTag && slack_client) {
-                const originalSenderId = targetToTag.id;
-                const timeInput = text
-                    .replace(/^delay/i, "")
-                    .replace(new RegExp(`<@${targetToTag.id}>`, "gi"), "")
-                    .replace(/@[A-Za-z0-9_.-]+/g, "")
-                    .trim();
-
-                let postAt;
-                let delayText = timeInput;
-
-                const minMatch = timeInput.match(
-                    /^(\d+)\s*(?:m|min|mins|minutes?)?$/i,
+            if (
+                parsed.classification === "TASK" &&
+                parsed.action === "CREATE_TASK" &&
+                parsed.task
+            ) {
+                const sim = await findSimilarTask(
+                    parsed.task.title,
+                    parsed.task.description,
+                    workspace_id,
+                    channel,
+                    0.6,
                 );
-                const hrMatch = timeInput.match(
-                    /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)$/i,
-                );
+                if (sim) {
+                    parsed.action = "UPDATE_TASK";
+                    parsed.task_created = false;
+                    parsed.task_updated = true;
+                    parsed.task.id = sim.task.task_id;
+                    existing_task = sim.task;
 
-                if (minMatch) {
-                    const mins = parseInt(minMatch[1], 10);
-                    postAt =
-                        Math.floor(Date.now() / 1000) + Math.max(mins * 60, 65);
-                    delayText = `in ${mins} minutes`;
-                } else if (hrMatch) {
-                    const hrs = parseFloat(hrMatch[1]);
-                    postAt =
-                        Math.floor(Date.now() / 1000) +
-                        Math.max(hrs * 3600, 65);
-                    delayText = `in ${hrs} hours`;
-                } else {
-                    const parsedDateStr = extractDueDate(timeInput, new Date());
-                    if (parsedDateStr) {
-                        postAt = Math.floor(
-                            new Date(parsedDateStr).getTime() / 1000,
-                        );
-                        delayText = `at ${timeInput}`;
-                        if (postAt <= Math.floor(Date.now() / 1000) + 60) {
-                            postAt += 24 * 3600;
-                        }
-                    } else {
-                        await slack_client.chat.postMessage({
-                            channel: channel,
-                            thread_ts: threadRoot || message_ts,
-                            text: `⚠️ I didn't understand the time "${timeInput}". Try "20 mins", "1 hour", "4:45 pm", or "tomorrow".`,
-                        });
-                        return {
-                            classification: "GENERAL_DISCUSSION",
-                            action: "CONNECT_DELAY_FAILED",
-                            dashboard_update: false,
+                    if (parsed.task.status && parsed.task.status !== "TODO") {
+                        parsed.updates = {
+                            ...parsed.updates,
+                            status: parsed.task.status,
                         };
                     }
                 }
-
-                await slack_client.chat.postMessage({
-                    channel: originalSenderId,
-                    text: `🕒 <@${sender.id}> is currently busy, but will be free *${delayText}* to connect.`,
-                });
-                await slack_client.chat.postMessage({
-                    channel: channel,
-                    thread_ts: threadRoot || message_ts,
-                    text: `✅ Delay set! I've let <@${originalSenderId}> know you'll be free ${delayText}. You will both get a reminder.`,
-                });
-
-                try {
-                    await slack_client.chat.scheduleMessage({
-                        channel: originalSenderId,
-                        post_at: postAt,
-                        text: `🔔 *Reminder:* <@${sender.id}> should be free now to connect!`,
-                    });
-                    await slack_client.chat.scheduleMessage({
-                        channel: sender.id,
-                        post_at: postAt,
-                        text: `🔔 *Reminder:* You are scheduled to connect with <@${originalSenderId}> right now!`,
-                    });
-                } catch (e) {
-                    console.error("[Slack] Scheduler error:", e.message);
-                }
-
-                return {
-                    classification: "GENERAL_DISCUSSION",
-                    action: "CONNECT_DELAYED",
-                    dashboard_update: false,
-                };
             }
-        }
 
-        // 3. Intercept "connect" command
-        const connectMatch = text.match(
-            /\bconnect\s+(?:with\s+)?(?:<@[A-Z0-9]+>|@[A-Za-z0-9_.-]+)/i,
-        );
-        if (connectMatch) {
-            try {
-                const mentioned = extractMentionedUsers(
-                    text,
-                    user_directory || {},
-                );
-                const senderId = sender?.id || "unknown";
-                const targetUser = mentioned.find(
-                    (u) => u.id && u.id !== senderId,
-                );
-
-                if (targetUser && this.connect) {
-                    const request = this.connect.createRequest({
-                        senderId,
-                        senderName:
-                            sender?.display_name || sender?.name || senderId,
-                        targetUserId: targetUser.id,
-                        targetUserName:
-                            targetUser.display_name ||
-                            targetUser.name ||
-                            targetUser.id,
-                        channel: channel,
-                        threadTs: threadRoot || message_ts,
-                    });
-
-                    return {
-                        classification: "GENERAL_DISCUSSION",
-                        action: "CONNECT_REQUEST",
-                        dashboard_update: false,
-                        connect: {
-                            requestId: request.id,
-                            senderId: request.senderId,
-                            senderName: request.senderName,
-                            targetUserId: request.targetUserId,
-                            targetUserName: request.targetUserName,
-                            channel: request.channel,
-                            threadTs: request.threadTs,
-                        },
-                    };
+            if (
+                parsed.classification === "GENERAL_DISCUSSION" &&
+                parsed.action === "STORE_DISCUSSION"
+            ) {
+                const statusMatch = detectStatus(text);
+                if (statusMatch !== "TODO") {
+                    const sim = await findSimilarTask(
+                        text,
+                        "",
+                        workspace_id,
+                        channel,
+                        0.75,
+                    );
+                    if (sim) {
+                        parsed.classification = "TASK";
+                        parsed.action = "UPDATE_TASK";
+                        parsed.task_created = false;
+                        parsed.task_updated = true;
+                        parsed.task = {
+                            ...sim.task,
+                            id: sim.task.task_id,
+                            status: statusMatch,
+                        };
+                        parsed.updates = { status: statusMatch };
+                        existing_task = sim.task;
+                    }
                 }
-            } catch (err) {
-                console.error("[Connect] FATAL ERROR:", err.message);
             }
-        }
 
-        // 🟢 DELEGATE TO WORKPARSER UTILITY IF FILES EXIST, OTHERWISE PARSE NORMALLY
+            if (
+                parsed.classification === "ISSUE" &&
+                parsed.action === "CREATE_ISSUE" &&
+                parsed.issue
+            ) {
+                const sim = await findSimilarIssue(
+                    parsed.issue.title,
+                    parsed.issue.description,
+                    workspace_id,
+                    channel,
+                    0.6,
+                );
+                if (sim) {
+                    parsed.action = "UPDATE_ISSUE";
+                    parsed.issue_created = false;
+                    parsed.issue_updated = true;
+                    parsed.issue.id = sim.issue.issue_id;
+                    existing_issue = sim.issue;
+                }
+            }
 
-        let parsed;
-
-        if (local_attachments && local_attachments.length > 0) {
-            parsed = await processWorkWithAttachments({
+            const result = await this.persist(parsed, {
                 text,
                 sender,
                 channel,
@@ -509,144 +690,32 @@ class MessageProcessor {
                 workspace_id,
                 team,
                 message_ts,
-                is_edit,
+                text_hash: textHash,
+                slack_client,
                 user_directory: raw.user_directory || {},
                 existing_task,
                 existing_issue,
                 local_attachments,
             });
-        } else {
-            parsed = await parseMessage({
-                text,
-                sender,
-                channel,
-                thread_id: threadRoot,
-                workspace_id,
-                team,
-                message_ts,
-                is_edit,
-                user_directory: raw.user_directory || {},
-                existing_task,
-                existing_issue,
-                now: new Date(),
-            });
-        }
 
-        // 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
-        if (parsed.task?.title) {
-            parsed.task.title = parsed.task.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
-            if (parsed.task.title.length < 3) parsed.task.title = "Task from attached file";
-        }
-        if (parsed.issue?.title) {
-            parsed.issue.title = parsed.issue.title.replace(/\[Attachment.*?\]/ig, "").replace(/Task\/Issue requirement based on attached file.*?/ig, "").trim();
-            if (parsed.issue.title.length < 3) parsed.issue.title = "Issue from attached file";
-        }
+            if (this.io && !quiet) {
+                this.io.emit("dashboard:update", {
+                    action: result.action,
+                    classification: result.classification,
+                    task_id: result.task?.id || null,
+                    issue_id: result.issue?.id || null,
+                    at: new Date().toISOString(),
+                });
+            }
 
-        if (
-            parsed.classification === "TASK" &&
-            parsed.action === "CREATE_TASK" &&
-            parsed.task
-        ) {
-            const sim = await findSimilarTask(
-                parsed.task.title,
-                parsed.task.description,
-                workspace_id,
-                channel,
-                0.6,
-            );
-            if (sim) {
-                parsed.action = "UPDATE_TASK";
-                parsed.task_created = false;
-                parsed.task_updated = true;
-                parsed.task.id = sim.task.task_id;
-                existing_task = sim.task;
+            return result;
 
-                if (parsed.task.status && parsed.task.status !== "TODO") {
-                    parsed.updates = {
-                        ...parsed.updates,
-                        status: parsed.task.status,
-                    };
-                }
+        } finally {
+            // 🟢 GUARANTEED FINAL CLEANUP: Deletes files whether parsing succeeded, failed, or skipped
+            if (local_attachments && local_attachments.length > 0) {
+                await this.cleanupAttachments(local_attachments);
             }
         }
-
-        if (
-            parsed.classification === "GENERAL_DISCUSSION" &&
-            parsed.action === "STORE_DISCUSSION"
-        ) {
-            const statusMatch = detectStatus(text);
-            if (statusMatch !== "TODO") {
-                const sim = await findSimilarTask(
-                    text,
-                    "",
-                    workspace_id,
-                    channel,
-                    0.75,
-                );
-                if (sim) {
-                    parsed.classification = "TASK";
-                    parsed.action = "UPDATE_TASK";
-                    parsed.task_created = false;
-                    parsed.task_updated = true;
-                    parsed.task = {
-                        ...sim.task,
-                        id: sim.task.task_id,
-                        status: statusMatch,
-                    };
-                    parsed.updates = { status: statusMatch };
-                    existing_task = sim.task;
-                }
-            }
-        }
-
-        if (
-            parsed.classification === "ISSUE" &&
-            parsed.action === "CREATE_ISSUE" &&
-            parsed.issue
-        ) {
-            const sim = await findSimilarIssue(
-                parsed.issue.title,
-                parsed.issue.description,
-                workspace_id,
-                channel,
-                0.6,
-            );
-            if (sim) {
-                parsed.action = "UPDATE_ISSUE";
-                parsed.issue_created = false;
-                parsed.issue_updated = true;
-                parsed.issue.id = sim.issue.issue_id;
-                existing_issue = sim.issue;
-            }
-        }
-
-        const result = await this.persist(parsed, {
-            text,
-            sender,
-            channel,
-            thread_id: threadRoot,
-            workspace_id,
-            team,
-            message_ts,
-            text_hash: textHash,
-            slack_client,
-            user_directory: raw.user_directory || {},
-            existing_task,
-            existing_issue,
-            local_attachments,
-        });
-
-        if (this.io && !quiet) {
-            this.io.emit("dashboard:update", {
-                action: result.action,
-                classification: result.classification,
-                task_id: result.task?.id || null,
-                issue_id: result.issue?.id || null,
-                at: new Date().toISOString(),
-            });
-        }
-
-        return result;
     }
 
     async cleanupAttachments(localAttachments = []) {

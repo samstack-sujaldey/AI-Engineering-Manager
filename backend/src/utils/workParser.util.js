@@ -16,60 +16,59 @@ async function processWorkWithAttachments({
   existing_issue = null,
   local_attachments = [],
 }) {
-  let attachmentTextPayload = "";
+  let combinedFallbackText = text.trim() ? `[Caption]: ${text.trim()}\n` : "";
+  let batchItems = [];
 
   if (local_attachments && local_attachments.length > 0) {
-    // Filter out attachments whose local files no longer exist on disk to prevent ENOENT crashes
     const validAttachments = [];
     for (const att of local_attachments) {
       try {
         await fs.access(att.localPath);
         validAttachments.push(att);
       } catch {
-        console.warn(`[WorkParser Utility] Skipping attachment as local file is missing or already cleaned up: ${att.localPath}`);
+        console.warn(`[WorkParser] Skipping missing attachment: ${att.localPath}`);
       }
     }
 
     if (validAttachments.length > 0) {
-      const extractedFiles = await extractAttachments(validAttachments);
+      // 🟢 PASS THE CAPTION TEXT TO THE AI EXTRACTOR
+      const extractedFiles = await extractAttachments(validAttachments, text);
       
       for (const file of extractedFiles) {
-        if (file.extracted && file.content) {
-          if (file.type === "IMAGE") {
-            const visionSummary = file.content.summary || file.content.text || "";
-            if (visionSummary) {
-              attachmentTextPayload += `\n[Image Context: ${visionSummary}]`;
-            }
-          } else {
-            const contentStr = typeof file.content === "string"
-              ? file.content
-              : JSON.stringify(file.content, null, 2);
-            attachmentTextPayload += `\n\n--- Content from ${file.fileName} ---\n${contentStr.trim()}`;
+        if (file.extracted) {
+          // 🟢 CHECK FOR SMART AI BATCH
+          if (file.ai_batch && file.ai_batch.action === "CREATE_BATCH" && Array.isArray(file.ai_batch.items)) {
+            batchItems = batchItems.concat(file.ai_batch.items);
+          } else if (file.content) {
+            // 🟢 FALLBACK: Only append raw text if AI batch extraction failed/skipped
+            const contentStr = typeof file.content === "string" ? file.content : JSON.stringify(file.content, null, 2);
+            combinedFallbackText += `\n--- Content from ${file.fileName} ---\n${contentStr.trim()}`;
           }
         }
       }
     }
   }
 
-  let combinedText = "";
-  if (text.trim()) {
-    combinedText += `[Caption Instruction / Context]: ${text.trim()}\n`;
+  // 🟢 IF AI SUCCEEDED, BYPASS REGEX AND RETURN BATCH
+  if (batchItems.length > 0) {
+    return {
+      action: "CREATE_BATCH",
+      items: batchItems,
+    };
   }
-  if (attachmentTextPayload.trim()) {
-    combinedText += `\n[Attached Document Content]:\n${attachmentTextPayload.trim()}`;
-  }
-  combinedText = combinedText.trim();
 
-  if (local_attachments.length > 0 && !/task\s*-|issue\s*-/i.test(combinedText)) {
-    if (/\b(error|bug|fail|crash|exception|issue|broken)\b/i.test(combinedText)) {
-      combinedText = `issue - ${combinedText}`;
+  // 🟢 FALLBACK: Regex parser for attachments if AI failed
+  combinedFallbackText = combinedFallbackText.trim();
+  if (local_attachments.length > 0 && !/task\s*-|issue\s*-/i.test(combinedFallbackText)) {
+    if (/\b(error|bug|fail|crash|exception|issue|broken)\b/i.test(combinedFallbackText)) {
+      combinedFallbackText = `issue - ${combinedFallbackText}`;
     } else {
-      combinedText = `task - ${combinedText}`;
+      combinedFallbackText = `task - ${combinedFallbackText}`;
     }
   }
 
   const parsed = await parseMessage({
-    text: combinedText,
+    text: combinedFallbackText,
     sender,
     channel,
     thread_id,
