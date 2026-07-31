@@ -50,10 +50,6 @@ declare var ScrollReveal: any;
             {{ auth.loading() ? 'Signing in...' : 'Sign In' }}
           </button>
         </form>
-
-        <p class="hint-text sr-item">
-          Default admin: <b>admin</b> / <b>admin123</b>
-        </p>
       </div>
     </div>
   `,
