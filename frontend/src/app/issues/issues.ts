@@ -21,16 +21,13 @@ import { DashboardService } from '../services/dashboard.service';
       <div class="filters-row">
         <select class="filter-select" [(ngModel)]="statusFilter">
           <option value="all">Status: All</option>
-          <option value="OPEN">Open</option>
-          <option value="BLOCKED">Blocked</option>
+          <option value="HOLD">Hold</option>
           <option value="RESOLVED">Resolved</option>
         </select>
         <select class="filter-select" [(ngModel)]="priorityFilter">
           <option value="all">Priority: All</option>
           <option value="LOW">Low</option>
-          <option value="MEDIUM">Medium</option>
           <option value="HIGH">High</option>
-          <option value="URGENT">Urgent</option>
         </select>
         
         <!-- Date Filter with Clear Button -->
