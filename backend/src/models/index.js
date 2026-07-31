@@ -6,4 +6,5 @@ module.exports = {
   Activity: require('./Activity'),
   DailySummary: require('./DailySummary'),
   Team: require('./Team'),
+  User: require('./User'),
 };

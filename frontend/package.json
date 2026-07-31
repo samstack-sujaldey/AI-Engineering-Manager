@@ -17,7 +17,9 @@
     "@angular/forms": "^22.0.0",
     "@angular/platform-browser": "^22.0.0",
     "@angular/router": "^22.0.0",
+    "ngx-scrollreveal": "^3.0.0",
     "rxjs": "~7.8.0",
+    "scrollreveal": "^4.0.9",
     "socket.io-client": "^4.8.3",
     "tslib": "^2.3.0"
   },
