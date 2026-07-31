@@ -720,7 +720,7 @@ export class StandupSummaryComponent implements OnInit {
     let currentMember: MemberSummary | null = null;
     let activeSection: 'tasks' | 'issues' | 'discussions' = 'tasks';
 
-    const botKeywords = ['slackbot', 'bot', 'github', 'jira', 'ai_engineering'];
+    const botKeywords = ['slackbot', 'bot', 'github', 'jira', 'ai_engineering','aiem'];
 
     const getInitials = (name: string) => {
       return name

@@ -490,11 +490,11 @@ export class TeamComponent implements OnInit {
       const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
       let colorIndex = 0;
 
-      // Filter out non-human users / apps / bots from workload API
-      const humanWorkload = workload.filter((m: any) => !this.isBotUser(m));
+      // Filter out non-human users / apps / bots / agents from workload API
+      const humanWorkload = workload.filter((m: any) => !this.isBotOrAgentUser(m));
 
       this.members = humanWorkload.map((m: any) => {
-        const cleanName = this.extractStringName(m);
+        const cleanName = this.resolveTeamMemberName(m);
         const nameParts = cleanName.split(/\s+/);
         const initials = nameParts.length > 1
           ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
@@ -607,7 +607,72 @@ export class TeamComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  processTasksIntoMembers() {
+  private resolveTeamMemberName(input: any): string {
+    if (!input) return 'Unassigned';
+
+    let raw = '';
+    if (typeof input === 'string') {
+      raw = input;
+    } else if (typeof input === 'object') {
+      raw =
+        input.real_name ||
+        input.display_name ||
+        input.profile?.real_name ||
+        input.profile?.display_name ||
+        input.name ||
+        input.email ||
+        'Unassigned';
+    } else {
+      raw = String(input);
+    }
+
+    raw = raw.trim();
+
+    if (raw.startsWith('<@') && raw.endsWith('>')) {
+      raw = raw.slice(2, -1);
+    }
+
+    if (raw.includes('@') && !raw.startsWith('<')) {
+      raw = raw.split('@')[0].trim();
+    }
+
+    raw = raw.replace(/[._-]+/g, ' ').trim();
+
+    if (!raw || raw === 'Unassigned') return 'Unassigned';
+
+    return raw
+      .split(/\s+/)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  private isBotOrAgentUser(m: any): boolean {
+    if (!m) return true;
+
+    const rawId = (m.id || m.userId || m.user_id || '').toLowerCase();
+    const rawName = (
+      typeof m === 'string'
+        ? m
+        : (m.real_name || m.display_name || m.name || m.email || '')
+    ).toLowerCase();
+
+    const botKeywords = [
+      'bot', 'app', 'github', 'jira', 'jirabot', 'slackbot',
+      'ai_engineering', 'agent', 'claude', 'gpt', 'assistant',
+      'automation', 'notif', 'system','aiem'
+    ];
+
+    return (
+      rawId === 'uslackbot' ||
+      rawId.includes('bot') ||
+      rawId.includes('app') ||
+      rawName === 'unknown' ||
+      rawName === '' ||
+      botKeywords.some((kw) => rawName.includes(kw))
+    );
+  }
+
+    processTasksIntoMembers() {
     const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
     const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
     let colorIndex = 0;
@@ -616,29 +681,7 @@ export class TeamComponent implements OnInit {
     const targetId = this.selectedChannelId;
     const targetName = selectedChanObj ? selectedChanObj.name.toLowerCase() : '';
 
-    // 1. Seed members strictly from Team collection for the active channel, filtering out bots/apps
-    const baseMembers = this.selectedChannelId === 'all'
-      ? (this.teams || []).flatMap((team: any) => team.members || [])
-      : (this.teams.find((t: any) => 
-          t.channel_id === this.selectedChannelId || 
-          t.channel_name?.replace(/^#/, '').toLowerCase() === targetName
-        )?.members || []);
-
-    for (const m of baseMembers) {
-      if (this.isBotUser(m)) continue;
-
-      const name = this.extractStringName(m);
-      if (name && name !== 'Unassigned') {
-        memberMap.set(name, { 
-          current: 0, 
-          blocked: 0, 
-          doneToday: 0, 
-          role: m.role || 'Developer' 
-        });
-      }
-    }
-
-    // 2. Filter tasks matching the selected channel
+    // 1. Filter tasks matching the selected channel first
     const filteredTasks = this.selectedChannelId === 'all'
       ? this.allTasks
       : this.allTasks.filter(t => {
@@ -650,6 +693,45 @@ export class TeamComponent implements OnInit {
                  (targetName && chanName === targetName) ||
                  (chanName && chanName === targetId.toLowerCase());
         });
+
+    // 2. Try seeding members from Team collection
+    const baseMembers = this.selectedChannelId === 'all'
+      ? (this.teams || []).flatMap((team: any) => team.members || [])
+      : (this.teams.find((t: any) => 
+          t.channel_id === this.selectedChannelId || 
+          t.channel_name?.replace(/^#/, '').toLowerCase() === targetName
+        )?.members || []);
+
+    for (const m of baseMembers) {
+      if (this.isBotOrAgentUser(m)) continue;
+      const name = this.resolveTeamMemberName(m);
+      if (name && name !== 'Unassigned') {
+        memberMap.set(name, { current: 0, blocked: 0, doneToday: 0, role: m.role || 'Developer' });
+      }
+    }
+
+    // Helper to resolve human assignee, redirecting bot/aiem tasks to the message author/sender
+    const getEffectiveAssignee = (task: any) => {
+      let rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
+
+      // If the assignee is a bot or aiem, look for the actual human sender who triggered it
+      if (this.isBotOrAgentUser(rawAssignee)) {
+        rawAssignee = task.user || task.sender || task.author || task.created_by || task.user_name || task.user_id;
+      }
+
+      return rawAssignee;
+    };
+
+    // 3. Fallback/Auto-discovery: Extract active human members directly from filtered tasks
+    for (const task of filteredTasks) {
+      const effectiveAssignee = getEffectiveAssignee(task);
+      if (this.isBotOrAgentUser(effectiveAssignee)) continue;
+
+      const assigneeName = this.resolveTeamMemberName(effectiveAssignee);
+      if (assigneeName && assigneeName !== 'Unassigned' && !memberMap.has(assigneeName)) {
+        memberMap.set(assigneeName, { current: 0, blocked: 0, doneToday: 0, role: 'Developer' });
+      }
+    }
 
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyDataMap = new Map<string, { current: number; blocked: number; completed: number; total: number }>();
@@ -664,11 +746,12 @@ export class TeamComponent implements OnInit {
       weeklyDataMap.set(label, { current: 0, blocked: 0, completed: 0, total: 0 });
     }
 
-    // 3. Update stats ONLY for seeded channel human members
+    // 4. Update stats for all mapped members using the corrected human assignee
     for (const task of filteredTasks) {
-      const rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
-      const assigneeName = this.extractStringName(rawAssignee);
+      const effectiveAssignee = getEffectiveAssignee(task);
+      if (this.isBotOrAgentUser(effectiveAssignee)) continue;
 
+      const assigneeName = this.resolveTeamMemberName(effectiveAssignee);
       if (!memberMap.has(assigneeName)) continue;
 
       const data = memberMap.get(assigneeName)!;
@@ -694,7 +777,7 @@ export class TeamComponent implements OnInit {
       }
     }
 
-    // 4. Render only valid human team members
+    // 5. Render final valid human team members list
     this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
       const nameParts = name.trim().split(/\s+/);
       const initials = nameParts.length > 1
@@ -721,6 +804,7 @@ export class TeamComponent implements OnInit {
 
     this.cdr.detectChanges();
   }
+
 
   getDayPercentageNumber(day: DayActivity, type: 'current' | 'blocked' | 'completed'): number {
     const total = day.current + day.blocked + day.completed;

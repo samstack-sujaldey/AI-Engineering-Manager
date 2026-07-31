@@ -597,6 +597,7 @@ export class IssuesComponent implements OnInit {
       rawName.includes('ai_engineering') ||
       rawName.includes('bot') ||
       rawName.includes('app') ||
+      rawName.includes('aiem') ||
       rawName === 'unknown'
     );
   }

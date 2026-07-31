@@ -376,6 +376,7 @@ Instructions:
       }
 
       const tasks = await Task.find(filter).sort({ updated_time: -1 }).lean();
+      
       res.json(tasks);
     } catch (err) {
       next(err);
@@ -627,17 +628,52 @@ Instructions:
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      const getName = (item) => {
-        const name =
-          item.assigned_to?.name ||
-          item.assigned_to ||
-          item.owner?.name ||
-          item.owner;
-        if (!name || name === "Unassigned") return null;
-        return typeof name === "string"
-          ? name
-          : name.name || name.display_name || "Unknown";
+            const getName = (item) => {
+        const rawAssignee = item.assigned_to || item.owner;
+        if (!rawAssignee) return null;
+
+        // Extract potential name/email/real_name from string or object structures
+        let nameStr = "";
+        if (typeof rawAssignee === "string") {
+          nameStr = rawAssignee;
+        } else {
+          nameStr = 
+            rawAssignee.real_name || 
+            rawAssignee.profile?.real_name || 
+            rawAssignee.display_name || 
+            rawAssignee.name || 
+            "";
+        }
+
+        if (!nameStr || nameStr === "Unassigned") return null;
+
+        // Filter out bots and service agents
+        const lower = nameStr.toLowerCase();
+        if (
+          lower.includes("bot") ||
+          lower.includes("webhook") ||
+          lower.includes("integration") ||
+          lower.includes("service") ||
+          lower.includes("slackbot") ||
+          lower === "uslackbot"
+        ) {
+          return null;
+        }
+
+        // If it's an email address, strip the domain and format the prefix nicely
+        if (nameStr.includes("@")) {
+          nameStr = nameStr.split("@")[0];
+        }
+
+        // Convert dots, underscores, or hyphens into spaces and capitalize
+        return nameStr
+          .replace(/[._-]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
       };
+
 
       const isToday = (date) => {
         if (!date) return false;
