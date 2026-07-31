@@ -317,6 +317,22 @@ async function syncFromSlack(messageProcessor, options = {}) {
         const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
         const directory = await buildDirectory(client, safeText, userCache);
 
+       
+
+        let downloadedFiles = [];
+        if (hasFiles) {
+          const rawAttachments = msg.files.map((f) => ({
+            slackFileId: f.id,
+            fileName: f.name,
+            mimeType: f.mimetype,
+            fileType: f.filetype,
+            urlPrivateDownload: f.url_private_download || f.url_private,
+            urlPrivate: f.url_private,
+            size: f.size,
+          }));
+          downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
+        }
+
         const processed = await messageProcessor.process(
           {
             text: safeText,
@@ -330,6 +346,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
             is_edit: false,
             user_directory: directory,
             thread_context: [],
+            local_attachments: downloadedFiles, // 🟢 Passes local attachments to your unified utility pipeline
           },
           { quiet: true }
         );

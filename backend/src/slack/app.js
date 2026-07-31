@@ -10,7 +10,6 @@ const {
   buildDirectory,
   downloadSlackAttachments,
 } = require("../services/slackSync");
-const {extractAttachments}=require('../attachments/extractor')
 const axios = require("axios");
 
 function looksLikePlaceholder(value, prefixes = []) {
@@ -170,17 +169,16 @@ function createSlackApp({
     }
     // 🟢 GATEKEEPER END 🟢
 
-
     const sender = await resolveSender(client, event.user);
     const user_directory = await getWorkspaceUsers(client);
 
     // Download Slack attachments locally for background analysis
-    let downloadedFiles = [];
+   let downloadedFiles = [];
     if (event.files && event.files.length > 0) {
       try {
-		 // 🟢 Optional: Send a quick indicator message in chat if desired, 
+        // 🟢 Optional: Send a quick indicator message in chat if desired, 
          // or just keep it silent until extraction completes.
-
+         
         const rawAttachments = event.files.map((f) => ({
           slackFileId: f.id,
           fileName: f.name,
@@ -203,39 +201,8 @@ function createSlackApp({
             text: `⚠️ Failed to download the attached file(s). Please check bot token scopes (files:read).`,
           });
         }
-
-        // Parse downloaded text/code/snippet files
-        for (const file of downloadedFiles) {
-          const isTextMime =
-            file.mimeType &&
-            (file.mimeType.startsWith("text/") ||
-              file.mimeType.includes("json"));
-          const isTextType = [
-            "text",
-            "markdown",
-            "space",
-            "csv",
-            "json",
-            "log",
-            "js",
-            "ts",
-            "py",
-            "doc",
-            "docx",
-          ].includes(file.fileType);
-
-          if (isTextMime || isTextType) {
-            try {
-              const snippetContent = await fs.readFile(file.localPath, "utf8");
-              text += "\n" + snippetContent;
-                            console.log(`[slack] Extracted long text from Slack Snippet: ${file.fileName}`);
-            } catch (err) {
-                            console.error("[slack] Failed to read text snippet:", err.message);
-            }
-          }
-        }
       } catch (downloadErr) {
-                console.error("[slack] Attachment download pipeline error:", downloadErr.message);
+        console.error("[slack] Attachment download pipeline error:", downloadErr.message);
         await client.chat.postMessage({
           channel: event.channel,
           thread_ts: event.thread_ts || event.ts,
@@ -243,30 +210,6 @@ function createSlackApp({
         });
       }
     }
-
-	// 🟢 Enrich text payload with OpenAI Vision summary for uploaded images
-    if (downloadedFiles.length > 0) {
-    const processedAttachments = await extractAttachments(downloadedFiles);
-    
-    for (const file of processedAttachments) {
-        if (!file.extracted) {
-             console.warn(`[slack] Failed to extract ${file.fileName}: ${file.error}`);
-             continue;
-        }
-
-        if (file.type === "IMAGE") {
-            const visionSummary = file.content.summary || file.content.text || "";
-            if (visionSummary) text += `\n[Image Context: ${visionSummary}]`;
-        } else {
-             // For text, PDF, DOCX, CSV, JSON, etc.
-             const contentStr = typeof file.content === "string" 
-                ? file.content 
-                : JSON.stringify(file.content);
-             text += `\n\n--- Content from ${file.fileName} ---\n${contentStr}`;
-        }
-    }
-}
-
 
     console.log(`[DEBUG Lookup] event.user (Sender): ${event.user}`);
     console.log(`[DEBUG Lookup] pendingConnect found? ${!!pendingConnect}`);

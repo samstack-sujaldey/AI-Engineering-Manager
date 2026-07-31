@@ -30,12 +30,74 @@ async function getFileContentHash(filePath) {
 }
 
 /**
+ * Utility: Generate a cache key that factors in the caption text
+ */
+function getCacheKey(prefix, fileHash, captionText) {
+  const captionHash = crypto.createHash("md5").update(captionText || "none").digest("hex");
+  return `${prefix}_${fileHash}_${captionHash}`;
+}
+
+/**
+ * 🟢 SMART AI HELPER: Analyzes Text/Documents with Caption Context
+ * Optimized for speed: Truncates large docs to 40k chars to prevent timeouts.
+ */
+async function analyzeTextDocument(rawText, captionText, fileName) {
+  const nowISO = new Date().toISOString();
+  // Truncate to ~40,000 characters to keep API response times extremely fast for large PDFs (50+ pages)
+  const safeTextLength = String(rawText).substring(0, 40000); 
+
+  const prompt = `You are an AI task extraction assistant analyzing a document ("${fileName}").
+${captionText ? `\nUser's message/instruction: "${captionText}"\n` : ""}
+
+Document Content (Truncated for speed):
+${safeTextLength}
+
+Instructions:
+1. Extract all distinct Tasks, Issues, or Discussions visible in the document.
+2. If a person's name (e.g. "Name: Nandani") is listed above tasks, assign those tasks to them.
+3. Apply any instructions from the user's message (like "by EOD") to the due dates.
+Current date/time is ${nowISO}. "EOD" means 23:59:59 today.
+
+Respond STRICTLY in valid JSON format with these exact keys:
+{
+  "action": "CREATE_BATCH",
+  "items": [
+    {
+      "type": "TASK",
+      "title": "Task title",
+      "description": "Task description",
+      "assigned_to": { "name": "Target Name", "id": "" },
+      "priority": "MEDIUM",
+      "status": "TODO",
+      "due_date": "ISO-8601 date string or null"
+    }
+  ]
+}`;
+
+  try {
+    const response = await withTimeout(
+      openai.chat.completions.create({
+        model: "gpt-4o-mini", // Fast model for text analysis
+        messages: [{ role: "user", content: prompt }],
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+      }),
+      EXTRACTION_TIMEOUT
+    );
+    return JSON.parse(response.choices[0]?.message?.content || "{}");
+  } catch (err) {
+    console.warn(`[analyzeTextDocument] AI extraction failed for ${fileName}:`, err.message);
+    return { action: "NONE", items: [] };
+  }
+}
+
+/**
  * Read plain text, log, xml, html files with MD5 Caching
  */
-async function readTextFile(file) {
+async function readTextFile(file, captionText = "") {
   validateAttachment(file);
   const { hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `text_extraction_${hash}`;
+  const cacheKey = getCacheKey("text_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -45,11 +107,13 @@ async function readTextFile(file) {
 
   console.log(`[Cache Miss]: Reading text file ${file.fileName}...`);
   const content = await fs.readFile(file.localPath, "utf8");
+  const aiBatch = await analyzeTextDocument(content, captionText, file.fileName);
 
   const result = {
     extracted: true,
     type: "TEXT",
-    content,
+    content, // Original raw content intact
+    ai_batch: aiBatch, // Smart AI batch extracted from text + caption
     metadata: {
       fileName: file.fileName,
       characters: content.length,
@@ -65,10 +129,10 @@ async function readTextFile(file) {
 /**
  * Read JSON files with MD5 Caching
  */
-async function readJsonFile(file) {
+async function readJsonFile(file, captionText = "") {
   validateAttachment(file);
   const { hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `json_extraction_${hash}`;
+  const cacheKey = getCacheKey("json_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -79,11 +143,13 @@ async function readJsonFile(file) {
   console.log(`[Cache Miss]: Reading JSON file ${file.fileName}...`);
   const content = await fs.readFile(file.localPath, "utf8");
   const json = JSON.parse(content);
+  const aiBatch = await analyzeTextDocument(JSON.stringify(json).substring(0, 40000), captionText, file.fileName);
 
   const result = {
     extracted: true,
     type: "JSON",
-    content: json,
+    content: json, // Original JSON intact
+    ai_batch: aiBatch,
     metadata: {
       fileName: file.fileName,
       keys: Object.keys(json),
@@ -99,10 +165,10 @@ async function readJsonFile(file) {
 /**
  * Read CSV files with MD5 Caching
  */
-async function readCsvFile(file) {
+async function readCsvFile(file, captionText = "") {
   validateAttachment(file);
   const { hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `csv_extraction_${hash}`;
+  const cacheKey = getCacheKey("csv_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -112,16 +178,17 @@ async function readCsvFile(file) {
 
   console.log(`[Cache Miss]: Reading CSV file ${file.fileName}...`);
   const csv = await fs.readFile(file.localPath, "utf8");
-
-  const rows = parse(csv, {
-    columns: true,
-    skip_empty_lines: true,
-  });
+  const rows = parse(csv, { columns: true, skip_empty_lines: true });
+  
+  // Pass a sample of rows to the AI for tasks extraction
+  const csvString = JSON.stringify(rows.slice(0, 200)); 
+  const aiBatch = await analyzeTextDocument(csvString, captionText, file.fileName);
 
   const result = {
     extracted: true,
     type: "CSV",
-    content: rows,
+    content: rows, // Original rows intact
+    ai_batch: aiBatch,
     metadata: {
       fileName: file.fileName,
       rows: rows.length,
@@ -137,10 +204,10 @@ async function readCsvFile(file) {
 /**
  * Extract text from PDF (Supports pdf-parse v1.x and v2.x APIs safely) with MD5 Caching
  */
-async function extractPdf(file) {
+async function extractPdf(file, captionText = "") {
   validateAttachment(file);
   const { buffer, hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `pdf_extraction_${hash}`;
+  const cacheKey = getCacheKey("pdf_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -186,10 +253,12 @@ async function extractPdf(file) {
 
   let result;
   if (text.trim().length > 20) {
+    const aiBatch = await analyzeTextDocument(text, captionText, file.fileName);
     result = {
       extracted: true,
       type: "PDF",
-      content: text,
+      content: text, // Original raw text intact
+      ai_batch: aiBatch,
       metadata: {
         fileName: file.fileName,
         pages: numpages,
@@ -218,10 +287,10 @@ async function extractPdf(file) {
 /**
  * Extract DOCX text with MD5 Caching
  */
-async function extractDocx(file) {
+async function extractDocx(file, captionText = "") {
   validateAttachment(file);
   const { hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `docx_extraction_${hash}`;
+  const cacheKey = getCacheKey("docx_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -231,16 +300,17 @@ async function extractDocx(file) {
 
   console.log(`[Cache Miss]: Extracting DOCX ${file.fileName}...`);
   const extractionResult = await withTimeout(
-    mammoth.extractRawText({
-      path: file.localPath,
-    }),
+    mammoth.extractRawText({ path: file.localPath }),
     EXTRACTION_TIMEOUT,
   );
+
+  const aiBatch = await analyzeTextDocument(extractionResult.value, captionText, file.fileName);
 
   const result = {
     extracted: true,
     type: "DOCX",
-    content: extractionResult.value,
+    content: extractionResult.value, // Original raw text intact
+    ai_batch: aiBatch,
     metadata: {
       fileName: file.fileName,
       warnings: extractionResult.messages,
@@ -255,10 +325,10 @@ async function extractDocx(file) {
 /**
  * Extract Excel workbook with MD5 Caching
  */
-async function extractExcel(file) {
+async function extractExcel(file, captionText = "") {
   validateAttachment(file);
   const { hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `excel_extraction_${hash}`;
+  const cacheKey = getCacheKey("excel_extraction", hash, captionText);
 
   const cached = attachmentCache.get(cacheKey);
   if (cached) {
@@ -269,17 +339,20 @@ async function extractExcel(file) {
   console.log(`[Cache Miss]: Extracting Excel ${file.fileName}...`);
   const workbook = XLSX.readFile(file.localPath);
   const sheets = {};
+  let combinedTextForAi = "";
 
   workbook.SheetNames.forEach((sheetName) => {
-    sheets[sheetName] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
-      defval: "",
-    });
+    sheets[sheetName] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+    combinedTextForAi += `\n--- ${sheetName} ---\n` + JSON.stringify(sheets[sheetName]).substring(0, 5000);
   });
+
+  const aiBatch = await analyzeTextDocument(combinedTextForAi, captionText, file.fileName);
 
   const result = {
     extracted: true,
     type: "XLSX",
-    content: sheets,
+    content: sheets, // Original sheets object intact
+    ai_batch: aiBatch,
     metadata: {
       fileName: file.fileName,
       sheets: workbook.SheetNames,
@@ -294,15 +367,13 @@ async function extractExcel(file) {
 /**
  * Placeholder for PowerPoint extraction
  */
-async function extractPresentation(file) {
+async function extractPresentation(file, captionText = "") {
   validateAttachment(file);
   return {
     extracted: false,
     type: "PPTX",
     content: null,
-    metadata: {
-      fileName: file.fileName,
-    },
+    metadata: { fileName: file.fileName },
     error: "PPTX extraction not implemented yet.",
   };
 }
@@ -310,11 +381,11 @@ async function extractPresentation(file) {
 /**
  * Image analysis via OpenAI Vision (gpt-4o) with Content-Hash Caching & Cleanup
  */
-async function analyzeImage(file) {
+async function analyzeImage(file, captionText = "") {
   validateAttachment(file);
 
   const { buffer, hash } = await getFileContentHash(file.localPath);
-  const cacheKey = `attachment_analysis_hash_${hash}`;
+  const cacheKey = getCacheKey("attachment_analysis_hash", hash, captionText);
 
   // 1. Check In-Memory Cache
   const cachedAnalysis = attachmentCache.get(cacheKey);
@@ -335,6 +406,7 @@ async function analyzeImage(file) {
   try {
     const base64Image = buffer.toString("base64");
     const mimeType = file.mimeType || "image/png";
+    const nowISO = new Date().toISOString();
 
     const response = await withTimeout(
       openai.chat.completions.create({
@@ -345,11 +417,31 @@ async function analyzeImage(file) {
             content: [
               {
                 type: "text",
+                // 🟢 PROMPT: Original fields retained, Batch fields appended, Caption utilized!
                 text: `You are an AI task extraction assistant analyzing an attached image for an engineering manager dashboard.
-Extract a brief summary and structured detail from this image. Respond STRICTLY in valid JSON format with these exact keys:
+${captionText ? `\nUser's message/caption accompanying this image: "${captionText}"\n` : ""}
+
+Extract a brief summary and structured detail from this image. 
+If a person's name is listed above tasks, assign those tasks to them.
+Apply any instructions from the user's caption (like "by EOD") to the due dates.
+Current date/time is ${nowISO}. "EOD" means 23:59:59 today.
+
+Respond STRICTLY in valid JSON format with these exact keys:
 {
   "summary": "Short 1-sentence description of the image content or bug",
   "text": "Full extracted visible text or OCR transcription",
+  "action": "CREATE_BATCH",
+  "items": [
+    {
+      "type": "TASK",
+      "title": "Task title",
+      "description": "Task description",
+      "assigned_to": { "name": "Target Name", "id": "" },
+      "priority": "MEDIUM",
+      "status": "TODO",
+      "due_date": "ISO-8601 date string or null"
+    }
+  ],
   "containsCode": boolean,
   "containsError": boolean,
   "containsUI": boolean,
@@ -368,6 +460,7 @@ Extract a brief summary and structured detail from this image. Respond STRICTLY 
           },
         ],
         response_format: { type: "json_object" },
+        temperature: 0.1, // Lower temperature for more accurate extraction
       }),
       EXTRACTION_TIMEOUT
     );
@@ -383,7 +476,7 @@ Extract a brief summary and structured detail from this image. Respond STRICTLY 
     return {
       extracted: true,
       type: "IMAGE",
-      content: result,
+      content: result, // Original JSON + Batch items
       metadata: { fileName: file.fileName, cached: false },
       error: null,
     };
@@ -396,6 +489,8 @@ Extract a brief summary and structured detail from this image. Respond STRICTLY 
       content: {
         summary: "Image attachment (image analysis skipped)",
         text: "",
+        action: "NONE",
+        items: [],
         containsCode: false,
         containsError: false,
         containsUI: false,
@@ -413,7 +508,7 @@ Extract a brief summary and structured detail from this image. Respond STRICTLY 
 /**
  * Unsupported file
  */
-function extractUnknown() {
+function extractUnknown(captionText = "") {
   return {
     extracted: false,
     type: "UNKNOWN",

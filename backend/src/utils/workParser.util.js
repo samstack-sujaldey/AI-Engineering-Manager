@@ -51,7 +51,14 @@ async function processWorkWithAttachments({
     }
   }
 
-  let combinedText = (text + attachmentTextPayload).trim();
+  let combinedText = "";
+  if (text.trim()) {
+    combinedText += `[Caption Instruction / Context]: ${text.trim()}\n`;
+  }
+  if (attachmentTextPayload.trim()) {
+    combinedText += `\n[Attached Document Content]:\n${attachmentTextPayload.trim()}`;
+  }
+  combinedText = combinedText.trim();
 
   if (local_attachments.length > 0 && !/task\s*-|issue\s*-/i.test(combinedText)) {
     if (/\b(error|bug|fail|crash|exception|issue|broken)\b/i.test(combinedText)) {
