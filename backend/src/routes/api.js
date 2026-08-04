@@ -12,6 +12,7 @@ const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
 const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 const { callOpenAI } = require(".././ai/openai.js");
+const { verifyToken, requireAdmin } = require("../middleware/auth");
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
@@ -383,18 +384,18 @@ Instructions:
     }
   });
 
-  router.delete('/tasks/:id', async (req, res) => {
+ router.delete('/tasks/:id', verifyToken, requireAdmin, async (req, res) => {
     try {
-        const issue_id = req.params.id;
-        const result = await Task.findByIdAndDelete(issue_id);
+        const taskId = req.params.id; // Cleaned up variable name
+        const result = await Task.findByIdAndDelete(taskId);
         
         if (!result) {
-            return res.status(404).json({ error: "Issue not found" });
+            return res.status(404).json({ error: "Task not found" }); // Fixed text
         }
         
-        return res.status(200).json({ success: true, message: "Issue deleted successfully directly from database" });
+        return res.status(200).json({ success: true, message: "Task deleted successfully directly from database" });
     } catch (err) {
-        console.error("Failed to delete issue from database:", err.message);
+        console.error("Failed to delete task from database:", err.message);
         return res.status(500).json({ error: err.message });
     }
 });
@@ -533,7 +534,7 @@ Instructions:
     }
   });
 
-  router.delete('/issues/:id', async (req, res) => {
+router.delete('/issues/:id', verifyToken, requireAdmin, async (req, res) => {
     try {
         const issue_id = req.params.id;
         const result = await Issue.findByIdAndDelete(issue_id);

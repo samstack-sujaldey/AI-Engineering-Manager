@@ -4,9 +4,9 @@ import { firstValueFrom } from 'rxjs';
 import { environment } from '../../environments/environment';
 
 export interface AuthUser {
-  username: string;
-  role: string;
+
   email?: string;
+  role: string;
   display_name?: string;
 }
 
@@ -30,14 +30,14 @@ export class AuthService {
     }
   }
 
-  async login(username: string, password: string): Promise<boolean> {
+  async login(email: string, password: string): Promise<boolean> {
     this.loading.set(true);
     this.error.set(null);
     try {
       const result = await firstValueFrom(
         this.http.post<{ token: string; user: AuthUser }>(
           `${environment.apiUrl}/auth/login`,
-          { username, password }
+          { email, password }
         )
       );
       localStorage.setItem('auth_token', result.token);

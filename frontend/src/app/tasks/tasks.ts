@@ -2,9 +2,11 @@ import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from 
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service';
+import { AuthService } from '../services/auth.service'; // 🟢 Added AuthService
+import { environment } from '../../environments/environment'; // 🟢 Added environment
 
 @Component({
   selector: 'app-tasks',
@@ -142,7 +144,7 @@ import { DashboardService } from '../services/dashboard.service';
         </div>
 
         <div class="modal-footer modal-footer-between">
-          <button class="btn-danger-outline" (click)="confirmDelete(selectedTask)">
+          <button *ngIf="auth.isAdmin()" class="btn-danger-outline"  (click)="confirmDelete(selectedTask)">
             🗑️ Delete Task
           </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
@@ -509,6 +511,7 @@ export class TasksComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
+  auth = inject(AuthService);
 
   tasks: any[] = [];
   statusFilter = 'all';
@@ -707,18 +710,29 @@ export class TasksComponent implements OnInit {
     const taskId = this.taskToDelete._id || this.taskToDelete.id;
 
     try {
-      await firstValueFrom(this.http.delete(`/api/tasks/${taskId}`)).catch(() => {});
+      // 🟢 1. Get token and set headers
+      const token = localStorage.getItem('auth_token');
+      const headers = new HttpHeaders({
+        'Authorization': `Bearer ${token}`
+      });
 
+      // 🟢 2. Send the secure request using environment.apiUrl
+      await firstValueFrom(
+        this.http.delete(`${environment.apiUrl}/tasks/${taskId}`, { headers })
+      );
+
+      // 3. Only remove from UI if the server succeeded
       this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
       this.taskToDelete = null;
       this.selectedTask = null;
       this.cdr.detectChanges();
+      
     } catch (err) {
       console.error('Failed to delete task:', err);
-      this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
-      this.taskToDelete = null;
-      this.selectedTask = null;
+      // 🟢 4. FIXED: Do NOT delete from UI if it failed on the server
+      this.taskToDelete = null; 
       this.cdr.detectChanges();
+      alert('Failed to delete task. You might not have permission.');
     }
   }
 }

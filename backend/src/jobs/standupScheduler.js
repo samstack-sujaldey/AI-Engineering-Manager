@@ -48,7 +48,7 @@ function getTargetSummaryDate(date = new Date()) {
 }
 
 function startStandupScheduler() {
-  cron.schedule("22 16 * * *", async () => {
+  cron.schedule("00 10 * * *", async () => {
     const now = new Date();
     const dayOfWeek = now.getDay();
 

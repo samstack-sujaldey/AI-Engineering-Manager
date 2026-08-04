@@ -6,7 +6,9 @@ import { TeamComponent } from './team/team';
 import { IntegrationsComponent } from './integrations/integrations';
 import { IssuesComponent } from './issues/issues';
 import { LoginComponent } from './login/login.component';
+import { NewUserComponent } from './new_user/new_user';
 import { authGuard } from './guards/auth.guard';
+import { adminGuard } from './guards/admin.guard';
 
 export const routes: Routes = [
   { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
@@ -40,6 +42,11 @@ export const routes: Routes = [
     path: 'issues',
     component: IssuesComponent,
     canActivate: [authGuard],
+  },
+  {
+    path: 'new-user',
+    component:NewUserComponent,
+    canActivate: [adminGuard],
   },
   { path: '**', redirectTo: 'dashboard' },
 ];
