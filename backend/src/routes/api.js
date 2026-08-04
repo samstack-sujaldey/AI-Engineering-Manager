@@ -12,6 +12,7 @@ const { newId } = require("../utils/helpers");
 const DailySummary = require("../models/DailySummary");
 const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 const { callOpenAI } = require(".././ai/openai.js");
+const { verifyToken, requireAdmin } = require("../middleware/auth");
 
 function createApiRouter({ messageProcessor }) {
   const router = express.Router();
