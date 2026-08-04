@@ -59,8 +59,16 @@ async function main() {
 
 	const app = express();
 	const server = http.createServer(app);
+	const corsOptions = {
+		origin:
+			process.env.CORS_ORIGIN ||
+			"https://ai-engineering-manager-git-main-sujal-deys-projects.vercel.app",
+		methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+		credentials: true,
+	};
+
 	const io = new Server(server, {
-		cors: { origin: config.corsOrigin, methods: ["GET", "POST", "PATCH"] },
+		cors: corsOptions,
 	});
 
 	// Initialize Slack WebClient for API queries
@@ -77,7 +85,7 @@ async function main() {
 	});
 
 	app.use(helmet({ contentSecurityPolicy: false }));
-	app.use(cors({ origin: config.corsOrigin }));
+	app.use(cors(corsOptions)); // Applies the robust configuration defined above
 	app.use(express.json({ limit: "1mb" }));
 	app.use(morgan(config.nodeEnv === "production" ? "combined" : "dev"));
 
