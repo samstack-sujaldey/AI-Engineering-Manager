@@ -4,7 +4,7 @@
 	"description": "Slack Task Intelligence Agent — parses conversations into Tasks, Issues, and Discussions",
 	"main": "src/index.js",
 	"scripts": {
-		"start": "node --env-file=.env src/index.js",
+		"start": "node src/index.js",
 		"dev": "node --env-file=.env --watch src/index.js",
 		"test": "node src/agent/parser.test.js",
 		"test:parser": "node src/agent/parser.test.js",
