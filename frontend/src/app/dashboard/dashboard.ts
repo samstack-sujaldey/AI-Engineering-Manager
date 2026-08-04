@@ -28,7 +28,19 @@ import { DashboardService } from '../services/dashboard.service';
             title="Show All Dates"
           >✕</button>
         </div>
+        <select
+    [value]="dashService.selectedChannel() || 'all'"
+    (change)="onChannelChange($event)"
+>
+    <option value="all">All Channels</option>
 
+    <option
+        *ngFor="let channel of dashService.channels()"
+        [value]="channel.id"
+    >
+        {{ channel.name }}
+    </option>
+</select>
         <button class="connect-slack-btn" (click)="connectSlack()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 9h-4V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2V9z"></path>
@@ -215,6 +227,11 @@ export class DashboardComponent implements OnInit {
   ngOnInit() {
     this.dashService.load();
   }
+  
+  onChannelChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value;
+  this.dashService.setChannel(value);
+}
 
   refreshAll(): void {
     this.dashService.refresh();
