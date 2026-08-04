@@ -24,6 +24,11 @@ export interface DashboardData {
   date?: string;
 }
 
+export interface SlackChannel {
+  id: string;
+  name: string;
+}
+
 function getTodayStr(): string {
   const today = new Date();
   const year = today.getFullYear();
@@ -45,6 +50,7 @@ export class DashboardService {
   readonly activeChannelId = signal<string | null>(null);
   readonly selectedChannel = signal<string | null>(null);
   readonly selectedDate = signal<string>(getTodayStr());
+  readonly channels = signal<SlackChannel[]>([]);
 
   constructor() {
     const storedChannel = localStorage.getItem('active_channel_id');
@@ -56,6 +62,7 @@ export class DashboardService {
     if (storedDate) {
       this.selectedDate.set(storedDate);
     }
+    this.loadChannels();
   }
 
   setSelectedDate(date: string): void {
@@ -65,24 +72,60 @@ export class DashboardService {
     } else {
       localStorage.removeItem('selected_date');
     }
+    this.load();
+  }
+
+  setSelectedChannel(channel: string | null): void {
+    this.setChannel(channel);
   }
 
   getFilteredUrl(path: string): string {
     const baseUrl = `${environment.apiUrl}${path.startsWith('/') ? path : '/' + path}`;
-    const channel = this.activeChannelId();
+    const channel = this.selectedChannel();
     const date = this.selectedDate();
     const parts: string[] = [];
+
     if (date) parts.push(`date=${encodeURIComponent(date)}`);
     if (channel && channel !== 'all') parts.push(`channel=${encodeURIComponent(channel)}`);
+
     if (parts.length === 0) return baseUrl;
     const separator = baseUrl.includes('?') ? '&' : '?';
     return `${baseUrl}${separator}${parts.join('&')}`;
   }
 
-  setChannel(channel: string | null): void {
+  /**
+   * Modified to run the pipeline extraction when a specific channel is selected,
+   * matching the exact same behavior as the Integrations page.
+   */
+  async setChannel(channel: string | null): Promise<void> {
     const cleanChan = channel === 'all' ? null : channel;
     this.selectedChannel.set(cleanChan);
     this.setActiveChannel(cleanChan);
+
+    if (cleanChan) {
+      try {
+        this.loading.set(true);
+        // Automatically run the pipeline extraction for this specific channel
+        const result: any = await firstValueFrom(
+          this.http.post(`${environment.apiUrl}/slack/pipeline/${encodeURIComponent(cleanChan)}`, {
+            channel_id: cleanChan,
+            fetch_all: true,
+            all: true,
+            limit: 200
+          })
+        );
+        if (result?.dashboard) {
+          this.data.set(result.dashboard);
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to auto-run pipeline on channel selection, falling back to standard load:', err);
+      } finally {
+        this.loading.set(false);
+      }
+    }
+
+    this.load();
   }
 
   async load(): Promise<void> {
@@ -119,6 +162,7 @@ export class DashboardService {
     this.activeChannelId.set(null);
     this.selectedChannel.set(null);
     localStorage.removeItem('active_channel_id');
+    this.load();
   }
 
   async refresh(channels?: string[]): Promise<void> {
@@ -163,6 +207,27 @@ export class DashboardService {
       if (payload?.action === 'SLACK_SYNC') return;
       this.load();
     });
+  }
+
+  async loadChannels(): Promise<void> {
+    try {
+      const response = await firstValueFrom(
+        this.http.get<{ channels: SlackChannel[] }>(
+          `${environment.apiUrl}/slack/channels`
+        )
+      );
+
+      const channels = response.channels ?? [];
+      this.channels.set(channels);
+
+      const current = this.activeChannelId();
+      if (current && !channels.some(c => c.id === current)) {
+        this.clearActiveChannel();
+      }
+    } catch (err) {
+      console.error('Failed to load Slack channels', err);
+      this.channels.set([]);
+    }
   }
 
   disconnectLive(): void {
