@@ -1,3 +1,4 @@
+require("dotenv").config();
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -49,7 +50,9 @@ async function main() {
 			created_at: new Date(),
 			updated_at: new Date(),
 		});
-		console.log(`[auth] Default admin user created: ${defaultAdminUsername}`);
+		console.log(
+			`[auth] Default admin user created: ${defaultAdminUsername}`,
+		);
 	}
 
 	await vectorDbService.init();

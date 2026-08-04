@@ -1,5 +1,5 @@
 // 1. Import the CloudClient from the chromadb package
-const { CloudClient } = require("chromadb");
+const { ChromaClient } = require("chromadb");
 
 const dummyEmbeddingFunction = {
 	generate: async (texts) => {
@@ -9,17 +9,24 @@ const dummyEmbeddingFunction = {
 
 class VectorDbService {
 	constructor() {
-		// 2. Initialize the CloudClient with your Chroma Cloud credentials
-		this.client = new CloudClient({
-			tenant: process.env.CHROMA_TENANT, // e.g., "default_tenant" or your specific tenant name
-			database: process.env.CHROMA_DATABASE, // e.g., "default_database" or your specific database name
-			apiKey: process.env.CHROMA_API_KEY, // Your Chroma Cloud API key
+		// Safely parse the URL to extract the host, port, and protocol
+		const chromaUrl = new URL(
+			process.env.CHROMA_URL,
+		);
+
+		// Initialize the standard ChromaClient for self-hosted instances
+		this.client = new ChromaClient({
+			ssl: chromaUrl.protocol === "https:",
+			host: chromaUrl.hostname,
+			port: parseInt(
+				chromaUrl.port ||
+					(chromaUrl.protocol === "https:" ? "443" : "80"),
+			),
 		});
 
 		this.collectionName = "slack_chat_history";
 		this.collection = null;
 	}
-
 	async init() {
 		try {
 			// 3. Pass the dummy function when getting/creating the collection

@@ -30,7 +30,7 @@ export interface MemberSummary {
 
     <div class="standup-body">
       <div class="summary-container">
-        
+
         <!-- Top Control Bar -->
         <div class="control-header">
           <div class="header-left">
@@ -44,16 +44,16 @@ export interface MemberSummary {
           <div class="header-right">
             <!-- View Switcher Toggle Buttons -->
             <div class="view-toggle-group">
-              <button 
-                class="toggle-btn" 
-                [class.active]="activeView === 'mom'" 
+              <button
+                class="toggle-btn"
+                [class.active]="activeView === 'mom'"
                 (click)="activeView = 'mom'"
               >
                 📋 MOM Cards
               </button>
-              <button 
-                class="toggle-btn" 
-                [class.active]="activeView === 'discussions'" 
+              <button
+                class="toggle-btn"
+                [class.active]="activeView === 'discussions'"
                 (click)="activeView = 'discussions'"
               >
                 💬 All Discussions
@@ -75,10 +75,10 @@ export interface MemberSummary {
 
         <!-- Standup Summary View -->
         <div class="single-section-view" *ngIf="!isLoading; else loadingState">
-          
+
           <!-- VIEW A: MOM Member Cards Grid -->
           <div class="summary-card-section" *ngIf="activeView === 'mom'">
-            
+
             <div class="section-card-header mom-header">
               <div class="header-title-box">
                 <span class="doc-icon">📋</span>
@@ -91,7 +91,7 @@ export interface MemberSummary {
             </div>
 
             <div class="section-card-body">
-              
+
               <!-- Meta Banner Header -->
               <div class="summary-banner" *ngIf="headerBannerText">
                 <span class="banner-icon">ℹ️</span>
@@ -101,7 +101,7 @@ export interface MemberSummary {
               <!-- Dedicated Equal-Sized Cards Grid for Each Individual -->
               <div class="members-cards-grid" *ngIf="memberSummaries.length > 0; else emptyState">
                 <div class="individual-card" *ngFor="let member of memberSummaries">
-                  
+
                   <!-- Card Member Header -->
                   <div class="card-member-header">
                     <div class="avatar-circle">{{ member.initials }}</div>
@@ -115,7 +115,7 @@ export interface MemberSummary {
 
                   <!-- Truncated Scroll-Free Card Body -->
                   <div class="card-content-area">
-                    
+
                     <!-- Tasks List -->
                     <div class="card-section" *ngIf="member.tasks.length > 0">
                       <h5 class="section-label">TASKS & UPDATES</h5>
@@ -124,9 +124,9 @@ export interface MemberSummary {
                           <span class="bullet">•</span>
                           <div class="item-content">
                             <span class="task-title">{{ task.cleanText }}</span>
-                            <span 
-                              *ngIf="task.statusText" 
-                              class="status-pill" 
+                            <span
+                              *ngIf="task.statusText"
+                              class="status-pill"
                               [ngClass]="task.statusClass"
                             >
                               {{ task.statusText }}
@@ -144,9 +144,9 @@ export interface MemberSummary {
                           <span class="bullet">•</span>
                           <div class="item-content">
                             <span class="issue-title">{{ issue.cleanText }}</span>
-                            <span 
-                              *ngIf="issue.statusText" 
-                              class="status-pill" 
+                            <span
+                              *ngIf="issue.statusText"
+                              class="status-pill"
                               [ngClass]="issue.statusClass"
                             >
                               {{ issue.statusText }}
@@ -175,8 +175,8 @@ export interface MemberSummary {
 
                   <!-- Card Footer with Read More Button -->
                   <div class="card-footer">
-                    <button 
-                      class="read-more-btn" 
+                    <button
+                      class="read-more-btn"
                       (click)="openMemberModal(member)"
                     >
                       Read More <span class="arrow">→</span>
@@ -236,7 +236,7 @@ export interface MemberSummary {
     <!-- FULL MEMBER CARD DETAILS MODAL OVERLAY -->
     <div class="modal-overlay" *ngIf="selectedMemberCard" (click)="closeMemberModal()">
       <div class="modal-content member-modal-content" (click)="$event.stopPropagation()">
-        
+
         <div class="modal-header">
           <div class="modal-member-info">
             <div class="avatar-circle large-avatar">{{ selectedMemberCard.initials }}</div>
@@ -251,7 +251,7 @@ export interface MemberSummary {
         </div>
 
         <div class="modal-body scrollable-modal-body">
-          
+
           <!-- Full Tasks List in Modal -->
           <div class="modal-section" *ngIf="selectedMemberCard.tasks.length > 0">
             <h5 class="section-label">TASKS & UPDATES</h5>
@@ -260,16 +260,16 @@ export interface MemberSummary {
                 <span class="bullet">•</span>
                 <div class="item-content">
                   <span class="task-title">{{ task.cleanText }}</span>
-                  <span 
-                    *ngIf="task.statusText" 
-                    class="status-pill" 
+                  <span
+                    *ngIf="task.statusText"
+                    class="status-pill"
                     [ngClass]="task.statusClass"
                   >
                     {{ task.statusText }}
                   </span>
-                  <button 
-                    *ngIf="task.blockedReason" 
-                    class="blocked-tag-btn" 
+                  <button
+                    *ngIf="task.blockedReason"
+                    class="blocked-tag-btn"
                     (click)="openBlockerModal(task.cleanText, task.blockedReason)"
                   >
                     🚨 Blocker Details
@@ -287,16 +287,16 @@ export interface MemberSummary {
                 <span class="bullet">•</span>
                 <div class="item-content">
                   <span class="issue-title">{{ issue.cleanText }}</span>
-                  <span 
-                    *ngIf="issue.statusText" 
-                    class="status-pill" 
+                  <span
+                    *ngIf="issue.statusText"
+                    class="status-pill"
                     [ngClass]="issue.statusClass"
                   >
                     {{ issue.statusText }}
                   </span>
-                  <button 
-                    *ngIf="issue.blockedReason" 
-                    class="blocked-tag-btn" 
+                  <button
+                    *ngIf="issue.blockedReason"
+                    class="blocked-tag-btn"
                     (click)="openBlockerModal(issue.cleanText, issue.blockedReason)"
                   >
                     🚨 Details
@@ -364,14 +364,14 @@ export interface MemberSummary {
   styles: [`
     .standup-body { padding: 20px 28px; background: #f8fafc; min-height: 100vh; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     .summary-container { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; min-height: 580px; display: flex; flex-direction: column; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02); }
-    
+
     .control-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid #f1f5f9; margin-bottom: 16px; }
     .header-left { display: flex; align-items: center; gap: 12px; }
     .header-right { display: flex; align-items: center; gap: 16px; }
     .summary-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 0; }
     .selected-date-label { font-size: 13px; color: #475569; font-weight: 600; background: #f1f5f9; padding: 4px 10px; border-radius: 16px; }
     .last-sync-badge { font-size: 12px; color: #64748b; font-weight: 500; }
-    
+
     /* View Switcher Toggle Buttons */
     .view-toggle-group { display: flex; background: #f1f5f9; padding: 3px; border-radius: 8px; gap: 3px; }
     .toggle-btn { background: transparent; border: none; padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: #64748b; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
@@ -379,7 +379,7 @@ export interface MemberSummary {
 
     .calendar-picker-wrapper { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #334155; font-weight: 500; }
     .calendar-input { border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 10px; font-size: 13px; color: #0f172a; outline: none; background: #ffffff; cursor: pointer; }
-    
+
     .single-section-view { display: flex; flex-direction: column; flex: 1; }
     .summary-card-section { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; flex: 1; }
     .section-card-header { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; }
@@ -387,12 +387,12 @@ export interface MemberSummary {
     .header-title-box { display: flex; align-items: center; gap: 8px; }
     .doc-icon { font-size: 16px; }
     .section-card-header h3 { margin: 0; font-size: 15px; font-weight: 700; color: #1e293b; }
-    
+
     .badge-group { display: flex; gap: 8px; }
     .count-badge { padding: 2px 10px; border-radius: 14px; font-size: 11.5px; font-weight: 600; }
     .tasks-badge { background: #e0e7ff; color: #4338ca; }
     .issues-badge { background: #fee2e2; color: #991b1b; }
-    
+
     .section-card-body { padding: 20px; font-size: 13.5px; color: #334155; flex: 1; overflow-y: auto; max-height: 720px; }
 
     /* Top Summary Banner */
@@ -565,14 +565,14 @@ export interface MemberSummary {
     .loading-box { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 350px; gap: 16px; color: #64748b; font-size: 14px; font-weight: 500; }
     .spinner { width: 36px; height: 36px; border: 3px solid #e2e8f0; border-top: 3px solid #6366f1; border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    
+
     /* Modal Styles */
     .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(3px); }
     .modal-content { background: #ffffff; border-radius: 12px; width: 100%; max-width: 480px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); overflow: hidden; animation: slideIn 0.2s ease-out forwards; }
     .member-modal-content { max-width: 600px; max-height: 80vh; display: flex; flex-direction: column; }
-    
+
     @keyframes slideIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
-    
+
     .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #f1f5f9; background: #f8fafc; }
     .modal-member-info { display: flex; align-items: center; gap: 12px; }
     .modal-title-wrapper { display: flex; align-items: center; gap: 8px; }
@@ -580,10 +580,10 @@ export interface MemberSummary {
     .modal-title { margin: 0; font-size: 16px; font-weight: 700; color: #0f172a; }
     .close-btn { background: none; border: none; font-size: 22px; color: #94a3b8; cursor: pointer; line-height: 1; }
     .close-btn:hover { color: #0f172a; }
-    
+
     .modal-body { padding: 20px; }
     .scrollable-modal-body { overflow-y: auto; flex: 1; max-height: 60vh; }
-    
+
     .modal-section { margin-bottom: 20px; }
     .modal-work-list { gap: 10px; }
     .modal-work-item { padding: 8px 0; border-bottom: 1px dashed #f1f5f9; }
@@ -597,14 +597,14 @@ export interface MemberSummary {
     .info-value { margin: 0; font-size: 14px; color: #0f172a; font-weight: 600; }
     .reason-box { background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; padding: 12px 14px; }
     .reason-text { margin: 0; color: #991b1b; font-size: 13.5px; line-height: 1.4; font-weight: 500; }
-    
+
     .modal-footer { padding: 14px 20px; background: #f8fafc; border-top: 1px solid #f1f5f9; display: flex; justify-content: flex-end; }
     .btn-primary { background: #0f172a; color: white; border: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
     .btn-primary:hover { background: #334155; }
   `]
 })
 export class StandupSummaryComponent implements OnInit {
-  private apiUrl = 'http://localhost:4000/api';
+  private apiUrl = 'https://ai-engineering-manager-production.up.railway.app/api';
 
   selectedDate: string = '';
   formattedDateDisplay: string = '';
@@ -642,7 +642,7 @@ export class StandupSummaryComponent implements OnInit {
 
     this.selectedDate = `${year}-${month}-${day}`;
     this.updateFormattedDateDisplay(today);
-    
+
     this.fetchSummaryForDate(this.selectedDate);
   }
 
@@ -681,7 +681,7 @@ export class StandupSummaryComponent implements OnInit {
         this.parseSummaryTextToCards(res.summary || '');
         this.taskCount = res.tasks_count || 0;
         this.issueCount = res.issues_count || 0;
-        
+
         if (res.date) {
           const [bYear, bMonth, bDay] = res.date.split('-').map(Number);
           this.updateFormattedDateDisplay(new Date(bYear, bMonth - 1, bDay));
@@ -779,14 +779,14 @@ export class StandupSummaryComponent implements OnInit {
         };
         this.memberSummaries.push(currentMember);
         activeSection = 'tasks';
-      } 
+      }
       // Detect Section sub-headers
       else if (line.toLowerCase().startsWith('issues:')) {
         activeSection = 'issues';
-      } 
+      }
       else if (line.toLowerCase().startsWith('discussions:') || line.toLowerCase().startsWith('notes:') || line.toLowerCase().startsWith('discussion:')) {
         activeSection = 'discussions';
-      } 
+      }
       // Detect Bullet Items (* or -)
       else if ((line.startsWith('*') || line.startsWith('-')) && currentMember) {
         let cleanText = line.substring(1).trim();

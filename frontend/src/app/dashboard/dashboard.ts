@@ -21,10 +21,10 @@ import { DashboardService } from '../services/dashboard.service';
             (change)="onDateChange($event)"
             class="date-input"
           />
-          <button 
-            class="clear-date-btn" 
-            *ngIf="dashService.selectedDate()" 
-            (click)="clearDate()" 
+          <button
+            class="clear-date-btn"
+            *ngIf="dashService.selectedDate()"
+            (click)="clearDate()"
             title="Show All Dates"
           >✕</button>
         </div>
@@ -221,7 +221,7 @@ export class DashboardComponent implements OnInit {
   }
 
   connectSlack(): void {
-    window.location.href = 'http://localhost:4000/api/slack/install';
+    window.location.href = 'https://ai-engineering-manager-production.up.railway.app/api/slack/install';
   }
 
   onDateChange(event: Event): void {
