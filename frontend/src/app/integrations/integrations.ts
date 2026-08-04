@@ -121,13 +121,13 @@ interface SyncSummary {
                 </span>
               </div>
               <button class="close-summary-btn" (click)="lastSyncSummary = null">✕</button>
-            </div>
+          </div>
 
           <!-- ⚠️ Error Banner (If API Fails) -->
           <div *ngIf="errorMessage" class="pipeline-error-bar">
               <span>⚠️ <strong>Error for #{{ lastSyncedChannelName }}:</strong> {{ errorMessage }}</span>
               <button class="close-summary-btn" (click)="errorMessage = null">✕</button>
-            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -348,7 +348,6 @@ export class IntegrationsComponent implements OnInit {
     this.lastSyncSummary = null;
     this.errorMessage = null;
 
-    // Clean channel name to prevent double '#' in UI banners
     const cleanName = channel.name ? channel.name.replace(/^#+/, '') : channel.id;
     this.lastSyncedChannelName = cleanName;
 
@@ -359,11 +358,12 @@ export class IntegrationsComponent implements OnInit {
         this.http.post(`/api/slack/pipeline/${encodeURIComponent(channel.id)}`, {
           channel_id: channel.id,
           channel_name: cleanName,
-          limit: 50
+          fetch_all: true,
+          all: true,
+          limit: 200
         })
       );
 
-      // 🔍 Open Browser Console (F12) to inspect exact field names from backend
       console.log('=== SLACK PIPELINE RAW RESPONSE ===', summary);
 
       this.lastSyncSummary = summary;
@@ -393,22 +393,7 @@ export class IntegrationsComponent implements OnInit {
     if (!this.lastSyncSummary) return 0;
     const s: any = this.lastSyncSummary;
 
-    // Direct numerical count properties
-    const count =
-      s.created?.tasks ??
-      s.tasksExtracted ??
-      s.tasks_count ??
-      s.tasksCount ??
-      s.task_count ??
-      s.extracted_tasks_count ??
-      s.summary?.tasks ??
-      s.summary?.tasks_count ??
-      s.result?.tasks_count ??
-      s.results?.tasks_count;
-
-    if (typeof count === 'number') return count;
-
-    // Fallback: Array length checks
+    // 1. Check array length first
     const taskArray =
       s.tasks ||
       s.extracted_tasks ||
@@ -420,49 +405,81 @@ export class IntegrationsComponent implements OnInit {
       s.results?.tasks ||
       s.summary?.tasks;
 
-    return Array.isArray(taskArray) ? taskArray.length : 0;
+    if (Array.isArray(taskArray) && taskArray.length > 0) {
+      return taskArray.length;
+    }
+
+    // 2. Fall back to numerical count properties
+    return (
+      s.created?.tasks ??
+      s.tasksExtracted ??
+      s.tasks_count ??
+      s.tasksCount ??
+      s.task_count ??
+      s.extracted_tasks_count ??
+      s.summary?.tasks ??
+      s.summary?.tasks_count ??
+      s.result?.tasks_count ??
+      s.results?.tasks_count ??
+      0
+    );
   }
 
   getIssueCount(): number {
     if (!this.lastSyncSummary) return 0;
     const s: any = this.lastSyncSummary;
 
-    // Direct numerical count properties
-    const count =
-      s.created?.issues ??
-      s.issuesExtracted ??
-      s.issues_count ??
-      s.issuesCount ??
-      s.issue_count ??
-      s.extracted_issues_count ??
-      s.summary?.issues ??
-      s.summary?.issues_count ??
-      s.result?.issues_count ??
-      s.results?.issues_count;
-
-    if (typeof count === 'number') return count;
-
-    // Fallback: Array length checks
+    // 1. Check array length first to ensure actual list items take precedence over summary counts
     const issueArray =
       s.issues ||
       s.extracted_issues ||
       s.parsed_issues ||
       s.issues_created ||
+      s.all_issues ||
       s.data?.issues ||
       s.data?.extracted_issues ||
       s.result?.issues ||
       s.results?.issues ||
       s.summary?.issues;
 
-    return Array.isArray(issueArray) ? issueArray.length : 0;
+    if (Array.isArray(issueArray) && issueArray.length > 0) {
+      return issueArray.length;
+    }
+
+    // 2. Fall back to numerical count properties if no array is found
+    return (
+      s.created?.issues ??
+      s.issuesExtracted ??
+      s.issues_count ??
+      s.issuesCount ??
+      s.issue_count ??
+      s.extracted_issues_count ??
+      s.total_issues ??
+      s.summary?.issues ??
+      s.summary?.issues_count ??
+      s.result?.issues_count ??
+      s.results?.issues_count ??
+      0
+    );
   }
 
   getProcessedMessagesCount(): number {
     if (!this.lastSyncSummary) return 0;
     const s: any = this.lastSyncSummary;
 
-    // Direct numerical count properties
-    const count =
+    const msgArray =
+      s.messages ||
+      s.raw_messages ||
+      s.slack_messages ||
+      s.data?.messages ||
+      s.result?.messages ||
+      s.results?.messages;
+
+    if (Array.isArray(msgArray) && msgArray.length > 0) {
+      return msgArray.length;
+    }
+
+    return (
       s.messages_processed ??
       s.messagesProcessed ??
       s.messages_seen ??
@@ -474,19 +491,8 @@ export class IntegrationsComponent implements OnInit {
       s.summary?.messages_processed ??
       s.summary?.total_messages ??
       s.result?.messages_processed ??
-      s.results?.messages_processed;
-
-    if (typeof count === 'number') return count;
-
-    // Fallback: Array length checks
-    const msgArray =
-      s.messages ||
-      s.raw_messages ||
-      s.slack_messages ||
-      s.data?.messages ||
-      s.result?.messages ||
-      s.results?.messages;
-
-    return Array.isArray(msgArray) ? msgArray.length : 0;
+      s.results?.messages_processed ??
+      0
+    );
   }
 }

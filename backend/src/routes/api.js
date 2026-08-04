@@ -1,7 +1,7 @@
 const express = require("express");
 const { body, validationResult } = require("express-validator");
 const { Task, Issue, Discussion, Team } = require("../models");
-const { getDashboard } = require("../services/dashboard");
+const { getDashboard, getDashboardForDate } = require("../services/dashboard");
 const {
   createSlackClient,
   listChannels,
@@ -18,7 +18,7 @@ function createApiRouter({ messageProcessor }) {
 
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   // Replace GET /discussions/daily-summary in routes/api.js with this:
-
+  
 router.get("/discussions/daily-summary", async (req, res) => {
   try {
     const { getTargetSummaryDate } = require("../jobs/standupScheduler");
@@ -76,15 +76,21 @@ router.get("/discussions/daily-summary", async (req, res) => {
 });
 
   // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
+ // POST: Parse Raw Unstructured MOM Message with OpenAI, falling back to Regex if it fails
   router.post("/discussions/parse-mom", async (req, res) => {
     try {
-      const { rawText } = req.body;
+      const { rawText, channel, workspace_id, user_directory, team } = req.body;
 
       if (!rawText || typeof rawText !== "string") {
         return res.status(400).json({ error: "rawText parameter is required" });
       }
 
-      const prompt = `
+      let parsedData = null;
+      let parsedByAI = true;
+
+      // 1. Try parsing with OpenAI first
+      try {
+        const prompt = `
 You are an expert AI Engineering Manager. Parse the following Stand-up MOM message into structured categories per team member.
 
 Raw MOM Message:
@@ -100,64 +106,118 @@ Instructions:
    - "discussions": Meetings, discussions with leads/management, or general administrative notes.
 `;
 
-      const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
-        maxTokens: 1000,
-        temperature: 0.1,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "mom_parsed_structure",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                metadata: {
-                  type: "object",
-                  properties: {
-                    date: { type: "string" },
-                    duration: { type: "string" },
-                    present_members: {
-                      type: "array",
-                      items: { type: "string" },
-                    },
-                  },
-                  required: ["date", "duration", "present_members"],
-                  additionalProperties: false,
-                },
-                member_updates: {
-                  type: "array",
-                  items: {
+        const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
+          maxTokens: 1000,
+          temperature: 0.1,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "mom_parsed_structure",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  metadata: {
                     type: "object",
                     properties: {
-                      member_name: { type: "string" },
-                      tasks: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      issues: {
-                        type: "array",
-                        items: { type: "string" },
-                      },
-                      discussions: {
+                      date: { type: "string" },
+                      duration: { type: "string" },
+                      present_members: {
                         type: "array",
                         items: { type: "string" },
                       },
                     },
-                    required: ["member_name", "tasks", "issues", "discussions"],
+                    required: ["date", "duration", "present_members"],
                     additionalProperties: false,
                   },
+                  member_updates: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        member_name: { type: "string" },
+                        tasks: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        issues: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        discussions: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                      },
+                      required: ["member_name", "tasks", "issues", "discussions"],
+                      additionalProperties: false,
+                    },
+                  },
                 },
+                required: ["metadata", "member_updates"],
+                additionalProperties: false,
               },
-              required: ["metadata", "member_updates"],
-              additionalProperties: false,
             },
           },
-        },
-      });
+        });
 
-      const parsedData =
-        typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+        parsedData = typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
+      } catch (openaiErr) {
+        console.warn("[parse-mom] OpenAI parsing failed, falling back to local Regex parser:", openaiErr.message);
+        parsedByAI = false;
+      }
 
+      // 2. Fallback to Regex Parsing if OpenAI failed or returned null
+      if (!parsedData || !parsedData.member_updates) {
+        const lines = rawText.split("\n").map((l) => l.trim()).filter(Boolean);
+        const memberUpdatesMap = {};
+        let currentMember = null;
+
+        for (const line of lines) {
+          if (/^(hi everyone|date|duration|present members|team-wise task updates)/i.test(line)) continue;
+
+          const isBullet = line.startsWith("-") || line.startsWith("*") || line.startsWith("•");
+          
+          if (!isBullet && line.length < 30 && !line.includes(".")) {
+            currentMember = line.replace(/[*_]/g, "").trim();
+            if (!memberUpdatesMap[currentMember]) {
+              memberUpdatesMap[currentMember] = { tasks: [], issues: [], discussions: [] };
+            }
+            continue;
+          }
+
+          if (currentMember) {
+            const cleanLine = line.replace(/^([-•*]|\d+\.)\s*/, "").trim();
+            if (!cleanLine) continue;
+
+            const lower = cleanLine.toLowerCase();
+            const isIssue = lower.includes("bug") || lower.includes("issue") || lower.includes("mismatch") || lower.includes("survival issue") || lower.includes("blocker");
+            const isDiscussion = lower.includes("discuss") || lower.includes("align") || lower.includes("follow up");
+
+            if (isIssue) {
+              memberUpdatesMap[currentMember].issues.push(cleanLine);
+            } else if (isDiscussion) {
+              memberUpdatesMap[currentMember].discussions.push(cleanLine);
+            } else {
+              memberUpdatesMap[currentMember].tasks.push(cleanLine);
+            }
+          }
+        }
+
+        parsedData = {
+          metadata: {
+            date: new Date().toISOString().split("T")[0],
+            duration: "15 Minutes",
+            present_members: Object.keys(memberUpdatesMap),
+          },
+          member_updates: Object.entries(memberUpdatesMap).map(([member_name, data]) => ({
+            member_name,
+            ...data,
+          })),
+        };
+      }
+
+      // 3. Format and save to database
       let formattedText = `Hi Everyone, please find Today Stand-up MOM\n\n`;
       formattedText += `Date: ${parsedData.metadata.date}\n`;
       formattedText += `Duration: ${parsedData.metadata.duration}\n`;
@@ -172,22 +232,13 @@ Instructions:
         formattedText += `\n`;
       });
 
-      const updatedDoc = await DailySummary.findOneAndUpdate(
+      const updatedDoc = await DailySummary.findOneAndReplace(
         { date: parsedData.metadata.date },
         {
           summary: formattedText.trim(),
-          tasks_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.tasks.length,
-            0,
-          ),
-          issues_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.issues.length,
-            0,
-          ),
-          discussions_count: parsedData.member_updates.reduce(
-            (acc, m) => acc + m.discussions.length,
-            0,
-          ),
+          tasks_count: parsedData.member_updates.reduce((acc, m) => acc + m.tasks.length, 0),
+          issues_count: parsedData.member_updates.reduce((acc, m) => acc + m.issues.length, 0),
+          discussions_count: parsedData.member_updates.reduce((acc, m) => acc + m.discussions.length, 0),
           is_stale: false,
         },
         { upsert: true, returnDocument: "after" },
@@ -195,6 +246,7 @@ Instructions:
 
       return res.json({
         success: true,
+        parsed_by_ai: parsedByAI,
         metadata: parsedData.metadata,
         member_updates: parsedData.member_updates,
         formatted_summary: formattedText.trim(),
@@ -218,6 +270,17 @@ Instructions:
     try {
       const channel = req.query.channel || null;
       const data = await getDashboard(channel);
+      res.json(data);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/dashboard/for-date", async (req, res, next) => {
+    try {
+      const date = req.query.date || null;
+      const channel = req.query.channel || null;
+      const data = await getDashboardForDate(date, channel);
       res.json(data);
     } catch (err) {
       next(err);
@@ -313,11 +376,28 @@ Instructions:
       }
 
       const tasks = await Task.find(filter).sort({ updated_time: -1 }).lean();
+      
       res.json(tasks);
     } catch (err) {
       next(err);
     }
   });
+
+  router.delete('/tasks/:id', async (req, res) => {
+    try {
+        const issue_id = req.params.id;
+        const result = await Task.findByIdAndDelete(issue_id);
+        
+        if (!result) {
+            return res.status(404).json({ error: "Issue not found" });
+        }
+        
+        return res.status(200).json({ success: true, message: "Issue deleted successfully directly from database" });
+    } catch (err) {
+        console.error("Failed to delete issue from database:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
 
   router.all("/slack/standup-briefing", async (req, res) => {
     try {
@@ -403,7 +483,7 @@ Instructions:
         ],
       };
 
-      const updatedTask = await Task.findOneAndUpdate(query, updateData, {
+      const updatedTask = await Task.findOneAndReplace(query, updateData, {
         returnDocument: "after",
       });
 
@@ -453,6 +533,22 @@ Instructions:
     }
   });
 
+  router.delete('/issues/:id', async (req, res) => {
+    try {
+        const issue_id = req.params.id;
+        const result = await Issue.findByIdAndDelete(issue_id);
+        
+        if (!result) {
+            return res.status(404).json({ error: "Issue not found" });
+        }
+        
+        return res.status(200).json({ success: true, message: "Issue deleted successfully directly from database" });
+    } catch (err) {
+        console.error("Failed to delete issue from database:", err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
   router.get("/discussions", async (req, res, next) => {
     try {
       const filter = {};
@@ -497,12 +593,30 @@ Instructions:
   router.get("/teams/workload", async (req, res, next) => {
     try {
       const channelId = req.query.channelId;
+      const dateStr = req.query.date || null;
       const taskFilter = {};
       const issueFilter = {};
 
       if (channelId) {
         taskFilter.channel = channelId;
         issueFilter.channel = channelId;
+      }
+
+      if (dateStr) {
+        const [year, month, day] = String(dateStr).split("-").map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          taskFilter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+            { due_date: { $gte: start, $lte: end } },
+          ];
+          issueFilter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+          ];
+        }
       }
 
       const [tasks, issues] = await Promise.all([
@@ -514,17 +628,52 @@ Instructions:
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      const getName = (item) => {
-        const name =
-          item.assigned_to?.name ||
-          item.assigned_to ||
-          item.owner?.name ||
-          item.owner;
-        if (!name || name === "Unassigned") return null;
-        return typeof name === "string"
-          ? name
-          : name.name || name.display_name || "Unknown";
+            const getName = (item) => {
+        const rawAssignee = item.assigned_to || item.owner;
+        if (!rawAssignee) return null;
+
+        // Extract potential name/email/real_name from string or object structures
+        let nameStr = "";
+        if (typeof rawAssignee === "string") {
+          nameStr = rawAssignee;
+        } else {
+          nameStr = 
+            rawAssignee.real_name || 
+            rawAssignee.profile?.real_name || 
+            rawAssignee.display_name || 
+            rawAssignee.name || 
+            "";
+        }
+
+        if (!nameStr || nameStr === "Unassigned") return null;
+
+        // Filter out bots and service agents
+        const lower = nameStr.toLowerCase();
+        if (
+          lower.includes("bot") ||
+          lower.includes("webhook") ||
+          lower.includes("integration") ||
+          lower.includes("service") ||
+          lower.includes("slackbot") ||
+          lower === "uslackbot"
+        ) {
+          return null;
+        }
+
+        // If it's an email address, strip the domain and format the prefix nicely
+        if (nameStr.includes("@")) {
+          nameStr = nameStr.split("@")[0];
+        }
+
+        // Convert dots, underscores, or hyphens into spaces and capitalize
+        return nameStr
+          .replace(/[._-]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
       };
+
 
       const isToday = (date) => {
         if (!date) return false;

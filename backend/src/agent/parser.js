@@ -1,10 +1,5 @@
-/**
- * Stateless Task Intelligence Parser
- * Analyzes a Slack message + context and returns structured JSON.
- * Does not persist state — the application layer owns storage & reminders.
- */
-
 const config = require("../config");
+const chrono = require("chrono-node");
 
 const PRIORITY = {
 	URGENT: [
@@ -388,28 +383,22 @@ function parseTimeOfDay(text, base) {
 }
 
 function extractDueDate(text, now = new Date()) {
-	const lower = text.toLowerCase();
+	let lower = text.toLowerCase();
 
-	if (/\btoday\b/.test(lower) || /\btonight\b/.test(lower)) {
-		const d = new Date(now);
-		if (/\btonight\b/.test(lower)) d.setHours(21, 0, 0, 0);
-		else {
-			const withTime = parseTimeOfDay(text, d);
-			if (withTime) return withTime.toISOString();
-			d.setHours(17, 0, 0, 0);
-		}
-		return d.toISOString();
-	}
+	// 🟢 FIX: Pre-process typos and office slang into standard times
+	lower = lower
+		// Fix missing colons (e.g., "at 3 11" -> "at 3:11")
+		.replace(/\b(at|by|@)\s+(\d{1,2})\s+(\d{2})\b/gi, "$1 $2:$3")
+		.replace(/\b(\d{1,2})\s+(\d{2})\s*(am|pm)\b/gi, "$1:$2 $3")
 
-	if (/\btomorrow\b/.test(lower)) {
-		const d = new Date(now);
-		d.setDate(d.getDate() + 1);
-		const withTime = parseTimeOfDay(text, d);
-		if (withTime) return withTime.toISOString();
-		d.setHours(17, 0, 0, 0);
-		return d.toISOString();
-	}
+		// Office Slang & Casual Routines (Customize these times as needed for your team)
+		.replace(/\beod\b/gi, "5:00 pm")
+		.replace(/\bend of (the )?day\b/gi, "5:00 pm")
+		.replace(/\bafter lunch\b/gi, "2:00 pm")
+		.replace(/\bbefore lunch\b/gi, "11:30 am")
+		.replace(/\bbeforenoon\b/gi, "11:59 am");
 
+	// 1. Custom Business Logic (Things a standard calendar doesn't know)
 	if (/\bend\s+of\s+(the\s+)?week\b/.test(lower) || /\beow\b/.test(lower)) {
 		return nextWeekday(now, 5).toISOString();
 	}
@@ -421,67 +410,19 @@ function extractDueDate(text, now = new Date()) {
 		return d.toISOString();
 	}
 
-	const nextDay = lower.match(
-		/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/,
-	);
-	if (nextDay) {
-		const d = nextWeekday(now, WEEKDAYS[nextDay[1]]);
-		if (d - now < 7 * 24 * 3600 * 1000) d.setDate(d.getDate() + 7);
-		return d.toISOString();
-	}
+	// 2. Let Chrono handle the date parsing
+	const parsedResults = chrono.parse(lower, now, { forwardDate: true });
 
-	const dayOnly = lower.match(
-		/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/,
-	);
-	if (dayOnly) {
-		return nextWeekday(now, WEEKDAYS[dayOnly[1]]).toISOString();
-	}
+	if (parsedResults.length > 0) {
+		const parsedDate = parsedResults[0].start.date();
 
-	const absolute = text.match(
-		/\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i,
-	);
-	if (absolute) {
-		const months = {
-			jan: 0,
-			january: 0,
-			feb: 1,
-			february: 1,
-			mar: 2,
-			march: 2,
-			apr: 3,
-			april: 3,
-			may: 4,
-			jun: 5,
-			june: 5,
-			jul: 6,
-			july: 6,
-			aug: 7,
-			august: 7,
-			sep: 8,
-			sept: 8,
-			september: 8,
-			oct: 9,
-			october: 9,
-			nov: 10,
-			november: 10,
-			dec: 11,
-			december: 11,
-		};
-		const day = parseInt(absolute[1], 10);
-		const month = months[absolute[2].toLowerCase()];
-		const d = new Date(now.getFullYear(), month, day, 17, 0, 0, 0);
-		if (d < now) d.setFullYear(d.getFullYear() + 1);
-		return d.toISOString();
-	}
+		// 3. Default to 5:00 PM if they only provided a date (no specific time)
+		if (!parsedResults[0].start.isCertain("hour")) {
+			parsedDate.setHours(17, 0, 0, 0);
+		}
 
-	const iso = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-	if (iso) {
-		const d = new Date(`${iso[1]}T17:00:00`);
-		return d.toISOString();
+		return parsedDate.toISOString();
 	}
-
-	const timeOnly = parseTimeOfDay(text, now);
-	if (timeOnly) return timeOnly.toISOString();
 
 	return null;
 }
@@ -544,6 +485,20 @@ function extractEntities(text) {
 
 function classifyMessage(text) {
 	const lowerText = text.toLowerCase().trim();
+
+	// 🟢 FIX 1: Prevent reason replies from triggering new issues/tasks
+	if (
+		lowerText.startsWith("reason -") ||
+		lowerText.startsWith("reason:") ||
+		lowerText.includes(" reason -")
+	) {
+		return {
+			classification: "GENERAL_DISCUSSION",
+			confidence: 0.99,
+			needs_human_review: false,
+		};
+	}
+
 	if (
 		lowerText.startsWith("task -") ||
 		lowerText.includes(" task -") ||
@@ -700,7 +655,7 @@ function buildNotificationHints({
 			target_user_id: owner.id,
 			target_user_name: owner.name || owner.display_name || "",
 			message:
-				"Your task is marked as blocked. Please tell me what is blocking it.",
+				`Your task '${title}' is marked as blocked. Please tell me what is blocking it.`,
 			immediate: true,
 		});
 	}
@@ -850,6 +805,10 @@ async function parseMessage(input) {
 		const updates = {};
 
 		if (dueDate && linkingTask) updates.due_date = dueDate;
+
+		// 🟢 FIX 2: Ensure the extracted reason is passed into the update payload
+		if (blockedReason && linkingTask)
+			updates.blocked_reason = blockedReason;
 
 		if (Object.keys(updates).length > 0 || text.trim()) {
 			return buildResponse({

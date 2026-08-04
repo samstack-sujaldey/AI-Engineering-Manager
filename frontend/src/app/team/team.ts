@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectorRef, effect } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -42,14 +42,26 @@ interface DayActivity {
           <p class="squad-subtitle">Channel-specific workload and task breakdown overview.</p>
         </div>
 
-        <div class="select-wrapper">
-          <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-          <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
-            <option value="all">All Channels</option>
-            <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
-          </select>
+        <div class="team-controls">
+          <div class="date-picker-wrapper">
+            <label for="teamDate">Date:</label>
+            <input
+              type="date"
+              id="teamDate"
+              [value]="dashService.selectedDate()"
+              (change)="onDateChange($event)"
+              class="team-date-input"
+            />
+          </div>
+          <div class="select-wrapper">
+            <svg class="select-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <select class="team-filter-select" [(ngModel)]="selectedChannelId" (change)="onChannelChange()">
+              <option value="all">All Channels</option>
+              <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -143,6 +155,32 @@ interface DayActivity {
       display: flex;
       align-items: center;
       justify-content: space-between;
+    }
+    .team-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .date-picker-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #333;
+      font-weight: 500;
+    }
+    .date-picker-wrapper label {
+      white-space: nowrap;
+    }
+    .team-date-input {
+      border: 1px solid #5b4fcf;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      color: #1a1a2e;
+      outline: none;
+      background: #fafafd;
+      cursor: pointer;
     }
     .squad-title {
       font-size: 18px;
@@ -385,31 +423,34 @@ export class TeamComponent implements OnInit {
   allTasks: any[] = [];
   weeklyActivity: DayActivity[] = [];
   teams: any[] = [];
+  private isInitialized = false;
 
   constructor() {
     effect(() => {
       const globalChannel = this.dashService.selectedChannel();
-      if (!globalChannel) {
-        this.selectedChannelId = 'all';
-        this.selectedChannelName = 'All Channels';
-      } else {
-        const found = this.channels.find(
-          c => c.id === globalChannel || c.name.toLowerCase() === globalChannel.toLowerCase()
-        );
-        this.selectedChannelId = found ? found.id : globalChannel;
-        this.selectedChannelName = found ? `#${found.name}` : `#${globalChannel}`;
-      }
-      this.loadTeamData();
+      const globalDate = this.dashService.selectedDate();
+      
+      untracked(() => {
+        if (!this.isInitialized) return;
+        if (!globalChannel) {
+          this.selectedChannelId = 'all';
+          this.selectedChannelName = 'All Channels';
+        } else {
+          const found = this.channels.find(
+            c => c.id === globalChannel || c.name.toLowerCase() === globalChannel.toLowerCase()
+          );
+          this.selectedChannelId = found ? found.id : globalChannel;
+          this.selectedChannelName = found ? `#${found.name}` : `#${globalChannel}`;
+        }
+        this.loadTeamData();
+      });
     });
   }
 
-  ngOnInit() {
-    this.initData();
-  }
-
-  async initData() {
+  async ngOnInit() {
     await this.fetchChannels();
     await this.loadTeamData();
+    this.isInitialized = true;
   }
 
   async fetchChannels() {
@@ -449,15 +490,19 @@ export class TeamComponent implements OnInit {
       const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
       let colorIndex = 0;
 
-      this.members = workload.map((m: any) => {
-        const nameParts = (m.name || '').trim().split(/\s+/);
+      // Filter out non-human users / apps / bots / agents from workload API
+      const humanWorkload = workload.filter((m: any) => !this.isBotOrAgentUser(m));
+
+      this.members = humanWorkload.map((m: any) => {
+        const cleanName = this.resolveTeamMemberName(m);
+        const nameParts = cleanName.split(/\s+/);
         const initials = nameParts.length > 1
           ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
-          : (m.name || 'UN').substring(0, 2).toUpperCase();
+          : cleanName.substring(0, 2).toUpperCase();
 
         return {
-          name: m.name || 'Unknown',
-          role: 'Developer',
+          name: cleanName,
+          role: m.role || 'Developer',
           initials: initials || 'UN',
           color: colorPalette[colorIndex++ % colorPalette.length],
           current: m.current || 0,
@@ -497,6 +542,14 @@ export class TeamComponent implements OnInit {
     this.loadTeamData();
   }
 
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.value) {
+      this.dashService.setSelectedDate(input.value);
+      this.loadTeamData();
+    }
+  }
+
   private updateSelectedChannelName() {
     if (this.selectedChannelId === 'all') {
       this.selectedChannelName = 'All Channels';
@@ -523,6 +576,7 @@ export class TeamComponent implements OnInit {
       rawName.includes('slackbot') ||
       rawName.includes('ai_engineering') ||
       rawName.includes('bot') ||
+      rawName.includes('app') ||
       rawName === 'unknown'
     );
   }
@@ -553,7 +607,72 @@ export class TeamComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  processTasksIntoMembers() {
+  private resolveTeamMemberName(input: any): string {
+    if (!input) return 'Unassigned';
+
+    let raw = '';
+    if (typeof input === 'string') {
+      raw = input;
+    } else if (typeof input === 'object') {
+      raw =
+        input.real_name ||
+        input.display_name ||
+        input.profile?.real_name ||
+        input.profile?.display_name ||
+        input.name ||
+        input.email ||
+        'Unassigned';
+    } else {
+      raw = String(input);
+    }
+
+    raw = raw.trim();
+
+    if (raw.startsWith('<@') && raw.endsWith('>')) {
+      raw = raw.slice(2, -1);
+    }
+
+    if (raw.includes('@') && !raw.startsWith('<')) {
+      raw = raw.split('@')[0].trim();
+    }
+
+    raw = raw.replace(/[._-]+/g, ' ').trim();
+
+    if (!raw || raw === 'Unassigned') return 'Unassigned';
+
+    return raw
+      .split(/\s+/)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  private isBotOrAgentUser(m: any): boolean {
+    if (!m) return true;
+
+    const rawId = (m.id || m.userId || m.user_id || '').toLowerCase();
+    const rawName = (
+      typeof m === 'string'
+        ? m
+        : (m.real_name || m.display_name || m.name || m.email || '')
+    ).toLowerCase();
+
+    const botKeywords = [
+      'bot', 'app', 'github', 'jira', 'jirabot', 'slackbot',
+      'ai_engineering', 'agent', 'claude', 'gpt', 'assistant',
+      'automation', 'notif', 'system','aiem'
+    ];
+
+    return (
+      rawId === 'uslackbot' ||
+      rawId.includes('bot') ||
+      rawId.includes('app') ||
+      rawName === 'unknown' ||
+      rawName === '' ||
+      botKeywords.some((kw) => rawName.includes(kw))
+    );
+  }
+
+    processTasksIntoMembers() {
     const memberMap = new Map<string, { current: number; blocked: number; doneToday: number; role: string }>();
     const colorPalette = ['#6366f1', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#3b82f6', '#ec4899'];
     let colorIndex = 0;
@@ -562,29 +681,7 @@ export class TeamComponent implements OnInit {
     const targetId = this.selectedChannelId;
     const targetName = selectedChanObj ? selectedChanObj.name.toLowerCase() : '';
 
-    // 1. Seed members strictly from Team collection for the active channel
-    const baseMembers = this.selectedChannelId === 'all'
-      ? (this.teams || []).flatMap((team: any) => team.members || [])
-      : (this.teams.find((t: any) => 
-          t.channel_id === this.selectedChannelId || 
-          t.channel_name?.replace(/^#/, '').toLowerCase() === targetName
-        )?.members || []);
-
-    for (const m of baseMembers) {
-      if (this.isBotUser(m)) continue; // Skip bot users
-
-      const name = this.extractStringName(m);
-      if (name && name !== 'Unassigned') {
-        memberMap.set(name, { 
-          current: 0, 
-          blocked: 0, 
-          doneToday: 0, 
-          role: m.role || 'Developer' 
-        });
-      }
-    }
-
-    // 2. Filter tasks matching the selected channel
+    // 1. Filter tasks matching the selected channel first
     const filteredTasks = this.selectedChannelId === 'all'
       ? this.allTasks
       : this.allTasks.filter(t => {
@@ -597,22 +694,64 @@ export class TeamComponent implements OnInit {
                  (chanName && chanName === targetId.toLowerCase());
         });
 
+    // 2. Try seeding members from Team collection
+    const baseMembers = this.selectedChannelId === 'all'
+      ? (this.teams || []).flatMap((team: any) => team.members || [])
+      : (this.teams.find((t: any) => 
+          t.channel_id === this.selectedChannelId || 
+          t.channel_name?.replace(/^#/, '').toLowerCase() === targetName
+        )?.members || []);
+
+    for (const m of baseMembers) {
+      if (this.isBotOrAgentUser(m)) continue;
+      const name = this.resolveTeamMemberName(m);
+      if (name && name !== 'Unassigned') {
+        memberMap.set(name, { current: 0, blocked: 0, doneToday: 0, role: m.role || 'Developer' });
+      }
+    }
+
+    // Helper to resolve human assignee, redirecting bot/aiem tasks to the message author/sender
+    const getEffectiveAssignee = (task: any) => {
+      let rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
+
+      // If the assignee is a bot or aiem, look for the actual human sender who triggered it
+      if (this.isBotOrAgentUser(rawAssignee)) {
+        rawAssignee = task.user || task.sender || task.author || task.created_by || task.user_name || task.user_id;
+      }
+
+      return rawAssignee;
+    };
+
+    // 3. Fallback/Auto-discovery: Extract active human members directly from filtered tasks
+    for (const task of filteredTasks) {
+      const effectiveAssignee = getEffectiveAssignee(task);
+      if (this.isBotOrAgentUser(effectiveAssignee)) continue;
+
+      const assigneeName = this.resolveTeamMemberName(effectiveAssignee);
+      if (assigneeName && assigneeName !== 'Unassigned' && !memberMap.has(assigneeName)) {
+        memberMap.set(assigneeName, { current: 0, blocked: 0, doneToday: 0, role: 'Developer' });
+      }
+    }
+
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyDataMap = new Map<string, { current: number; blocked: number; completed: number; total: number }>();
 
+    const selectedDateStr = this.dashService.selectedDate();
+    const selectedDate = selectedDateStr ? new Date(selectedDateStr + 'T00:00:00') : new Date();
+
     for (let i = 6; i >= 0; i--) {
-      const d = new Date();
+      const d = new Date(selectedDate);
       d.setDate(d.getDate() - i);
       const label = dayNames[d.getDay()];
       weeklyDataMap.set(label, { current: 0, blocked: 0, completed: 0, total: 0 });
     }
 
-    // 3. Update stats ONLY for seeded channel members
+    // 4. Update stats for all mapped members using the corrected human assignee
     for (const task of filteredTasks) {
-      const rawAssignee = task.assigned_to?.name || task.assigned_to || task.owner?.name || task.owner || task.assignee;
-      const assigneeName = this.extractStringName(rawAssignee);
+      const effectiveAssignee = getEffectiveAssignee(task);
+      if (this.isBotOrAgentUser(effectiveAssignee)) continue;
 
-      // Do NOT dynamically create a card if the person is not a channel member or is a bot
+      const assigneeName = this.resolveTeamMemberName(effectiveAssignee);
       if (!memberMap.has(assigneeName)) continue;
 
       const data = memberMap.get(assigneeName)!;
@@ -638,7 +777,7 @@ export class TeamComponent implements OnInit {
       }
     }
 
-    // 4. Render only human channel members
+    // 5. Render final valid human team members list
     this.members = Array.from(memberMap.entries()).map(([name, stats]) => {
       const nameParts = name.trim().split(/\s+/);
       const initials = nameParts.length > 1
@@ -665,6 +804,7 @@ export class TeamComponent implements OnInit {
 
     this.cdr.detectChanges();
   }
+
 
   getDayPercentageNumber(day: DayActivity, type: 'current' | 'blocked' | 'completed'): number {
     const total = day.current + day.blocked + day.completed;

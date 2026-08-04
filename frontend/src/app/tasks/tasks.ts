@@ -1,120 +1,139 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
-import { DashboardService } from '../services/dashboard.service'; // Adjust path
+import { DashboardService } from '../services/dashboard.service';
 
 @Component({
   selector: 'app-tasks',
+  standalone: true,
   imports: [CommonModule, PageHeaderComponent, FormsModule],
   providers: [DatePipe],
   template: `
     <app-page-header
-      title="Tasks"
-      searchPlaceholder="Search tasks, PRs, or team..."
+      title="Tasks & Action Items"
+      searchPlaceholder="Search tasks..."
     ></app-page-header>
 
-      <div class="tasks-body">
-        <div class="filters-row">
-          <select class="filter-select" [(ngModel)]="statusFilter">
-            <option value="all">Status: All</option>
-            <option value="TODO">To Do</option>
-            <option value="PROCESSING">In Progress</option>
-            <option value="COMPLETED">Completed</option>
-            <option value="BLOCKED">Blocked</option>
-          </select>
-          <select class="filter-select" [(ngModel)]="priorityFilter">
-            <option value="all">Priority: All</option>
-            <option value="LOW">Low</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="HIGH">High</option>
-            <option value="URGENT">Urgent</option>
-          </select>
+    <div class="tasks-body">
+      <div class="filters-row">
+        <select class="filter-select" [(ngModel)]="statusFilter">
+          <option value="all">Status: All</option>
+          <option value="TODO">Todo</option>
+          <option value="PROCESSING">Processing</option>
+          <option value="BLOCKED">Blocked</option>
+          <option value="COMPLETED">Completed</option>
+        </select>
+        <select class="filter-select" [(ngModel)]="priorityFilter">
+          <option value="all">Priority: All</option>
+          <option value="LOW">Low</option>
+          <option value="MEDIUM">Medium</option>
+          <option value="HIGH">High</option>
+          <option value="Urgent">Urgent</option>
+        </select>
+
+        <!-- Date Filter with Clear Button -->
+        <div class="date-filter-group">
           <input
             type="date"
             class="filter-select"
-            [(ngModel)]="dateFilter"
-            (change)="loadTasks()"
+            [value]="dashService.selectedDate()"
+            (change)="onDateChange($event)"
           />
+          <button
+            class="clear-date-btn"
+            *ngIf="dashService.selectedDate()"
+            (click)="clearDateFilter()"
+            title="Show All Dates"
+          >✕</button>
         </div>
+      </div>
 
       <div class="tasks-table-card">
         <table class="tasks-table">
           <thead>
             <tr>
-              <th style="width: 35%;">TASK NAME</th>
-              <th style="width: 25%;">ASSIGNED TO</th>
-              <th style="width: 15%;">PRIORITY</th>
+              <th style="width: 30%;">TASK NAME</th>
+              <th style="width: 20%;">ASSIGNED TO</th>
+              <th style="width: 10%;">PRIORITY</th>
               <th style="width: 10%;">STATUS</th>
               <th style="width: 15%;">DUE DATE</th>
+              <th style="width: 15%;">CREATED AT</th>
             </tr>
           </thead>
-          <tbody *ngIf="dashService.data()?.tasks as tasks">
+          <tbody>
             <tr
-              *ngFor="let task of filteredTasks(tasks)"
-              [ngClass]="{ 'clickable-row': task.status === 'BLOCKED' }"
-              (click)="openBlockedReason(task)"
+              *ngFor="let task of filteredTasks()"
+              class="clickable-row"
+              (click)="openTaskModal(task)"
             >
               <td class="task-name-cell">
-                <div class="task-name">{{ task.title }}</div>
-                <div class="task-category">{{ task.description || 'General Task' }}</div>
+                <div class="task-name">{{ task.title || task.description || 'Untitled Task' }}</div>
+                <div class="task-category">{{ task.channel_name ? '#' + task.channel_name : 'Click to view details...' }}</div>
               </td>
               <td class="assignee-cell">
                 <div
                   class="avatar-sm"
-                  [style.background]="getAvatarColor(getPersonName(task.owner))"
+                  [style.background]="getAvatarColor(task.assigneeName)"
                 >
-                  {{ getInitials(getPersonName(task.owner)) }}
+                  {{ getInitials(task.assigneeName) }}
                 </div>
-                <span class="assignee-name">{{ getPersonName(task.owner) }}</span>
+                <span class="assignee-name">{{ task.assigneeName }}</span>
               </td>
               <td>
-                <span class="priority-badge" [ngClass]="task.priority?.toLowerCase()">{{
-                  task.priority
+                <span class="priority-badge" [ngClass]="(task.priority || 'low').toLowerCase()">{{
+                  task.priority || 'Normal'
                 }}</span>
               </td>
               <td>
                 <span class="status-badge" [ngClass]="getStatusClass(task.status)">{{
-                  task.status
+                  task.status || 'Todo'
                 }}</span>
               </td>
+              <td class="due-date" [ngClass]="{ 'overdue-text': isOverdue(task) }">
+                <span *ngIf="isOverdue(task)" class="alert-icon-small">⚠️</span>
+                {{ task.due_date ? (task.due_date | date: 'MMM d, y, h:mm a') : '—' }}
+              </td>
               <td class="due-date">
-                {{ task.due_date ? (task.due_date | date: 'mediumDate') : '—' }}
+                {{ (task.created_time || task.created_at || task.date) ? ((task.created_time || task.created_at || task.date) | date: 'MMM d, y, h:mm a') : '—' }}
               </td>
             </tr>
-            <tr *ngIf="filteredTasks(tasks).length === 0">
-              <td colspan="5" class="empty-state">No tasks found matching your filters.</td>
+            <tr *ngIf="filteredTasks().length === 0">
+              <td colspan="6" class="empty-state">No human-assigned tasks found matching your filters.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- BLOCKED REASON MODAL OVERLAY -->
-    <div class="modal-overlay" *ngIf="selectedBlockedTask" (click)="closeModal()">
+    <!-- TASK DETAILS MODAL OVERLAY -->
+    <div class="modal-overlay" *ngIf="selectedTask && !taskToDelete" (click)="closeModal()">
       <div class="modal-content" (click)="$event.stopPropagation()">
         <div class="modal-header">
           <div class="modal-title-wrapper">
-            <span class="alert-icon">🚨</span>
-            <h2 class="modal-title">Blocked Task Details</h2>
+            <span class="alert-icon" *ngIf="selectedTask.status === 'BLOCKED'">🚨</span>
+            <span class="alert-icon" *ngIf="selectedTask.status !== 'BLOCKED'">📋</span>
+            <h2 class="modal-title">Task Details</h2>
           </div>
           <button class="close-btn" (click)="closeModal()">&times;</button>
         </div>
 
         <div class="modal-body">
           <div class="info-group">
-            <h3 class="info-label">Task Title</h3>
-            <p class="info-value">{{ selectedBlockedTask.title }}</p>
+            <h3 class="info-label">FULL TASK DESCRIPTION</h3>
+            <p class="info-value" style="white-space: pre-wrap; word-break: break-word; line-height: 1.5;">
+              {{ selectedTask.description || selectedTask.text || selectedTask.title }}
+            </p>
           </div>
 
-          <div class="info-group">
+          <div class="info-group" *ngIf="selectedTask.status === 'BLOCKED'">
             <h3 class="info-label">Blocker Reason</h3>
             <div class="reason-box">
               <p class="reason-text">
                 {{
-                  selectedBlockedTask.blocked_reason ||
+                  selectedTask.blocked_reason ||
                     'No reason provided yet. Awaiting reply in Slack.'
                 }}
               </p>
@@ -122,8 +141,36 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
           </div>
         </div>
 
-        <div class="modal-footer">
+        <div class="modal-footer modal-footer-between">
+          <button class="btn-danger-outline" (click)="confirmDelete(selectedTask)">
+            🗑️ Delete Task
+          </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DELETE CONFIRMATION POPUP -->
+    <div class="modal-overlay" *ngIf="taskToDelete" (click)="cancelDelete()">
+      <div class="modal-content delete-modal" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <div class="modal-title-wrapper">
+            <span class="alert-icon">⚠️</span>
+            <h2 class="modal-title">Confirm Deletion</h2>
+          </div>
+          <button class="close-btn" (click)="cancelDelete()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <p class="delete-msg">Are you sure you want to delete this task? This action cannot be undone.</p>
+          <div class="preview-box">
+            <strong>{{ taskToDelete.title || taskToDelete.description }}</strong>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="cancelDelete()">Cancel</button>
+          <button class="btn-danger" (click)="executeDelete()">Yes, Delete</button>
         </div>
       </div>
     </div>
@@ -140,6 +187,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         display: flex;
         align-items: center;
         gap: 10px;
+        flex-wrap: wrap;
       }
       .filter-select {
         border: 1px solid #e0e0e0;
@@ -150,6 +198,27 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         background: white;
         cursor: pointer;
         outline: none;
+      }
+      .date-filter-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .clear-date-btn {
+        background: #f0f0f0;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        width: 32px;
+        height: 34px;
+        cursor: pointer;
+        font-size: 13px;
+        color: #555;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .clear-date-btn:hover {
+        background: #e0e0e0;
       }
       .tasks-table-card {
         background: white;
@@ -190,32 +259,30 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         cursor: pointer;
       }
       .clickable-row:hover td {
-        background-color: #fff9f9;
+        background-color: #f8f9fa;
       }
       .task-name-cell {
         padding-right: 16px;
+        overflow: hidden;
       }
       .task-name {
         font-size: 13.5px;
         color: #1a1a2e;
-        font-weight: 500;
+        font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .task-category {
-        font-size: 11px;
-        color: #999;
-        margin-top: 2px;
-        display: -webkit-box;
-        -webkit-line-clamp: 1;
-        -webkit-box-orient: vertical;
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+        white-space: nowrap;
         overflow: hidden;
+        text-overflow: ellipsis;
       }
       .assignee-cell {
-        align-items: center;
         white-space: nowrap;
-        gap: 8px;
       }
       .avatar-sm {
         width: 28px;
@@ -229,7 +296,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         justify-content: center;
         flex-shrink: 0;
         text-transform: uppercase;
-        vertical-align: middle; /* Aligns with text */
+        vertical-align: middle;
         margin-right: 8px;
       }
       .assignee-name {
@@ -248,22 +315,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         font-weight: 600;
         text-transform: uppercase;
       }
-      .priority-badge.low {
-        background: #f5f5f5;
-        color: #666;
-      }
-      .priority-badge.medium {
-        background: #fff8e1;
-        color: #f59e0b;
-      }
-      .priority-badge.high {
-        background: #fff3e0;
-        color: #e67e22;
-      }
-      .priority-badge.urgent {
-        background: #ffeaea;
-        color: #e53e3e;
-      }
+      .priority-badge.low { background: #f5f5f5; color: #666; }
+      .priority-badge.medium { background: #fff8e1; color: #f59e0b; }
+      .priority-badge.high { background: #fff3e0; color: #e67e22; }
+      .priority-badge.urgent { background: #ffeaea; color: #e53e3e; }
       .status-badge {
         display: inline-block;
         padding: 4px 12px;
@@ -273,32 +328,14 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         text-transform: capitalize;
         white-space: nowrap;
       }
-      .status-todo {
-        background: #f5f5f5;
-        color: #666;
-      }
-      .status-completed {
-        background: #e8f5e9;
-        color: #27ae60;
-      }
-      .status-processing {
-        background: #e8eeff;
-        color: #5b4fcf;
-      }
-      .status-blocked {
-        background: #ffeaea;
-        color: #e53e3e;
-      }
-      .due-date {
-        color: #999;
-        font-size: 13px;
-        white-space: nowrap;
-      }
-      .empty-state {
-        text-align: center;
-        color: #888;
-        padding: 30px !important;
-      }
+      .status-todo { background: #e8eeff; color: #5b4fcf; }
+      .status-processing { background: #e3f2fd; color: #1976d2; }
+      .status-resolved { background: #e8f5e9; color: #27ae60; }
+      .status-blocked { background: #ffeaea; color: #e53e3e; }
+      .due-date { color: #555; font-size: 13px; white-space: nowrap; }
+      .overdue-text { color: #e53e3e; font-weight: 600; }
+      .alert-icon-small { margin-right: 4px; }
+      .empty-state { text-align: center; color: #888; padding: 30px !important; }
 
       /* Modal Styles */
       .modal-overlay {
@@ -345,9 +382,7 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         align-items: center;
         gap: 8px;
       }
-      .alert-icon {
-        font-size: 18px;
-      }
+      .alert-icon { font-size: 18px; }
       .modal-title {
         margin: 0;
         font-size: 16px;
@@ -363,18 +398,10 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         line-height: 1;
         transition: color 0.2s;
       }
-      .close-btn:hover {
-        color: #333;
-      }
-      .modal-body {
-        padding: 24px;
-      }
-      .info-group {
-        margin-bottom: 20px;
-      }
-      .info-group:last-child {
-        margin-bottom: 0;
-      }
+      .close-btn:hover { color: #333; }
+      .modal-body { padding: 24px; }
+      .info-group { margin-bottom: 20px; }
+      .info-group:last-child { margin-bottom: 0; }
       .info-label {
         font-size: 11px;
         font-weight: 600;
@@ -401,12 +428,30 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         font-size: 13.5px;
         line-height: 1.5;
       }
+      .delete-msg {
+        margin: 0 0 12px 0;
+        font-size: 14px;
+        color: #333;
+      }
+      .preview-box {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        padding: 10px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        color: #555;
+      }
       .modal-footer {
         padding: 16px 24px;
         background: #fafafa;
         border-top: 1px solid #f0f0f0;
         display: flex;
         justify-content: flex-end;
+        gap: 10px;
+      }
+      .modal-footer-between {
+        justify-content: space-between;
+        align-items: center;
       }
       .btn-primary {
         background: #1a1a2e;
@@ -419,85 +464,210 @@ import { DashboardService } from '../services/dashboard.service'; // Adjust path
         cursor: pointer;
         transition: background 0.2s;
       }
-      .btn-primary:hover {
-        background: #2a2a4a;
+      .btn-primary:hover { background: #2a2a4a; }
+      .btn-secondary {
+        background: #f0f0f0;
+        color: #333;
+        border: 1px solid #d0d0d0;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
       }
+      .btn-secondary:hover { background: #e0e0e0; }
+      .btn-danger-outline {
+        background: transparent;
+        color: #e53e3e;
+        border: 1px solid #e53e3e;
+        padding: 7px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .btn-danger-outline:hover {
+        background: #ffeaea;
+      }
+      .btn-danger {
+        background: #e53e3e;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-danger:hover { background: #c53030; }
     `,
   ],
 })
 export class TasksComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
+  private cdr = inject(ChangeDetectorRef);
 
   tasks: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  dateFilter = '';
+  private isInitialized = false;
 
-  selectedBlockedTask: any = null;
+  selectedTask: any = null;
+  taskToDelete: any = null;
+
+  constructor() {
+    effect(() => {
+      const globalChannel = this.dashService.selectedChannel();
+      const globalDate = this.dashService.selectedDate();
+
+      untracked(() => {
+        if (!this.isInitialized) return;
+        this.loadTasks();
+      });
+    });
+  }
 
   ngOnInit() {
-    this.setDefaultDate();
+    this.loadTasks();
+    this.isInitialized = true;
+  }
+
+  onDateChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.dashService.setSelectedDate(input.value);
     this.loadTasks();
   }
 
-  private setDefaultDate() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    this.dateFilter = `${year}-${month}-${day}`;
+  clearDateFilter(): void {
+    this.dashService.setSelectedDate('');
+    this.loadTasks();
   }
 
   async loadTasks() {
     try {
-      const params: any = {};
-      const activeChannel = this.dashService.activeChannelId();
-      if (activeChannel) params.channel = activeChannel;
-      if (this.dateFilter) params.date = this.dateFilter;
+      const url = this.dashService.getFilteredUrl('/tasks');
+      const response: any = await firstValueFrom(this.http.get(url)).catch(() => []);
+      const rawList = Array.isArray(response) ? response : (response?.tasks || response?.data || []);
 
-      const tasks: any = (await this.http.get('/api/tasks', { params }).toPromise()) || [];
+      this.tasks = rawList
+        .map((item: any) => {
+          const rawAssignee = item.assigned_to || item.owner || item.assignee;
+          if (this.isBotUser(rawAssignee)) return null;
 
-      this.tasks = tasks.filter((t: any) => {
-        const status = (t.status || '').toLowerCase();
-        return status !== 'done' && status !== 'completed';
-      });
+          let assigneeName = this.extractStringName(rawAssignee);
+          if (assigneeName === 'Unassigned' || this.isBotUser(assigneeName)) return null;
+
+          let cleanTitle = item.title || item.description || '';
+          cleanTitle = cleanTitle.replace(/<@[A-Z0-9]+>/g, '').trim();
+
+          return {
+            ...item,
+            title: cleanTitle,
+            assigneeName
+          };
+        })
+        .filter((item: boolean | Record<string, any>) => item !== null);
+
+      this.cdr.detectChanges();
     } catch (err) {
       console.error('Failed to load tasks:', err);
+      this.tasks = [];
+      this.cdr.detectChanges();
     }
   }
 
-  filteredTasks(tasks: any[]): any[] {
-    const list = tasks || this.tasks;
-    if (!list) return [];
-    return list.filter((task) => {
-      const matchStatus = this.statusFilter === 'all' || task.status === this.statusFilter;
-      const matchPriority = this.priorityFilter === 'all' || task.priority === this.priorityFilter;
-      return matchStatus && matchPriority;
+  filteredTasks(): any[] {
+    const selectedDate = this.dashService.selectedDate();
+    return this.tasks.filter((task) => {
+      const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
+      const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
+      const taskDate = task.created_time || task.created_at;
+      const matchDate = this.matchesSelectedDate(taskDate, selectedDate);
+      return matchStatus && matchPriority && matchDate;
     });
   }
 
-  getStatusClass(status: string): string {
-    return status ? `status-${status.toLowerCase()}` : '';
+  isOverdue(task: any): boolean {
+    if (!task.due_date) return false;
+    const status = (task.status || '').toLowerCase();
+    if (status === 'resolved') return false;
+    return new Date(task.due_date).getTime() < Date.now();
   }
 
-  getPersonName(user?: any): string {
-    if (!user) return 'Unassigned';
-    const candidate = user.display_name || user.real_name || user.name || '';
-    return this.normalizeName(candidate) || 'Unassigned';
+  private isBotUser(m: any): boolean {
+    if (!m) return true;
+    const rawId = (m.id || '').toLowerCase();
+    const rawName = (
+      typeof m === 'string'
+        ? m
+        : (m.real_name || m.display_name || m.name || '')
+    ).toLowerCase();
+
+    return (
+      rawId === 'uslackbot' ||
+      rawName.includes('github') ||
+      rawName.includes('jira') ||
+      rawName.includes('jirabot') ||
+      rawName.includes('slackbot') ||
+      rawName.includes('ai_engineering') ||
+      rawName.includes('bot') ||
+      rawName.includes('app') ||
+      rawName.includes('aiem') ||
+      rawName === 'unknown'
+    );
   }
 
-  private normalizeName(value?: string): string {
-    if (!value) return '';
-    const trimmed = String(value).trim();
-    if (!trimmed) return '';
-    if (trimmed.includes('@')) {
-      return trimmed
-        .split('@')[0]
-        .replace(/[._-]+/g, ' ')
-        .trim();
+  private extractStringName(input: any): string {
+    if (!input || this.isBotUser(input)) return 'Unassigned';
+
+    let raw = '';
+    if (typeof input === 'string') raw = input;
+    else if (typeof input === 'object') {
+      raw = input.real_name || input.display_name || input.name || 'Unassigned';
+    } else {
+      raw = String(input);
     }
-    return trimmed.replace(/[._-]+/g, ' ').trim();
+
+    raw = raw.trim();
+    if (raw.startsWith('<@') && raw.endsWith('>')) {
+      raw = raw.slice(2, -1);
+    }
+    if (raw.includes('@') && !raw.startsWith('<')) {
+      raw = raw.split('@')[0].replace(/[._-]+/g, ' ').trim();
+    } else {
+      raw = raw.replace(/[._-]+/g, ' ').trim();
+    }
+
+    const normalized = raw || 'Unassigned';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
+    if (!targetDateStr) return true;
+    if (!itemDate) return false;
+    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
+      return true;
+    }
+    let numericDate = Number(itemDate);
+    let dateObj: Date;
+    if (!isNaN(numericDate) && numericDate > 0) {
+      if (numericDate < 10000000000) numericDate *= 1000;
+      dateObj = new Date(numericDate);
+    } else {
+      dateObj = new Date(itemDate);
+    }
+    if (isNaN(dateObj.getTime())) return true;
+    const yyyy = dateObj.getFullYear();
+    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dd = String(dateObj.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}` === targetDateStr;
+  }
+
+  getStatusClass(status: string): string {
+    return status ? `status-${status.toLowerCase()}` : 'status-todo';
   }
 
   getInitials(name?: string): string {
@@ -516,13 +686,39 @@ export class TasksComponent implements OnInit {
     return colors[Math.abs(hash) % colors.length];
   }
 
-  openBlockedReason(task: any) {
-    if (task.status === 'BLOCKED') {
-      this.selectedBlockedTask = task;
-    }
+  openTaskModal(task: any) {
+    this.selectedTask = task;
   }
 
   closeModal() {
-    this.selectedBlockedTask = null;
+    this.selectedTask = null;
+  }
+
+  confirmDelete(task: any) {
+    this.taskToDelete = task;
+  }
+
+  cancelDelete() {
+    this.taskToDelete = null;
+  }
+
+  async executeDelete() {
+    if (!this.taskToDelete) return;
+    const taskId = this.taskToDelete._id || this.taskToDelete.id;
+
+    try {
+      await firstValueFrom(this.http.delete(`/api/tasks/${taskId}`)).catch(() => {});
+
+      this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
+      this.taskToDelete = null;
+      this.selectedTask = null;
+      this.cdr.detectChanges();
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+      this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
+      this.taskToDelete = null;
+      this.selectedTask = null;
+      this.cdr.detectChanges();
+    }
   }
 }

@@ -5,14 +5,41 @@ import { StandupSummaryComponent } from './standup-summary/standup-summary';
 import { TeamComponent } from './team/team';
 import { IntegrationsComponent } from './integrations/integrations';
 import { IssuesComponent } from './issues/issues';
+import { LoginComponent } from './login/login.component';
+import { authGuard } from './guards/auth.guard';
 
 export const routes: Routes = [
   { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
-  { path: 'dashboard', component: DashboardComponent },
-  { path: 'tasks', component: TasksComponent },
-  { path: 'standup-summary', component: StandupSummaryComponent },
-  { path: 'team', component: TeamComponent },
-  { path: 'integrations', component: IntegrationsComponent },
-  { path: 'issues', component: IssuesComponent },
+  { path: 'login', component: LoginComponent },
+  {
+    path: 'dashboard',
+    component: DashboardComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'tasks',
+    component: TasksComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'standup-summary',
+    component: StandupSummaryComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'team',
+    component: TeamComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'integrations',
+    component: IntegrationsComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'issues',
+    component: IssuesComponent,
+    canActivate: [authGuard],
+  },
   { path: '**', redirectTo: 'dashboard' },
 ];

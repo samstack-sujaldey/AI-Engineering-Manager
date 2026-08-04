@@ -142,6 +142,46 @@ async function fetchChannelHistory(client, channelId, limit) {
   return messages.reverse();
 }
 
+// 🟢 Safely download attachments to a temporary directory
+async function downloadSlackAttachments(files = [], token) {
+  const crypto = require('crypto');
+  const downloaded = [];
+  
+  // 🟢 Dynamically resolve the temp folder inside the backend directory for any environment (local or production)
+  const localTempDir = path.join(process.cwd(), 'temp');
+
+  try {
+    // Automatically creates the 'temp' folder if it doesn't exist yet
+    await fs.mkdir(localTempDir, { recursive: true });
+  } catch (err) {
+    console.error(`[slackSync] Failed to create local temp directory:`, err.message);
+  }
+
+  for (const f of files) {
+    const downloadUrl = f.urlPrivateDownload || f.urlPrivate;
+    if (!downloadUrl) continue;
+    
+    try {
+      const response = await axios.get(downloadUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'arraybuffer',
+      });
+      const ext = path.extname(f.fileName || '') || '';
+      const tempName = `${crypto.randomUUID()}${ext}`;
+      
+      // 🟢 Save the file directly into the auto-provisioned backend/temp folder
+      const localPath = path.join(localTempDir, tempName);
+      
+      await fs.writeFile(localPath, response.data);
+      downloaded.push({ ...f, localPath });
+      console.log(`[slackSync] Successfully downloaded attachment: ${f.fileName} -> ${localPath}`);
+    } catch (err) {
+      console.error(`[slackSync] Failed to download file ${f.fileName}:`, err.message);
+    }
+  }
+  return downloaded;
+}
+
 async function syncFromSlack(messageProcessor, options = {}) {
   const {
     limitPerChannel = parseInt(process.env.SLACK_SYNC_LIMIT || '50', 10),
@@ -216,7 +256,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
       }
 
       const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
-      await Team.findOneAndUpdate(
+      await Team.findOneAndReplace(
         { channel_id: channel.id },
         {
           team_id: `team_${channel.id}`,
@@ -277,6 +317,22 @@ async function syncFromSlack(messageProcessor, options = {}) {
         const cleanChanName = (channel.name || channel.id).replace(/^#/, '').trim();
         const directory = await buildDirectory(client, safeText, userCache);
 
+       
+
+        let downloadedFiles = [];
+        if (hasFiles) {
+          const rawAttachments = msg.files.map((f) => ({
+            slackFileId: f.id,
+            fileName: f.name,
+            mimeType: f.mimetype,
+            fileType: f.filetype,
+            urlPrivateDownload: f.url_private_download || f.url_private,
+            urlPrivate: f.url_private,
+            size: f.size,
+          }));
+          downloadedFiles = await downloadSlackAttachments(rawAttachments, downloadToken);
+        }
+
         const processed = await messageProcessor.process(
           {
             text: safeText,
@@ -290,6 +346,7 @@ async function syncFromSlack(messageProcessor, options = {}) {
             is_edit: false,
             user_directory: directory,
             thread_context: [],
+            local_attachments: downloadedFiles, // 🟢 Passes local attachments to your unified utility pipeline
           },
           { quiet: true }
         );
@@ -316,5 +373,6 @@ module.exports = {
   createSlackClient, 
   buildDirectory, 
   resolveUser,
-  listChannels
+  listChannels,
+  downloadSlackAttachments
 };

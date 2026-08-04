@@ -1,5 +1,5 @@
 export const environment = {
   production: false,
-  apiUrl: 'http://localhost:4000/api',
-  socketUrl: 'http://localhost:4000',
+  apiUrl: 'https://ai-engineering-manager-production.up.railway.app/api',
+  socketUrl: 'https://ai-engineering-manager-production.up.railway.app/',
 };

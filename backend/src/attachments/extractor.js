@@ -15,7 +15,7 @@ const {
 /**
  * Extract a single attachment.
  */
-async function extractAttachment(file) {
+async function extractAttachment(file, captionText = "") {
   if (!file) {
     throw new Error("Attachment is required.");
   }
@@ -28,22 +28,22 @@ async function extractAttachment(file) {
   try {
     // Images
     if (mimeType.startsWith("image/")) {
-      result = await analyzeImage(file);
+      result = await analyzeImage(file, captionText);
     }
 
     // PDF
     else if (mimeType === "application/pdf" || extension === ".pdf") {
-      result = await extractPdf(file);
+      result = await extractPdf(file, captionText);
     }
 
     // JSON
     else if (mimeType === "application/json" || extension === ".json") {
-      result = await readJsonFile(file);
+      result = await readJsonFile(file, captionText);
     }
 
     // CSV
     else if (mimeType === "text/csv" || extension === ".csv") {
-      result = await readCsvFile(file);
+      result = await readCsvFile(file, captionText);
     }
 
     // DOCX
@@ -52,7 +52,7 @@ async function extractAttachment(file) {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
       extension === ".docx"
     ) {
-      result = await extractDocx(file);
+      result = await extractDocx(file, captionText);
     }
 
     // Excel
@@ -62,7 +62,7 @@ async function extractAttachment(file) {
       extension === ".xlsx" ||
       extension === ".xls"
     ) {
-      result = await extractExcel(file);
+      result = await extractExcel(file, captionText);
     }
 
     // PowerPoint
@@ -71,7 +71,7 @@ async function extractAttachment(file) {
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
       extension === ".pptx"
     ) {
-      result = await extractPresentation(file);
+      result = await extractPresentation(file, captionText);
     }
 
     // Text / Log / XML / HTML
@@ -79,7 +79,7 @@ async function extractAttachment(file) {
       mimeType.startsWith("text/") ||
       [".txt", ".log", ".xml", ".html", ".htm", ".md"].includes(extension)
     ) {
-      result = await readTextFile(file);
+      result = await readTextFile(file, captionText);
     }
 
     // Unknown
@@ -106,13 +106,13 @@ async function extractAttachment(file) {
 /**
  * Extract multiple attachments.
  */
-async function extractAttachments(files = []) {
+async function extractAttachments(files = [], captionText = "") {
   if (!Array.isArray(files) || files.length === 0) {
     return [];
   }
 
   const extracted = await Promise.all(
-    files.map((file) => extractAttachment(file)),
+    files.map((file) => extractAttachment(file,captionText)),
   );
 
   return extracted;

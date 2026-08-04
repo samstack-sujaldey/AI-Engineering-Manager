@@ -1,3 +1,4 @@
+require("dotenv").config();
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -20,6 +21,8 @@ const { findWorkByMessageTs } = require("./services/similarity");
 const { Discussion, Team } = require("./models");
 const { createSlackApp } = require("./slack/app");
 const { startReminderScheduler } = require("./jobs/reminders");
+const slackAuthRoutes = require("./routes/slackAuth");
+const { createAuthRouter } = require("./routes/auth");
 
 // Load Standup Scheduler & Retention Cleanup
 require("./config/scheduler");
@@ -28,6 +31,29 @@ const { cleanupCompletedWork } = require("./utils/retention");
 async function main() {
 	await mongoose.connect(config.mongodbUri);
 	console.log("[db] Connected to MongoDB");
+
+	const bcrypt = require("bcryptjs");
+	const defaultAdminUsername = process.env.ADMIN_USERNAME || "admin";
+	const defaultAdminPassword = process.env.ADMIN_PASSWORD || "admin123";
+	const existingAdmin = await mongoose.connection.db
+		.collection("users")
+		.findOne({ username: defaultAdminUsername });
+	if (!existingAdmin) {
+		const hashed = await bcrypt.hash(defaultAdminPassword, 10);
+		await mongoose.connection.db.collection("users").insertOne({
+			username: defaultAdminUsername,
+			password: hashed,
+			role: "admin",
+			email: "",
+			display_name: "Admin",
+			active: true,
+			created_at: new Date(),
+			updated_at: new Date(),
+		});
+		console.log(
+			`[auth] Default admin user created: ${defaultAdminUsername}`,
+		);
+	}
 
 	await vectorDbService.init();
 
@@ -56,6 +82,8 @@ async function main() {
 	app.use(morgan(config.nodeEnv === "production" ? "combined" : "dev"));
 
 	app.use("/api", createApiRouter({ messageProcessor }));
+	app.use("/api/slack", slackAuthRoutes);
+	app.use("/api/auth", createAuthRouter());
 
 	// Pipeline Endpoint: Sync historical channel activity
 	app.post("/api/slack/pipeline/:channelId", async (req, res) => {
@@ -200,34 +228,39 @@ async function main() {
 				`[pipeline complete] Extracted Tasks: ${tasks.length} | Issues: ${issues.length} | Discussions: ${discussions.length}`,
 			);
 
-      try {
-        const members = Object.values(userDirectory).map((u) => ({
-          id: u.id || "",
-          name: u.name || "",
-          display_name: u.display_name || u.real_name || u.name || "",
-          real_name: u.real_name || u.name || "",
-          email: u.email || "",
-        }));
+			try {
+				const members = Object.values(userDirectory).map((u) => ({
+					id: u.id || "",
+					name: u.name || "",
+					display_name: u.display_name || u.real_name || u.name || "",
+					real_name: u.real_name || u.name || "",
+					email: u.email || "",
+				}));
 
-        const teamId = `team_${channelId}`;
-        await Team.findOneAndUpdate(
-          { channel_id: channelId },
-          {
-            team_id: teamId,
-            channel_id: channelId,
-            channel_name: req.body?.channel_name || channelId,
-            workspace_id: req.body?.workspace_id || "",
-            team: req.body?.team || "",
-            members,
-            member_count: members.length,
-            last_synced_at: new Date(),
-          },
-          { upsert: true, new: true }
-        );
-        console.log(`[pipeline] Team synced for channel: ${channelId} (${members.length} members)`);
-      } catch (teamErr) {
-        console.warn(`[pipeline warning] Failed to sync team:`, teamErr.message);
-      }
+				const teamId = `team_${channelId}`;
+				await Team.findOneAndReplace(
+					{ channel_id: channelId },
+					{
+						team_id: teamId,
+						channel_id: channelId,
+						channel_name: req.body?.channel_name || channelId,
+						workspace_id: req.body?.workspace_id || "",
+						team: req.body?.team || "",
+						members,
+						member_count: members.length,
+						last_synced_at: new Date(),
+					},
+					{ upsert: true, new: true },
+				);
+				console.log(
+					`[pipeline] Team synced for channel: ${channelId} (${members.length} members)`,
+				);
+			} catch (teamErr) {
+				console.warn(
+					`[pipeline warning] Failed to sync team:`,
+					teamErr.message,
+				);
+			}
 
 			return res.json({
 				success: true,

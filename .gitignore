@@ -55,3 +55,8 @@ Thumbstacks.db
 ehthumbs.db
 Icon?
 Thumbs.db
+
+.kilo
+
+# ChromaDB
+docker/chromadb/**

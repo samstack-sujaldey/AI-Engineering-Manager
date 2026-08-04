@@ -1,6 +1,6 @@
+// 1. Import the CloudClient from the chromadb package
 const { ChromaClient } = require("chromadb");
 
-// 1. Create a dummy embedding function to bypass the default-embed crash
 const dummyEmbeddingFunction = {
 	generate: async (texts) => {
 		return texts.map(() => []);
@@ -9,16 +9,24 @@ const dummyEmbeddingFunction = {
 
 class VectorDbService {
 	constructor() {
-		// 2. Fix deprecation warning by using host and port instead of 'path'
+		// Safely parse the URL to extract the host, port, and protocol
+		const chromaUrl = new URL(
+			process.env.CHROMA_URL,
+		);
+
+		// Initialize the standard ChromaClient for self-hosted instances
 		this.client = new ChromaClient({
-			host: "localhost",
-			port: 8000,
-			ssl: false,
+			ssl: chromaUrl.protocol === "https:",
+			host: chromaUrl.hostname,
+			port: parseInt(
+				chromaUrl.port ||
+					(chromaUrl.protocol === "https:" ? "443" : "80"),
+			),
 		});
+
 		this.collectionName = "slack_chat_history";
 		this.collection = null;
 	}
-
 	async init() {
 		try {
 			// 3. Pass the dummy function when getting/creating the collection
