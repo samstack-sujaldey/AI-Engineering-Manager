@@ -25,13 +25,13 @@ declare var ScrollReveal: any;
 
         <form [formGroup]="form" (ngSubmit)="onSubmit()" class="login-form">
           <div class="input-group sr-item">
-            <label for="username">Username</label>
+            <label for="email">Email</label>
             <input
-              id="username"
-              type="text"
-              formControlName="username"
-              autocomplete="username"
-              placeholder="Enter your username"
+              id="email"
+              type="email"
+              formControlName="email"
+              autocomplete="email"
+              placeholder="Enter your email"
             />
           </div>
 
@@ -50,10 +50,6 @@ declare var ScrollReveal: any;
             {{ auth.loading() ? 'Signing in...' : 'Sign In' }}
           </button>
         </form>
-
-        <p class="hint-text sr-item">
-          Default admin: <b>admin</b> / <b>admin123</b>
-        </p>
       </div>
     </div>
   `,
@@ -207,8 +203,8 @@ export class LoginComponent implements AfterViewInit {
   constructor(fb: FormBuilder, auth: AuthService, private router: Router) {
     this.auth = auth; //[cite: 19]
     this.form = fb.group({
-      username: ['', Validators.required], //[cite: 19]
-      password: ['', Validators.required], //[cite: 19]
+     email: ['', [Validators.required]], 
+      password: ['', Validators.required],
     });
   }
 
@@ -225,8 +221,8 @@ export class LoginComponent implements AfterViewInit {
 
   async onSubmit(): Promise<void> {
     if (this.form.invalid) return; //[cite: 19]
-    const { username, password } = this.form.value; //[cite: 19]
-    const ok = await this.auth.login(username, password); //[cite: 19]
+    const { email, password } = this.form.value; //[cite: 19]
+    const ok = await this.auth.login(email, password); //[cite: 19]
     if (ok) {
       this.router.navigate(['/dashboard']); //[cite: 19]
     }

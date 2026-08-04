@@ -6,6 +6,7 @@ import { TeamComponent } from './team/team';
 import { IntegrationsComponent } from './integrations/integrations';
 import { IssuesComponent } from './issues/issues';
 import { LoginComponent } from './login/login.component';
+import { NewUserComponent } from './new_user/new_user';
 import { authGuard } from './guards/auth.guard';
 
 export const routes: Routes = [
@@ -39,6 +40,11 @@ export const routes: Routes = [
   {
     path: 'issues',
     component: IssuesComponent,
+    canActivate: [authGuard],
+  },
+  {
+    path: 'new-user',
+    component:NewUserComponent,
     canActivate: [authGuard],
   },
   { path: '**', redirectTo: 'dashboard' },
