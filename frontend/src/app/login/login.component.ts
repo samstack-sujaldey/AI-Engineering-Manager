@@ -51,9 +51,6 @@ declare var ScrollReveal: any;
           </button>
         </form>
 
-        <p class="hint-text sr-item">
-          Default admin: <b>admin</b> / <b>admin123</b>
-        </p>
       </div>
     </div>
   `,

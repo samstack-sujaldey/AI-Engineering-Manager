@@ -1,6 +1,6 @@
-const { ChromaClient } = require("chromadb");
+// 1. Import the CloudClient from the chromadb package
+const { CloudClient } = require("chromadb");
 
-// 1. Create a dummy embedding function to bypass the default-embed crash
 const dummyEmbeddingFunction = {
 	generate: async (texts) => {
 		return texts.map(() => []);
@@ -9,12 +9,13 @@ const dummyEmbeddingFunction = {
 
 class VectorDbService {
 	constructor() {
-		// 2. Fix deprecation warning by using host and port instead of 'path'
-		this.client = new ChromaClient({
-			host: "localhost",
-			port: 8000,
-			ssl: false,
+		// 2. Initialize the CloudClient with your Chroma Cloud credentials
+		this.client = new CloudClient({
+			tenant: process.env.CHROMA_TENANT, // e.g., "default_tenant" or your specific tenant name
+			database: process.env.CHROMA_DATABASE, // e.g., "default_database" or your specific database name
+			apiKey: process.env.CHROMA_API_KEY, // Your Chroma Cloud API key
 		});
+
 		this.collectionName = "slack_chat_history";
 		this.collection = null;
 	}
