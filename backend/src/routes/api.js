@@ -64,7 +64,7 @@ router.get("/discussions/daily-summary", async (req, res) => {
       raw_date: rawDateStr,
       date: targetBusinessDateStr,
       channel: channel || null,
-      summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetBusinessDateStr}\nSummary for ${targetBusinessDateStr} is not cached.`,
+      summary: `Hi Everyone, please find Today Stand-up MOM\n\nDate: ${targetBusinessDateStr}\n`,
       tasks_count: 0,
       issues_count: 0,
       cached: false,
