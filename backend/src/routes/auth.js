@@ -4,28 +4,32 @@ const jwt = require('jsonwebtoken');
 const { User } = require('../models');
 const config = require('../config');
 
+// Extract your middleware at the top for cleaner code
+const {verifyToken, requireAdmin } = require('../middleware/auth'); 
+
 function createAuthRouter() {
   const router = express.Router();
 
+  // 1. LOGIN ROUTE (Public)
   router.post('/login', async (req, res) => {
     try {
-      const { username, password } = req.body || {};
-      if (!username || !password) {
-        return res.status(400).json({ error: 'Username and password are required' });
+      const { email, password } = req.body || {};
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
       }
 
-      const user = await User.findOne({ username, active: true }).lean();
+      const user = await User.findOne({ email, active: true }).lean();
       if (!user) {
-        return res.status(401).json({ error: 'Invalid username or password' });
+        return res.status(401).json({ error: 'Invalid email or password' });
       }
 
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) {
-        return res.status(401).json({ error: 'Invalid username or password' });
+        return res.status(401).json({ error: 'Invalid email or password' });
       }
 
       const token = jwt.sign(
-        { username: user.username, role: user.role, display_name: user.display_name },
+        { email: user.email, role: user.role },
         config.jwtSecret,
         { expiresIn: '8h' }
       );
@@ -33,10 +37,8 @@ function createAuthRouter() {
       res.json({
         token,
         user: {
-          username: user.username,
-          role: user.role,
           email: user.email,
-          display_name: user.display_name,
+          role: user.role,
         },
       });
     } catch (err) {
@@ -45,29 +47,29 @@ function createAuthRouter() {
     }
   });
 
+  // 2. REGISTER ROUTE (Public/Self-Serve)
   router.post('/register', async (req, res) => {
     try {
-      const { username, password, role, email, display_name } = req.body || {};
-      if (!username || !password) {
-        return res.status(400).json({ error: 'Username and password are required' });
+      const { password, role, email, display_name } = req.body || {};
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
       }
 
-      const exists = await User.findOne({ username }).lean();
+      const exists = await User.findOne({ email }).lean();
       if (exists) {
-        return res.status(409).json({ error: 'Username already exists' });
+        return res.status(409).json({ error: 'Email already exists' });
       }
 
       const hashed = await bcrypt.hash(password, 10);
       const user = await User.create({
-        username,
+        email: email,
         password: hashed,
         role: role || 'developer',
-        email: email || '',
-        display_name: display_name || username,
+        display_name: display_name,
       });
 
       const token = jwt.sign(
-        { username: user.username, role: user.role, display_name: user.display_name },
+        { email: user.email, role: user.role },
         config.jwtSecret,
         { expiresIn: '8h' }
       );
@@ -75,10 +77,8 @@ function createAuthRouter() {
       res.status(201).json({
         token,
         user: {
-          username: user.username,
           role: user.role,
           email: user.email,
-          display_name: user.display_name,
         },
       });
     } catch (err) {
@@ -87,16 +87,61 @@ function createAuthRouter() {
     }
   });
 
-  router.get('/me', require('../middleware/auth').authMiddleware(), async (req, res) => {
+  // 🟢 3. NEW: CREATE USER ROUTE (Protected & Admin Only)
+  // This uses your authMiddleware() to ensure the user is logged in
+  router.post('/create-user', verifyToken, requireAdmin, async (req, res) => {
     try {
-      const user = await User.findOne({ username: req.user.username }).lean();
+      // Security Check: Only Admins can hit this route!
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Forbidden: Only admins can provision new accounts.' });
+      }
+
+      const { email, password, role, active } = req.body || {};
+      
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
+      }
+
+      const exists = await User.findOne({ email }).lean();
+      if (exists) {
+        return res.status(409).json({ error: 'A user with this email already exists' });
+      }
+
+      const hashed = await bcrypt.hash(password, 10);
+      
+      const user = await User.create({
+        email: email,
+        password: hashed,
+        role: role || 'developer',
+        active: active !== undefined ? active : true,
+      });
+
+      // ⚠️ Notice we DO NOT send back a token here! 
+      // The admin creating the account needs to stay logged in as the admin.
+      res.status(201).json({
+        message: 'User created successfully',
+        email: user.email,
+        role: user.role
+      });
+    } catch (err) {
+      console.error('[auth/create-user]', err);
+      res.status(500).json({ error: 'Failed to create user' });
+    }
+  });
+
+  // 4. ME ROUTE (Protected)
+  router.get('/me', verifyToken, async (req, res) => {
+    try {
+      // 🟢 FIX: Search by req.user.email, since username is gone!
+      const user = await User.findOne({ email: req.user.email }).lean();
+      
       if (!user || !user.active) {
         return res.status(401).json({ error: 'User not found or inactive' });
       }
+      
       res.json({
-        username: user.username,
-        role: user.role,
         email: user.email,
+        role: user.role,
         display_name: user.display_name,
       });
     } catch (err) {
