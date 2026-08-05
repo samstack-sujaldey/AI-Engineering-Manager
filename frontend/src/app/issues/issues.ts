@@ -55,12 +55,12 @@ import { DashboardService } from '../services/dashboard.service';
               <th style="width: 24%;">ASSIGNED TO</th>
               <th style="width: 14%;">PRIORITY</th>
               <th style="width: 10%;">STATUS</th>
-              <th style="width: 14%; padding-right: 28px;">CREATED AT</th>
+              <th style="width: 14%; text-align: right; padding-right: 20px;">CREATED AT</th>
             </tr>
           </thead>
           <tbody>
             <tr
-              *ngFor="let issue of filteredIssues()"
+              *ngFor="let issue of filteredIssues(); let i = index"
               class="clickable-row"
               (click)="openIssueModal(issue)"
             >
@@ -87,7 +87,7 @@ import { DashboardService } from '../services/dashboard.service';
                   issue.status || 'Open'
                 }}</span>
               </td>
-              <td class="due-date" style="padding-right: 28px;">
+              <td class="due-date" [ngClass]="getDateColorClass(i)">
                 {{ (issue.created_time || issue.created_at || issue.date || issue.updated_time) ? ((issue.created_time || issue.created_at || issue.date || issue.updated_time) | date: 'MMM d, y, h:mm a') : '—' }}
               </td>
             </tr>
@@ -311,19 +311,43 @@ import { DashboardService } from '../services/dashboard.service';
       .priority-badge.medium { background: #fff8e1; color: #f59e0b; }
       .priority-badge.high { background: #fff3e0; color: #e67e22; }
       .priority-badge.urgent { background: #ffeaea; color: #e53e3e; }
+
+      /* --- Status Badge Styles --- */
       .status-badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 5px;
-        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 11.5px;
         font-weight: 600;
         text-transform: capitalize;
+        letter-spacing: 0.3px;
         white-space: nowrap;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.03);
       }
-      .status-open { background: #e8eeff; color: #5b4fcf; }
-      .status-resolved { background: #e8f5e9; color: #27ae60; }
-      .status-blocked { background: #ffeaea; color: #e53e3e; }
-      .due-date { color: #999; font-size: 13px; white-space: nowrap; }
+      .status-open { background: #eef2ff; color: #4f46e5; }
+      .status-resolved { background: #ecfdf5; color: #059669; }
+      .status-blocked { background: #fef2f2; color: #dc2626; }
+      .status-hold { background: #fffbeb; color: #d97706; }
+
+      /* --- Created At / Date Column Styles & Alignment --- */
+      .due-date {
+        font-size: 12.5px;
+        font-weight: 500;
+        white-space: nowrap;
+        letter-spacing: -0.2px;
+        text-align: right;
+        padding-right: 20px !important;
+      }
+      
+      /* Vibrant distinct color rotations for dates */
+      .date-color-0 { color: #2563eb; } /* Blue */
+      .date-color-1 { color: #7c3aed; } /* Purple */
+      .date-color-2 { color: #059669; } /* Emerald */
+      .date-color-3 { color: #d97706; } /* Amber */
+      .date-color-4 { color: #dc2626; } /* Rose */
+
       .empty-state { text-align: center; color: #888; padding: 30px !important; }
 
       /* Modal Styles */
@@ -573,27 +597,23 @@ export class IssuesComponent implements OnInit {
     }
   }
 
-    filteredIssues(): any[] {
+  filteredIssues(): any[] {
     const selectedDate = this.dashService.selectedDate();
     
-    // 1. Filter issues based on status, priority, and date match rules
     const filtered = this.issues.filter((issue) => {
       const matchStatus = this.statusFilter === 'all' || (issue.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (issue.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       
       const issueDate = issue.created_time || issue.created_at || issue.date || issue.updated_time;
-      
-      // Pass the issue's status to trigger the carry-forward logic
       const matchDate = this.matchesSelectedDate(issueDate, selectedDate, issue.status);
       
       return matchStatus && matchPriority && matchDate;
     });
 
-    // 2. Sort issues date-wise: newest creation dates/timestamps shown above older ones (30th above 29th)
     return filtered.sort((a, b) => {
       const dateA = new Date(a.created_at || a.created_time || a.date || a.updated_time || 0).getTime();
       const dateB = new Date(b.created_at || b.created_time || b.date || b.updated_time || 0).getTime();
-      return dateB - dateA; // Descending order
+      return dateB - dateA;
     });
   }
 
@@ -645,7 +665,7 @@ export class IssuesComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
- private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
+  private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
     if (!targetDateStr) return true;
     if (!itemDate) return false;
 
@@ -666,8 +686,6 @@ export class IssuesComponent implements OnInit {
 
     if (itemDateStr === targetDateStr) return true;
 
-    // 🟢 Carry-forward: If the issue was created in the past but is NOT resolved,
-    // it continues to show up on the selected date.
     if (!this.isResolvedStatus(status)) {
       const [ty, tm, td] = targetDateStr.split('-').map(Number);
       if (ty && tm && td) {
@@ -681,6 +699,10 @@ export class IssuesComponent implements OnInit {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : 'status-open';
+  }
+
+  getDateColorClass(index: number): string {
+    return `date-color-${index % 5}`;
   }
 
   getInitials(name?: string): string {

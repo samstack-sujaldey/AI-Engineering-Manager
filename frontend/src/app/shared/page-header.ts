@@ -11,15 +11,7 @@ import { AuthService } from '../services/auth.service';
     <div class="page-header">
       <h1 class="page-title">{{ title }}</h1>
       <div class="header-actions">
-        <div class="search-box">
-          <span class="search-label">search</span>
-          <input type="text" class="search-input" [placeholder]="searchPlaceholder" />
-        </div>
         <ng-content></ng-content>
-        <div class="auth-section" *ngIf="auth.user()">
-          <span class="role-badge">{{ auth.user()?.role }}</span>
-          <button class="logout-btn" (click)="logout()">Logout</button>
-        </div>
       </div>
     </div>
   `,
