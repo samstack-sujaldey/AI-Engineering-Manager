@@ -2,9 +2,11 @@ import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from 
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service';
+import { AuthService } from '../services/auth.service'; // 🟢 Added AuthService
+import { environment } from '../../environments/environment'; // 🟢 Added environment
 
 @Component({
   selector: 'app-tasks',
@@ -142,7 +144,7 @@ import { DashboardService } from '../services/dashboard.service';
         </div>
 
         <div class="modal-footer modal-footer-between">
-          <button class="btn-danger-outline" (click)="confirmDelete(selectedTask)">
+          <button *ngIf="auth.isAdmin()" class="btn-danger-outline"  (click)="confirmDelete(selectedTask)">
             🗑️ Delete Task
           </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
@@ -509,6 +511,7 @@ export class TasksComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
+  auth = inject(AuthService);
 
   tasks: any[] = [];
   statusFilter = 'all';
@@ -585,7 +588,7 @@ export class TasksComponent implements OnInit {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       const taskDate = task.created_time || task.created_at;
-      const matchDate = this.matchesSelectedDate(taskDate, selectedDate);
+      const matchDate = this.matchesSelectedDate(taskDate, selectedDate, task.status);
       return matchStatus && matchPriority && matchDate;
     });
   }
@@ -645,12 +648,15 @@ export class TasksComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
+  private isCompletedStatus(status: any): boolean {
+    const s = String(status || '').toLowerCase();
+    return s === 'completed' || s === 'done' || s === 'complete';
+  }
+
+  private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
     if (!targetDateStr) return true;
     if (!itemDate) return false;
-    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
-      return true;
-    }
+
     let numericDate = Number(itemDate);
     let dateObj: Date;
     if (!isNaN(numericDate) && numericDate > 0) {
@@ -660,10 +666,27 @@ export class TasksComponent implements OnInit {
       dateObj = new Date(itemDate);
     }
     if (isNaN(dateObj.getTime())) return true;
+
     const yyyy = dateObj.getFullYear();
     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(dateObj.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}` === targetDateStr;
+    const itemDateStr = `${yyyy}-${mm}-${dd}`;
+
+    if (itemDateStr === targetDateStr) return true;
+
+    // Carry-forward: a still-pending task created on/before the selected
+    // date should keep showing up on every later day (today, tomorrow, ...)
+    // until it's actually completed, instead of only appearing on the exact
+    // day it was created.
+    if (!this.isCompletedStatus(status)) {
+      const [ty, tm, td] = targetDateStr.split('-').map(Number);
+      if (ty && tm && td) {
+        const targetEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        if (dateObj.getTime() <= targetEnd.getTime()) return true;
+      }
+    }
+
+    return false;
   }
 
   getStatusClass(status: string): string {
@@ -707,18 +730,29 @@ export class TasksComponent implements OnInit {
     const taskId = this.taskToDelete._id || this.taskToDelete.id;
 
     try {
-      await firstValueFrom(this.http.delete(`/api/tasks/${taskId}`)).catch(() => {});
+      // 🟢 1. Get token and set headers
+      const token = localStorage.getItem('auth_token');
+      const headers = new HttpHeaders({
+        'Authorization': `Bearer ${token}`
+      });
 
+      // 🟢 2. Send the secure request using environment.apiUrl
+      await firstValueFrom(
+        this.http.delete(`${environment.apiUrl}/tasks/${taskId}`, { headers })
+      );
+
+      // 3. Only remove from UI if the server succeeded
       this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
       this.taskToDelete = null;
       this.selectedTask = null;
       this.cdr.detectChanges();
+      
     } catch (err) {
       console.error('Failed to delete task:', err);
-      this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
-      this.taskToDelete = null;
-      this.selectedTask = null;
+      // 🟢 4. FIXED: Do NOT delete from UI if it failed on the server
+      this.taskToDelete = null; 
       this.cdr.detectChanges();
+      alert('Failed to delete task. You might not have permission.');
     }
   }
 }

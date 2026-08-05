@@ -535,6 +535,11 @@ export class IssuesComponent implements OnInit {
     this.loadIssues();
   }
 
+  private isResolvedStatus(status: any): boolean {
+    const s = String(status || '').toLowerCase();
+    return s === 'resolved' || s === 'done' || s === 'completed';
+  }
+
   async loadIssues() {
     try {
       const url = this.dashService.getFilteredUrl('/issues');
@@ -573,12 +578,15 @@ export class IssuesComponent implements OnInit {
     return this.issues.filter((issue) => {
       const matchStatus = this.statusFilter === 'all' || (issue.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (issue.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
+      
       const issueDate = issue.created_time || issue.created_at || issue.date || issue.updated_time;
-      const matchDate = this.matchesSelectedDate(issueDate, selectedDate);
+      
+      // 🟢 Pass the issue's status to trigger the carry-forward logic
+      const matchDate = this.matchesSelectedDate(issueDate, selectedDate, issue.status);
+      
       return matchStatus && matchPriority && matchDate;
     });
   }
-
   private isBotUser(m: any): boolean {
     if (!m) return true;
     const rawId = (m.id || '').toLowerCase();
@@ -627,12 +635,10 @@ export class IssuesComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
-    if (!targetDateStr) return true; 
+ private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
+    if (!targetDateStr) return true;
     if (!itemDate) return false;
-    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
-      return true;
-    }
+
     let numericDate = Number(itemDate);
     let dateObj: Date;
     if (!isNaN(numericDate) && numericDate > 0) {
@@ -642,10 +648,25 @@ export class IssuesComponent implements OnInit {
       dateObj = new Date(itemDate);
     }
     if (isNaN(dateObj.getTime())) return true;
+
     const yyyy = dateObj.getFullYear();
     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(dateObj.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}` === targetDateStr;
+    const itemDateStr = `${yyyy}-${mm}-${dd}`;
+
+    if (itemDateStr === targetDateStr) return true;
+
+    // 🟢 Carry-forward: If the issue was created in the past but is NOT resolved,
+    // it continues to show up on the selected date.
+    if (!this.isResolvedStatus(status)) {
+      const [ty, tm, td] = targetDateStr.split('-').map(Number);
+      if (ty && tm && td) {
+        const targetEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        if (dateObj.getTime() <= targetEnd.getTime()) return true;
+      }
+    }
+
+    return false;
   }
 
   getStatusClass(status: string): string {

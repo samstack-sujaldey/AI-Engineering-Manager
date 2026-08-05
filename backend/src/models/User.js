@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema(
   {
-    username: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     role: {
       type: String,
@@ -10,7 +9,6 @@ const UserSchema = new mongoose.Schema(
       default: 'developer',
     },
     email: { type: String, trim: true, default: '' },
-    display_name: { type: String, trim: true, default: '' },
     active: { type: Boolean, default: true },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }

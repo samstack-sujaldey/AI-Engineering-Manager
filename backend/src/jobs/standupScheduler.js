@@ -48,7 +48,7 @@ function getTargetSummaryDate(date = new Date()) {
 }
 
 function startStandupScheduler() {
-  cron.schedule("09 10 * * *", async () => {
+  cron.schedule("00 10 * * *", async () => {
     const now = new Date();
     const dayOfWeek = now.getDay();
 
@@ -93,15 +93,35 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       { created_time: { $gte: startOfDay, $lte: endOfDay } },
       { updated_time: { $gte: startOfDay, $lte: endOfDay } },
       { due_date: { $gte: startOfDay, $lte: endOfDay } },
+      // Carry-overs: Created in the past but NOT completed
+      {
+        created_time: { $lt: startOfDay },
+        status: { $nin: ["COMPLETED", "RESOLVED", "done", "completed", "Complete", "Done"] }
+      },
+      // Overdue: Due in the past but NOT completed
+      {
+        due_date: { $lt: startOfDay },
+        status: { $nin: ["COMPLETED", "RESOLVED", "done", "completed", "Complete", "Done"] }
+      }
     ],
   };
-  const issueFilter = {
+ const issueFilter = {
     $or: [
       { created_time: { $gte: startOfDay, $lte: endOfDay } },
       { updated_time: { $gte: startOfDay, $lte: endOfDay } },
+      { due_date: { $gte: startOfDay, $lte: endOfDay } },
+      // Carry-overs/Overdue: Created or Due in the past but NOT resolved
+      {
+        created_time: { $lt: startOfDay },
+        status: { $nin: ["RESOLVED", "resolved", "Resolved", "COMPLETED"] }
+      },
+      {
+        due_date: { $lt: startOfDay },
+        status: { $nin: ["RESOLVED", "resolved", "Resolved", "COMPLETED"] }
+      }
     ],
   };
-  const discussionFilter = {
+ const discussionFilter = {
     timestamp: { $gte: startOfDay, $lte: endOfDay },
   };
 
@@ -155,17 +175,29 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
     let rawPayload = "";
     for (const [memberName, data] of Object.entries(memberDataMap)) {
       rawPayload += `\nMember: ${memberName}\n`;
+      
       if (data.tasks.length) {
-        rawPayload += `Tasks:\n` + data.tasks.map(t => `- ${t.title}${t.description ? ` (${t.description})` : ''} [${t.status || 'TODO'}]${t.blocked_reason ? ` (Blocker: ${t.blocked_reason})` : ''}`).join('\n') + '\n';
+        rawPayload += `Tasks:\n` + data.tasks.map(t => {
+          // 🟢 1. Calculate age tag
+          const ageTag = new Date(t.created_time).getTime() < startOfDay.getTime() ? '[Carry-over]' : '[New]';
+          return `- ${ageTag} ${t.title}${t.description ? ` (${t.description})` : ''} [${t.status || 'TODO'}]${t.blocked_reason ? ` (Blocker: ${t.blocked_reason})` : ''}`;
+        }).join('\n') + '\n';
       }
+      
       if (data.issues.length) {
-        rawPayload += `Issues:\n` + data.issues.map(i => `- ${i.title}${i.description ? ` (${i.description})` : ''} [${i.status || 'OPEN'}]${i.blocked_reason ? ` (Blocker: ${i.blocked_reason})` : ''}`).join('\n') + '\n';
+        rawPayload += `Issues:\n` + data.issues.map(i => {
+          // 🟢 1. Calculate age tag
+          const ageTag = new Date(i.created_time).getTime() < startOfDay.getTime() ? '[Carry-over]' : '[New]';
+          return `- ${ageTag} ${i.title}${i.description ? ` (${i.description})` : ''} [${i.status || 'OPEN'}]${i.blocked_reason ? ` (Blocker: ${i.blocked_reason})` : ''}`;
+        }).join('\n') + '\n';
       }
+      
       if (data.discussions.length) {
         rawPayload += `Discussions:\n` + data.discussions.map(d => `- ${d.content}`).join('\n') + '\n';
       }
     }
 
+    // 🟢 2. Update Prompt Instructions
     const prompt = `You are an AI Engineering Manager. Format this aggregated raw standup data into a clean Stand-up MOM string.
 
 INSTRUCTIONS:
@@ -174,9 +206,9 @@ ${momHeader}
 
 2. Group strictly by member name using bold headers (**Member Name**).
 3. Under each member, provide separate subsections if items exist:
-   - "Tasks:" followed by bullet points (* )
-   - "Issues:" followed by bullet points (* ) if any issues exist
-   - "Discussions:" followed by bullet points (* ) if any discussions exist
+   - "Tasks:" followed by bullet points (* ). Clearly highlight whether the task is [New] or a [Carry-over] based on the provided tags. If it is a carry-over, phrase it to reflect ongoing work.
+   - "Issues:" followed by bullet points (* ) if any issues exist. Highlight [New] vs [Carry-over].
+   - "Discussions:" followed by bullet points (* ) if any discussions exist.
 4. Do NOT add a "Present Members" line.
 5. Write each bullet as a natural, concise sentence.
 

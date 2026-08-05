@@ -9,9 +9,6 @@ const { Server } = require("socket.io");
 const { WebClient } = require("@slack/web-api");
 const vectorDbService = require("./services/vectorDbService");
 const { startStandupScheduler } = require("./jobs/standupScheduler");
-
-process.env.TZ = "Asia/Kolkata";
-
 const config = require("./config");
 const { createApiRouter } = require("./routes/api");
 const { NotificationService } = require("./services/notifications");
@@ -23,37 +20,20 @@ const { createSlackApp } = require("./slack/app");
 const { startReminderScheduler } = require("./jobs/reminders");
 const slackAuthRoutes = require("./routes/slackAuth");
 const { createAuthRouter } = require("./routes/auth");
+const  seedAdmin  =require("./scripts/seed.js"); 
 
 // Load Standup Scheduler & Retention Cleanup
 require("./config/scheduler");
 const { cleanupCompletedWork } = require("./utils/retention");
 
+process.env.TZ = "Asia/Kolkata";
 async function main() {
-	await mongoose.connect(config.mongodbUri);
-	console.log("[db] Connected to MongoDB");
+	if (mongoose.connection.readyState === 0) {
+        await mongoose.connect(config.mongodbUri || process.env.MONGODB_URI);
+        console.log("✅ Connected to MongoDB");
+    }
 
-	const bcrypt = require("bcryptjs");
-	const defaultAdminUsername = process.env.ADMIN_USERNAME || "admin";
-	const defaultAdminPassword = process.env.ADMIN_PASSWORD || "admin123";
-	const existingAdmin = await mongoose.connection.db
-		.collection("users")
-		.findOne({ username: defaultAdminUsername });
-	if (!existingAdmin) {
-		const hashed = await bcrypt.hash(defaultAdminPassword, 10);
-		await mongoose.connection.db.collection("users").insertOne({
-			username: defaultAdminUsername,
-			password: hashed,
-			role: "admin",
-			email: "",
-			display_name: "Admin",
-			active: true,
-			created_at: new Date(),
-			updated_at: new Date(),
-		});
-		console.log(
-			`[auth] Default admin user created: ${defaultAdminUsername}`,
-		);
-	}
+	await seedAdmin(); // Seed the admin user before starting the server
 
 	await vectorDbService.init();
 

@@ -1,29 +1,29 @@
-const jwt = require('jsonwebtoken');
-const config = require('../config');
+const jwt = require("jsonwebtoken");
 
-function authMiddleware(requiredRoles = []) {
-  return (req, res, next) => {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
-    if (!token) {
-      return res.status(401).json({ error: 'Missing authorization token' });
-    }
 
-    try {
-      const decoded = jwt.verify(token, config.jwtSecret);
-      if (!decoded || !decoded.username) {
-        return res.status(401).json({ error: 'Invalid token payload' });
-      }
-      if (requiredRoles.length > 0 && !requiredRoles.includes(decoded.role)) {
-        return res.status(403).json({ error: 'Forbidden: insufficient role' });
-      }
-      req.user = decoded;
-      next();
-    } catch (err) {
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-  };
+function verifyToken(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "your-secret-key");
+    req.user = decoded; // Contains { id, username, role }
+    next();
+  } catch (error) {
+    res.status(401).json({ error: "Invalid or expired token." });
+  }
 }
 
-module.exports = { authMiddleware };
+function requireAdmin(req, res, next) {
+  // Matching the exact lowercase 'admin' from your schema's enum
+  if (req.user?.role !== process.env.ADMIN_ROLE) {
+    return res.status(403).json({ error: "Forbidden. Admin access required to perform this action." });
+  }
+  next();
+}
+
+module.exports = { verifyToken, requireAdmin };

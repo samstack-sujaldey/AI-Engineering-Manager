@@ -49,7 +49,7 @@ function sanitizeLlmOutput(text) {
  */
 async function callOpenAI(
 	messages,
-	{ maxTokens = 600, temperature = 0.2, timeoutMs = 25000, model } = {},
+	{ maxTokens = 600, temperature = 0.2, timeoutMs = 40000, model } = {},
 ) {
 	if (!process.env.OPENAI_API_KEY) {
 		throw new Error("OPENAI_API_KEY is not configured in backend/.env");

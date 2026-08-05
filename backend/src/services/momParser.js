@@ -2,9 +2,18 @@ const { callOpenAI } = require("../ai/openai");
 const { toUser } = require("../agent/parser");
 
 /**
- * 🟢 Safely parses OpenAI JSON outputs even if wrapped in markdown code blocks
- */
+ * :large_green_circle: Safely parses OpenAI JSON outputs even if wrapped in markdown code blocks
+ */
 function safeJsonParse(response) {
+	if (typeof response !== "string") return response;
+	let cleaned = response.trim();
+	if (cleaned.startsWith("```")) {
+		cleaned = cleaned
+			.replace(/^```(?:json)?/i, "")
+			.replace(/```$/g, "")
+			.trim();
+	}
+	return JSON.parse(cleaned);
 	if (typeof response !== "string") return response;
 	let cleaned = response.trim();
 	if (cleaned.startsWith("```")) {
@@ -17,9 +26,9 @@ function safeJsonParse(response) {
 }
 
 /**
- * 🟢 Isolated Helper: Cleanly extracts a single first name from any format
- * (e.g., "Rashmi (QA)", "Laxmikant Sir", "Lead Aditya", "@praveen").
- */
+ * :large_green_circle: Isolated Helper: Cleanly extracts a single first name from any format
+ * (e.g., "Rashmi (QA)", "Laxmikant Sir", "Lead Aditya", "@praveen").
+ */
 function extractCleanFirstName(rawName = "") {
 	return String(rawName)
 		.replace(/\s*\([^)]*\)/g, "") // Remove parenthesis e.g., (QA), (Dev)
@@ -39,8 +48,8 @@ function makeSlug(text) {
 }
 
 /**
- * 🟢 Extracts first name and matches strictly against Slack usernames
- */
+ * :large_green_circle: Extracts first name and matches strictly against Slack usernames
+ */
 function findSlackUserByFirstName(rawDocumentName = "", userDirectory = {}) {
 	// 1. Clean up suffixes like "(QA)", "Sir", "Dev", roles, and trailing symbols
 	const cleanedName = String(rawDocumentName)
@@ -90,8 +99,8 @@ function findSlackUserByFirstName(rawDocumentName = "", userDirectory = {}) {
 }
 
 /**
- * Parses MOM text, maps tasks per individual, and auto-assigns in MongoDB
- */
+ * Parses MOM text, maps tasks per individual, and auto-assigns in MongoDB
+ */
 async function processMOMAndAssignWork({
 	rawText,
 	channel = "",
@@ -117,9 +126,9 @@ Instructions:
 1. Extract metadata: Date (YYYY-MM-DD) and Duration.
 2. Under "member_updates", group updates by person.
 3. Separate each person's work into:
-   - "tasks": Planned, in-progress, or completed development/testing work.
-   - "issues": Bugs, re-testing failures, mismatches, or blockers.
-   - "discussions": Meetings, architectural discussions, or alignment notes.
+   - "tasks": Planned, in-progress, or completed development/testing work.
+   - "issues": Bugs, re-testing failures, mismatches, or blockers.
+   - "discussions": Meetings, architectural discussions, or alignment notes.
 `;
 
 	const aiResponse = await callOpenAI([{ role: "user", content: prompt }], {
