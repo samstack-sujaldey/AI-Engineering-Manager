@@ -2,15 +2,18 @@ const { Task, Issue, Notification } = require("../models");
 const { similarity } = require("../utils/helpers");
 const config = require("../config");
 
-async function findSimilarTask(title, description, workspaceId, channel) {
+async function findSimilarTask(
+	title,
+	description,
+	workspaceId,
+	channel,
+	customThreshold = null,
+) {
 	const filter = {};
 	if (workspaceId) filter.workspace_id = workspaceId;
 	if (channel) filter.channel = channel;
 
-	const candidates = await Task.find({
-		...filter,
-		status: { $ne: "COMPLETED" },
-	})
+	const candidates = await Task.find(filter)
 		.sort({ updated_time: -1 })
 		.limit(50)
 		.lean();
@@ -30,13 +33,21 @@ async function findSimilarTask(title, description, workspaceId, channel) {
 		}
 	}
 
-	if (best && bestScore >= config.similarityThreshold) {
+	const threshold =
+		customThreshold !== null ? customThreshold : config.similarityThreshold;
+	if (best && bestScore >= threshold) {
 		return { task: best, score: bestScore };
 	}
 	return null;
 }
 
-async function findSimilarIssue(title, description, workspaceId, channel) {
+async function findSimilarIssue(
+	title,
+	description,
+	workspaceId,
+	channel,
+	customThreshold = null,
+) {
 	const filter = {};
 	if (workspaceId) filter.workspace_id = workspaceId;
 	if (channel) filter.channel = channel;
@@ -64,7 +75,9 @@ async function findSimilarIssue(title, description, workspaceId, channel) {
 		}
 	}
 
-	if (best && bestScore >= config.similarityThreshold) {
+	const threshold =
+		customThreshold !== null ? customThreshold : config.similarityThreshold;
+	if (best && bestScore >= threshold) {
 		return { issue: best, score: bestScore };
 	}
 	return null;
@@ -95,13 +108,13 @@ async function findWorkByThread(thread, channel) {
 }
 
 async function findWorkByMessageTs(messageTs, channel) {
- 	if (!messageTs) return { task: null, issue: null };
- 	const filter = { slack_message_ts: messageTs };
- 	if (channel) filter.channel = channel;
- 	let [task, issue] = await Promise.all([
- 		Task.findOne(filter).lean(),
- 		Issue.findOne(filter).lean(),
- 	]);
+	if (!messageTs) return { task: null, issue: null };
+	const filter = { slack_message_ts: messageTs };
+	if (channel) filter.channel = channel;
+	let [task, issue] = await Promise.all([
+		Task.findOne(filter).lean(),
+		Issue.findOne(filter).lean(),
+	]);
 
 	if (!task && !issue) {
 		const notif = await Notification.findOne({

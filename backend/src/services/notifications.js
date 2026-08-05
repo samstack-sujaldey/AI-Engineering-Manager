@@ -31,8 +31,28 @@ class NotificationService {
 	}) {
 		if (!target_user_id || !message) return null;
 
+		// 🟢 FIX 1: Anti-Spam Check. Prevent duplicate active notifications for the same task/issue.
+		if (task_id || issue_id) {
+			const existingActive = await Notification.findOne({
+				target_user_id,
+				type,
+				status: { $in: ["PENDING", "SENT"] },
+				...(task_id ? { task_id } : {}),
+				...(issue_id ? { issue_id } : {}),
+			});
+
+			if (existingActive) {
+				console.log(
+					`[notification] Suppressing duplicate ${type} for user ${target_user_id}`,
+				);
+				return existingActive; // Silently abort to prevent Slack spam
+			}
+		}
+
+		// 🟢 FIX 2: Set interval strictly to 1 hour (3,600,000 ms) to keep prompting the user
+		const interval = config.reminderIntervalMs || 60 * 60 * 1000;
 		const nextReminder = scheduleReminder
-			? new Date(Date.now() + config.reminderIntervalMs)
+			? new Date(Date.now() + interval)
 			: null;
 
 		const doc = await Notification.create({
@@ -128,6 +148,11 @@ class NotificationService {
 		for (const n of due) {
 			const reminderType = mapReminderType(n.type);
 
+			// 🟢 FIX 3: Retire the OLD notification FIRST, so the 1-hour anti-spam check allows the next one
+			n.next_reminder_at = null;
+			n.status = "ACKNOWLEDGED";
+			await n.save();
+
 			const reminder = await this.createAndSend({
 				type: reminderType,
 				target_user_id: n.target_user_id,
@@ -136,13 +161,8 @@ class NotificationService {
 				task_id: n.task_id,
 				issue_id: n.issue_id,
 				meta: { parent_notification_id: n.notification_id },
-				scheduleReminder: true, // The NEW notification will carry the baton
+				scheduleReminder: true, // This triggers the next 1-hour countdown
 			});
-
-			// FIX: Retire the OLD notification so it doesn't trigger again!
-			n.next_reminder_at = null;
-			n.status = "ACKNOWLEDGED";
-			await n.save();
 
 			if (reminder) {
 				console.log(
