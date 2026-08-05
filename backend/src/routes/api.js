@@ -501,13 +501,24 @@ Instructions:
       next(err);
     }
   });
-
-  router.get("/issues", async (req, res, next) => {
+router.get("/issues", async (req, res, next) => {
     try {
       const filter = {};
-      if (req.query.status) filter.status = req.query.status;
-      if (req.query.priority) filter.priority = req.query.priority;
-      if (req.query.channel) filter.channel = req.query.channel;
+      
+      // 🟢 1. Universally block resolved issues unless a specific status is requested
+      if (req.query.status && req.query.status !== 'all') {
+        filter.status = req.query.status;
+      } else {
+        filter.status = { $nin: ["RESOLVED", "resolved", "Resolved", "COMPLETED", "completed"] };
+      }
+
+      if (req.query.priority && req.query.priority !== 'all') {
+        filter.priority = req.query.priority;
+      }
+      
+      if (req.query.channel && req.query.channel !== 'all') {
+        filter.channel = req.query.channel;
+      }
 
       if (req.query.date) {
         const [year, month, day] = String(req.query.date).split("-").map(Number);
@@ -518,8 +529,9 @@ Instructions:
           filter.$or = [
             { created_time: { $gte: start, $lte: end } },
             { updated_time: { $gte: start, $lte: end } },
-            // 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
-            { status: { $nin: ["RESOLVED", "resolved"] }, created_time: { $lte: end } },
+            // 🟢 2. Carry-forward logic simplified: fetches any issue created before the end of the day.
+            // (The root filter above guarantees none of these will be resolved!)
+            { created_time: { $lte: end } },
           ];
         }
       }

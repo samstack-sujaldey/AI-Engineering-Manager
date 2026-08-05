@@ -604,7 +604,7 @@ export interface MemberSummary {
   `]
 })
 export class StandupSummaryComponent implements OnInit {
-  private apiUrl = 'https://ai-engineering-manager-production.up.railway.app/api';
+  private apiUrl = 'http://localhost:4200/api';
 
   selectedDate: string = '';
   formattedDateDisplay: string = '';

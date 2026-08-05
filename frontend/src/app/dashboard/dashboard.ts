@@ -238,7 +238,7 @@ export class DashboardComponent implements OnInit {
   }
 
   connectSlack(): void {
-    window.location.href = 'https://ai-engineering-manager-production.up.railway.app/api/slack/install';
+    window.location.href = 'http://localhost:4200/api/slack/install';
   }
 
   onDateChange(event: Event): void {
