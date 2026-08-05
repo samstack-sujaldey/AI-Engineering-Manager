@@ -34,9 +34,7 @@ import { AuthService } from './services/auth.service';
           <a routerLink="/issues" routerLinkActive="active" class="nav-item">
             <span class="nav-dot"></span>Issues
           </a>
-          <a routerLink="/integrations" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Integrations
-          </a>
+         
           <a routerLink="/new-user" routerLinkActive="active" *ngIf="auth.isAdmin()" class="nav-item">
             <span class="nav-dot"></span> Create New User
           </a>

@@ -588,7 +588,7 @@ export class TasksComponent implements OnInit {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       const taskDate = task.created_time || task.created_at;
-      const matchDate = this.matchesSelectedDate(taskDate, selectedDate);
+      const matchDate = this.matchesSelectedDate(taskDate, selectedDate, task.status);
       return matchStatus && matchPriority && matchDate;
     });
   }
@@ -648,12 +648,15 @@ export class TasksComponent implements OnInit {
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
+  private isCompletedStatus(status: any): boolean {
+    const s = String(status || '').toLowerCase();
+    return s === 'completed' || s === 'done' || s === 'complete';
+  }
+
+  private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
     if (!targetDateStr) return true;
     if (!itemDate) return false;
-    if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
-      return true;
-    }
+
     let numericDate = Number(itemDate);
     let dateObj: Date;
     if (!isNaN(numericDate) && numericDate > 0) {
@@ -663,10 +666,27 @@ export class TasksComponent implements OnInit {
       dateObj = new Date(itemDate);
     }
     if (isNaN(dateObj.getTime())) return true;
+
     const yyyy = dateObj.getFullYear();
     const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(dateObj.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}` === targetDateStr;
+    const itemDateStr = `${yyyy}-${mm}-${dd}`;
+
+    if (itemDateStr === targetDateStr) return true;
+
+    // Carry-forward: a still-pending task created on/before the selected
+    // date should keep showing up on every later day (today, tomorrow, ...)
+    // until it's actually completed, instead of only appearing on the exact
+    // day it was created.
+    if (!this.isCompletedStatus(status)) {
+      const [ty, tm, td] = targetDateStr.split('-').map(Number);
+      if (ty && tm && td) {
+        const targetEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        if (dateObj.getTime() <= targetEnd.getTime()) return true;
+      }
+    }
+
+    return false;
   }
 
   getStatusClass(status: string): string {

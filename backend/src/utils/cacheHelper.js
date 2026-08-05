@@ -33,12 +33,15 @@ async function regenerateSummaryInBackground(targetDateStr) {
     const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
     const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
 
+    // 🟢 1. Comprehensive Date Net (Matches your dashboard and scheduler)
     const [tasks, issues] = await Promise.all([
       Task.find({
         $or: [
           { created_time: { $gte: startOfDay, $lte: endOfDay } },
           { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-          { status: { $in: ['TODO', 'PROCESSING', 'BLOCKED'] } },
+          { due_date: { $gte: startOfDay, $lte: endOfDay } },
+          { created_time: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED'] } },
+          { due_date: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED'] } }
         ],
       }).lean().catch(() => []),
 
@@ -46,35 +49,42 @@ async function regenerateSummaryInBackground(targetDateStr) {
         $or: [
           { created_time: { $gte: startOfDay, $lte: endOfDay } },
           { updated_time: { $gte: startOfDay, $lte: endOfDay } },
-          { status: { $in: ['OPEN', 'HOLD'] } },
+          { due_date: { $gte: startOfDay, $lte: endOfDay } },
+          { created_time: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED'] } },
+          { due_date: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED'] } }
         ],
       }).lean().catch(() => []),
     ]);
 
-    // Format tasks with assigned team member and current status
+    // 🟢 2. Format tasks and inject [New] / [Carry-over] tags
     const formattedTasks = tasks.map(t => {
       const assignee = t.assigned_to || t.owner || {};
       const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      const ageTag = new Date(t.created_time).getTime() < startOfDay.getTime() ? '[Carry-over]' : '[New]';
+      
       return {
-        title: t.title,
+        title: `${ageTag} ${t.title}`,
         status: t.status,
         assigned_to: normalizePersonName(rawName),
         blocked_reason: t.blocked_reason || null
       };
     });
 
-    // Format issues with assigned team member and priority/status
+    // 🟢 3. Format issues and inject tags
     const formattedIssues = issues.map(i => {
       const assignee = i.assigned_to || i.owner || {};
       const rawName = assignee.display_name || assignee.real_name || assignee.name || 'Unassigned';
+      const ageTag = new Date(i.created_time).getTime() < startOfDay.getTime() ? '[Carry-over]' : '[New]';
+      
       return {
-        title: i.title,
+        title: `${ageTag} ${i.title}`,
         status: i.status,
         priority: i.priority,
         assigned_to: normalizePersonName(rawName)
       };
     });
 
+    // 🟢 4. Instruct AI to highlight the tags
     const prompt = `
 Generate an engineering daily summary for Yesterday (${targetDate}):
 
@@ -82,10 +92,12 @@ Create EXACTLY two sections:
 
 1. 📌 **Tasks Summary**
 - List yesterday's tasks, their assigned team member, and status (TODO, PROCESSING, BLOCKED, COMPLETED).
+- Clearly highlight whether the task is [New] or a [Carry-over] based on the provided titles. If it is a carry-over, phrase it to reflect ongoing work.
 - Highlight blocker reasons if a task is blocked.
 
 2. 🚨 **Issues & Bugs Summary**
 - List yesterday's issues, assigned team member, priority, and status (OPEN, HOLD, RESOLVED).
+- Highlight [New] vs [Carry-over].
 
 Data to summarize:
 Tasks: ${JSON.stringify(formattedTasks)}

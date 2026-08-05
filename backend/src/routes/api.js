@@ -361,10 +361,16 @@ Instructions:
         if (year && month && day) {
           const start = new Date(year, month - 1, day, 0, 0, 0, 0);
           const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          const completedStatuses = ["done", "completed", "Complete", "Done", "COMPLETE", "DONE"];
           filter.$or = [
             { created_time: { $gte: start, $lte: end } },
             { updated_time: { $gte: start, $lte: end } },
             { due_date: { $gte: start, $lte: end } },
+            // Carry-forward: a still-pending task created on/before this day
+            // keeps showing up every day until it's completed, not just on
+            // its original creation day. Overdue-but-not-done tasks fall
+            // squarely into this bucket.
+            { status: { $nin: completedStatuses }, created_time: { $lte: end } },
           ];
         }
       }
