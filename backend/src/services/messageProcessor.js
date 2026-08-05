@@ -3,14 +3,7 @@ const { getEmbedding } = require("../ai/openai");
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
-const {
-	Task,
-	Issue,
-	Discussion,
-	Activity,
-	Team,
-	Notification,
-} = require("../models");
+const { Task, Issue, Discussion, Activity, Team } = require("../models");
 const {
 	parseMessage,
 	detectStatus,
@@ -107,36 +100,6 @@ class MessageProcessor {
 						thread_ts: ctx.thread_id || ctx.message_ts,
 						text: threadPrompt,
 					});
-				}
-
-				// 🟢 FIX 2: Seed the notification database so the 1-minute loop takes over!
-				if (ctx.sender && ctx.sender.id) {
-					if (doc.due_date_pending) {
-						await Notification.create({
-							notification_id: newId("ntf"),
-							type: "MISSING_DUE_DATE",
-							target_user_id: ctx.sender.id,
-							target_user_name: ctx.sender.name || "User",
-							message: `⏰ Reminder: Please provide a due date for '${doc.title}'.`,
-							task_id: doc.task_id || null,
-							issue_id: doc.issue_id || null,
-							status: "SENT", // Tricks the system into thinking the thread prompt was the first notification
-							next_reminder_at: nextHour,
-						});
-					}
-					if (doc.block_reason_pending) {
-						await Notification.create({
-							notification_id: newId("ntf"),
-							type: "MISSING_BLOCK_REASON",
-							target_user_id: ctx.sender.id,
-							target_user_name: ctx.sender.name || "User",
-							message: `🚨 Reminder: Please provide a block reason for '${doc.title}'.`,
-							task_id: doc.task_id || null,
-							issue_id: doc.issue_id || null,
-							status: "SENT",
-							next_reminder_at: nextHour,
-						});
-					}
 				}
 			} catch (err) {
 				console.error(
@@ -649,21 +612,54 @@ class MessageProcessor {
 						assignedUser = senderRef;
 					}
 
+					// 🟢 FIX: Execute Similarity Checks inside the batch loop to prevent document duplicates!
+					let finalAction =
+						item.type === "ISSUE" ? "CREATE_ISSUE" : "CREATE_TASK";
+					let matchedTask = null;
+					let matchedIssue = null;
+
+					if (item.type === "TASK") {
+						const sim = await findSimilarTask(
+							item.title,
+							item.description,
+							workspace_id,
+							channel,
+							0.6,
+						);
+						if (sim) {
+							finalAction = "UPDATE_TASK";
+							matchedTask = sim.task;
+						}
+					} else if (item.type === "ISSUE") {
+						// Pass assignedUser.id to strictly check for the same person on the same day rule
+						const sim = await findSimilarIssue(
+							item.title,
+							item.description,
+							workspace_id,
+							channel,
+							0.6,
+							assignedUser.id || senderRef.id,
+						);
+						if (sim) {
+							finalAction = "UPDATE_ISSUE";
+							matchedIssue = sim.issue;
+						}
+					}
+
 					const subParsed = {
 						...parsed,
 						classification: item.type || "TASK",
-						action:
-							item.type === "ISSUE"
-								? "CREATE_ISSUE"
-								: "CREATE_TASK",
-						sender: senderRef, // 🟢 Explicitly pass sender down
+						action: finalAction,
+						sender: senderRef,
 						owner: assignedUser,
 						assigned_to: assignedUser,
 						assigned_by: senderRef,
 						reporter: senderRef,
+						updates: { status: item.status },
 						task:
 							item.type === "TASK"
 								? {
+										id: matchedTask?.task_id,
 										title: item.title,
 										description: item.description,
 										priority: item.priority,
@@ -674,6 +670,7 @@ class MessageProcessor {
 						issue:
 							item.type === "ISSUE"
 								? {
+										id: matchedIssue?.issue_id,
 										title: item.title,
 										description: item.description,
 										priority: item.priority,
@@ -686,7 +683,7 @@ class MessageProcessor {
 
 					lastResult = await this.persist(subParsed, {
 						text: item.title,
-						sender: senderRef, // 🟢 Pass sender in context as well
+						sender: senderRef,
 						channel,
 						thread_id: threadRoot,
 						workspace_id,
@@ -696,8 +693,8 @@ class MessageProcessor {
 						slack_client,
 						user_directory: userDir,
 						local_attachments,
-						existing_task,
-						existing_issue,
+						existing_task: matchedTask || existing_task,
+						existing_issue: matchedIssue || existing_issue,
 					});
 
 					if (this.io && !quiet) {
@@ -712,7 +709,6 @@ class MessageProcessor {
 				}
 				return lastResult;
 			}
-
 			// 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
 			if (parsed.task?.title) {
 				parsed.task.title = parsed.task.title
@@ -805,6 +801,7 @@ class MessageProcessor {
 					workspace_id,
 					channel,
 					0.6,
+					sender?.id,
 				);
 				if (sim) {
 					parsed.action = "UPDATE_ISSUE";
@@ -873,22 +870,6 @@ class MessageProcessor {
 	async persist(parsed, ctx) {
 		const senderRef = parsed.sender;
 
-		if (ctx.existing_task && parsed.action === "CREATE_TASK") {
-			parsed.action = "UPDATE_TASK";
-			parsed.task_created = false;
-			parsed.task_updated = true;
-			if (!parsed.task) parsed.task = {};
-			parsed.task.id = ctx.existing_task.task_id;
-		}
-
-		if (ctx.existing_issue && parsed.action === "CREATE_ISSUE") {
-			parsed.action = "UPDATE_ISSUE";
-			parsed.issue_created = false;
-			parsed.issue_updated = true;
-			if (!parsed.issue) parsed.issue = {};
-			parsed.issue.id = ctx.existing_issue.issue_id;
-		}
-
 		switch (parsed.action) {
 			case "CREATE_TASK":
 				return this.createTask(parsed, ctx, senderRef);
@@ -926,65 +907,31 @@ class MessageProcessor {
 		}
 		const messageTime = getMessageTime(ctx);
 
-		// 🟢 FIX 1: Dig into the 'task' object for the assignee and resolve against directory
-		const rawAssignee =
-			parsed.assigned_to || t.assigned_to || parsed.owner || t.owner;
-		let resolvedOwner =
-			senderRef && (senderRef.id || senderRef.name)
-				? senderRef
-				: { id: "", name: "Unassigned" };
+		// 🟢 FALLBACK ASSIGNEE AND OWNER TO SENDER WHEN EMPTY ({})
+		const resolvedOwner =
+			parsed.owner && (parsed.owner.id || parsed.owner.name)
+				? parsed.owner
+				: senderRef && (senderRef.id || senderRef.name)
+					? senderRef
+					: { id: "", name: "Unassigned" };
 
-		if (rawAssignee && (rawAssignee.id || rawAssignee.name)) {
-			if (!rawAssignee.id && rawAssignee.name && ctx.user_directory) {
-				const searchName = rawAssignee.name.toLowerCase().split(" ")[0];
-				const foundUser = Object.values(ctx.user_directory).find(
-					(u) =>
-						(u.name || "").toLowerCase().includes(searchName) ||
-						(u.display_name || "")
-							.toLowerCase()
-							.includes(searchName) ||
-						(u.real_name || "").toLowerCase().includes(searchName),
-				);
-				resolvedOwner = foundUser || { id: "", name: rawAssignee.name };
-			} else {
-				resolvedOwner = rawAssignee;
-			}
-		}
-		const resolvedAssignee = resolvedOwner;
-
-		// 🟢 FIX 2: Clean the title by dynamically stripping out the assignee's name
-		let cleanTitle = t.title || ctx.text || "";
-		if (resolvedAssignee.name && resolvedAssignee.name !== "Unassigned") {
-			const firstName = resolvedAssignee.name.split(" ")[0].toLowerCase();
-			const prefixRegex = new RegExp(`^${firstName}\\s*[-:]\\s*`, "i");
-			cleanTitle = cleanTitle.replace(prefixRegex, "").trim();
-
-			if (rawAssignee && rawAssignee.name) {
-				const rawFirstName = rawAssignee.name
-					.split(" ")[0]
-					.toLowerCase();
-				const rawPrefixRegex = new RegExp(
-					`^${rawFirstName}\\s*[-:]\\s*`,
-					"i",
-				);
-				cleanTitle = cleanTitle.replace(rawPrefixRegex, "").trim();
-			}
-		}
-		// Catch-all to remove raw slack mentions like "<@U12345> - " from the title
-		cleanTitle = cleanTitle.replace(/^<@[A-Z0-9]+>\s*[-:]\s*/i, "").trim();
+		const resolvedAssignee =
+			parsed.assigned_to &&
+			(parsed.assigned_to.id || parsed.assigned_to.name)
+				? parsed.assigned_to
+				: resolvedOwner;
 
 		const doc = await Task.create({
 			task_id: taskId,
-			title: cleanTitle, // <-- Saves the cleaned title!
+			title: t.title,
 			description: t.description || ctx.text,
-			owner: resolvedOwner, // <-- Saves Nitesh instead of Sam
-			assigned_to: resolvedAssignee, // <-- Saves Nitesh instead of Sam
+			owner: resolvedOwner,
+			assigned_to: resolvedAssignee,
 			assigned_by: parsed.assigned_by || senderRef,
 			reporter: parsed.reporter || senderRef,
 			created_by: senderRef,
 			last_updated_by: senderRef,
 			mentioned_users: parsed.mentioned_users || [],
-			// ... (leave the rest of the Task.create object identical)
 			watcher_users: parsed.meta?.watchers || [],
 			reviewer_users: parsed.meta?.reviewers || [],
 			priority: t.priority || "MEDIUM",
