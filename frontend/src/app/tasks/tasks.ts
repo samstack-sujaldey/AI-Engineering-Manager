@@ -582,17 +582,25 @@ export class TasksComponent implements OnInit {
     }
   }
 
-  filteredTasks(): any[] {
+filteredTasks(): any[] {
     const selectedDate = this.dashService.selectedDate();
-    return this.tasks.filter((task) => {
+    
+    // 1. Filter tasks based on status, priority, and date match rules
+    const filtered = this.tasks.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       const taskDate = task.created_time || task.created_at;
       const matchDate = this.matchesSelectedDate(taskDate, selectedDate, task.status);
       return matchStatus && matchPriority && matchDate;
     });
-  }
 
+    // 2. Sort tasks date-wise: newest creation dates/timestamps shown above older ones (30th above 29th)
+    return filtered.sort((a, b) => {
+      const dateA = new Date(a.created_at || a.created_time || a.due_date || 0).getTime();
+      const dateB = new Date(b.created_at || b.created_time || b.due_date || 0).getTime();
+      return dateB - dateA; // Descending order
+    });
+  }
   isOverdue(task: any): boolean {
     if (!task.due_date) return false;
     const status = (task.status || '').toLowerCase();

@@ -573,20 +573,30 @@ export class IssuesComponent implements OnInit {
     }
   }
 
-  filteredIssues(): any[] {
+    filteredIssues(): any[] {
     const selectedDate = this.dashService.selectedDate();
-    return this.issues.filter((issue) => {
+    
+    // 1. Filter issues based on status, priority, and date match rules
+    const filtered = this.issues.filter((issue) => {
       const matchStatus = this.statusFilter === 'all' || (issue.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (issue.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       
       const issueDate = issue.created_time || issue.created_at || issue.date || issue.updated_time;
       
-      // 🟢 Pass the issue's status to trigger the carry-forward logic
+      // Pass the issue's status to trigger the carry-forward logic
       const matchDate = this.matchesSelectedDate(issueDate, selectedDate, issue.status);
       
       return matchStatus && matchPriority && matchDate;
     });
+
+    // 2. Sort issues date-wise: newest creation dates/timestamps shown above older ones (30th above 29th)
+    return filtered.sort((a, b) => {
+      const dateA = new Date(a.created_at || a.created_time || a.date || a.updated_time || 0).getTime();
+      const dateB = new Date(b.created_at || b.created_time || b.date || b.updated_time || 0).getTime();
+      return dateB - dateA; // Descending order
+    });
   }
+
   private isBotUser(m: any): boolean {
     if (!m) return true;
     const rawId = (m.id || '').toLowerCase();
