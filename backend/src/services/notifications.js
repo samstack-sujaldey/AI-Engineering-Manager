@@ -42,9 +42,6 @@ class NotificationService {
 			});
 
 			if (existingActive) {
-				console.log(
-					`[notification] Suppressing duplicate ${type} for user ${target_user_id}`,
-				);
 				return existingActive; // Silently abort to prevent Slack spam
 			}
 		}

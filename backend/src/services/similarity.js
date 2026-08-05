@@ -47,15 +47,27 @@ async function findSimilarIssue(
 	workspaceId,
 	channel,
 	customThreshold = null,
+	userId = null, // 🟢 ADDED: Pass the user ID to check for same-person rule
 ) {
 	const filter = {};
 	if (workspaceId) filter.workspace_id = workspaceId;
 	if (channel) filter.channel = channel;
 
-	const candidates = await Issue.find({
-		...filter,
-		status: { $ne: "RESOLVED" },
-	})
+	// 🟢 FIX: Apply "Same User, Same Day" Rule
+	if (userId) {
+		// Only check issues owned by this specific person
+		filter["owner.id"] = userId;
+
+		// Only check issues created between 00:00:00 and 23:59:59 today
+		const startOfDay = new Date();
+		startOfDay.setHours(0, 0, 0, 0);
+		const endOfDay = new Date();
+		endOfDay.setHours(23, 59, 59, 999);
+
+		filter.created_time = { $gte: startOfDay, $lte: endOfDay };
+	}
+
+	const candidates = await Issue.find(filter)
 		.sort({ updated_time: -1 })
 		.limit(50)
 		.lean();
