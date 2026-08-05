@@ -502,46 +502,56 @@ Instructions:
     }
   });
 router.get("/issues", async (req, res, next) => {
-    try {
-      const filter = {};
-      
-      // 🟢 1. Universally block resolved issues unless a specific status is requested
-      if (req.query.status && req.query.status !== 'all') {
-        filter.status = req.query.status;
-      } else {
-        filter.status = { $nin: ["RESOLVED", "resolved", "Resolved", "COMPLETED", "completed"] };
-      }
 
-      if (req.query.priority && req.query.priority !== 'all') {
-        filter.priority = req.query.priority;
-      }
-      
-      if (req.query.channel && req.query.channel !== 'all') {
-        filter.channel = req.query.channel;
-      }
+    try {
+
+      const filter = {};
+
+      if (req.query.status) filter.status = req.query.status;
+
+      if (req.query.priority) filter.priority = req.query.priority;
+
+      if (req.query.channel) filter.channel = req.query.channel;
+
 
       if (req.query.date) {
-        const [year, month, day] = String(req.query.date).split("-").map(Number);
-        if (year && month && day) {
-          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-          
-          filter.$or = [
-            { created_time: { $gte: start, $lte: end } },
-            { updated_time: { $gte: start, $lte: end } },
-            // 🟢 2. Carry-forward logic simplified: fetches any issue created before the end of the day.
-            // (The root filter above guarantees none of these will be resolved!)
-            { created_time: { $lte: end } },
-          ];
-        }
-      }
 
+        const [year, month, day] = String(req.query.date).split("-").map(Number);
+
+        if (year && month && day) {
+
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+         
+
+          filter.$or = [
+
+            { created_time: { $gte: start, $lte: end } },
+
+            { updated_time: { $gte: start, $lte: end } },
+
+            // 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
+
+            { status: { $nin: ["RESOLVED", "resolved"] }, created_time: { $lte: end } },
+
+          ];
+
+        }
+
+      }
       const issues = await Issue.find(filter).sort({ updated_time: -1 }).lean();
+
       res.json(issues);
+
     } catch (err) {
+
       next(err);
+
     }
-  });
+
+  }); 
 
   router.get("/issues/:id", async (req, res, next) => {
     try {
