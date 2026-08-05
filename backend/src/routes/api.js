@@ -510,15 +510,16 @@ Instructions:
       if (req.query.channel) filter.channel = req.query.channel;
 
       if (req.query.date) {
-        const [year, month, day] = String(req.query.date)
-          .split("-")
-          .map(Number);
+        const [year, month, day] = String(req.query.date).split("-").map(Number);
         if (year && month && day) {
           const start = new Date(year, month - 1, day, 0, 0, 0, 0);
           const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          
           filter.$or = [
             { created_time: { $gte: start, $lte: end } },
             { updated_time: { $gte: start, $lte: end } },
+            // 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
+            { status: { $nin: ["RESOLVED", "resolved"] }, created_time: { $lte: end } },
           ];
         }
       }
