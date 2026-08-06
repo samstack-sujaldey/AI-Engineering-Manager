@@ -766,180 +766,157 @@ Instructions:
 			next(err);
 		}
 	});
+  
+router.get("/teams/workload", async (req, res, next) => {
+    try {
+      const channelId = req.query.channelId;
+      const dateStr = req.query.date || null;
+      const taskFilter = {};
+      const issueFilter = {};
 
-	router.get("/teams/workload", async (req, res, next) => {
-		try {
-			const channelId = req.query.channelId;
-			const dateStr = req.query.date || null;
-			const taskFilter = {};
-			const issueFilter = {};
+      // 🟢 FIX: Set dynamic boundaries for the requested date. Default to today if no date is provided.
+      let targetStart = new Date();
+      targetStart.setHours(0, 0, 0, 0);
+      let targetEnd = new Date(targetStart);
+      targetEnd.setHours(23, 59, 59, 999);
 
-			if (channelId) {
-				taskFilter.channel = channelId;
-				issueFilter.channel = channelId;
-			}
+      if (channelId) {
+        taskFilter.channel = channelId;
+        issueFilter.channel = channelId;
+      }
 
-			if (dateStr) {
-				const [year, month, day] = String(dateStr)
-					.split("-")
-					.map(Number);
-				if (year && month && day) {
-					const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-					const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-					taskFilter.$or = [
-						{ created_time: { $gte: start, $lte: end } },
-						{ updated_time: { $gte: start, $lte: end } },
-						{ due_date: { $gte: start, $lte: end } },
-					];
-					issueFilter.$or = [
-						{ created_time: { $gte: start, $lte: end } },
-						{ updated_time: { $gte: start, $lte: end } },
-					];
-				}
-			}
+      if (dateStr) {
+        const [year, month, day] = String(dateStr).split("-").map(Number);
+        if (year && month && day) {
+          // Update the boundaries to match the requested date!
+          targetStart = new Date(year, month - 1, day, 0, 0, 0, 0);
+          targetEnd = new Date(year, month - 1, day, 23, 59, 59, 999);
+          
+          taskFilter.$or = [
+            { created_time: { $gte: targetStart, $lte: targetEnd } },
+            { updated_time: { $gte: targetStart, $lte: targetEnd } },
+            { due_date: { $gte: targetStart, $lte: targetEnd } },
+          ];
+          issueFilter.$or = [
+            { created_time: { $gte: targetStart, $lte: targetEnd } },
+            { updated_time: { $gte: targetStart, $lte: targetEnd } },
+          ];
+        }
+      }
 
-			const [tasks, issues] = await Promise.all([
-				Task.find(taskFilter).lean(),
-				Issue.find(issueFilter).lean(),
-			]);
+      const [tasks, issues] = await Promise.all([
+        Task.find(taskFilter).lean(),
+        Issue.find(issueFilter).lean(),
+      ]);
 
-			const memberMap = new Map();
-			const today = new Date();
-			today.setHours(0, 0, 0, 0);
+      const memberMap = new Map();
 
-			const getName = (item) => {
-				const rawAssignee = item.assigned_to || item.owner;
-				if (!rawAssignee) return null;
+      const getName = (item) => {
+        const rawAssignee = item.assigned_to || item.owner;
+        if (!rawAssignee) return null;
 
-				// Extract potential name/email/real_name from string or object structures
-				let nameStr = "";
-				if (typeof rawAssignee === "string") {
-					nameStr = rawAssignee;
-				} else {
-					nameStr =
-						rawAssignee.real_name ||
-						rawAssignee.profile?.real_name ||
-						rawAssignee.display_name ||
-						rawAssignee.name ||
-						"";
-				}
+        let nameStr = "";
+        if (typeof rawAssignee === "string") {
+          nameStr = rawAssignee;
+        } else {
+          nameStr = 
+            rawAssignee.real_name || 
+            rawAssignee.profile?.real_name || 
+            rawAssignee.display_name || 
+            rawAssignee.name || 
+            "";
+        }
 
-				if (!nameStr || nameStr === "Unassigned") return null;
+        if (!nameStr || nameStr === "Unassigned") return null;
 
-				// Filter out bots and service agents
-				const lower = nameStr.toLowerCase();
-				if (
-					lower.includes("bot") ||
-					lower.includes("webhook") ||
-					lower.includes("integration") ||
-					lower.includes("service") ||
-					lower.includes("slackbot") ||
-					lower === "uslackbot"
-				) {
-					return null;
-				}
+        const lower = nameStr.toLowerCase();
+        if (
+          lower.includes("bot") ||
+          lower.includes("webhook") ||
+          lower.includes("integration") ||
+          lower.includes("service") ||
+          lower.includes("slackbot") ||
+          lower === "uslackbot"
+        ) {
+          return null;
+        }
 
-				// If it's an email address, strip the domain and format the prefix nicely
-				if (nameStr.includes("@")) {
-					nameStr = nameStr.split("@")[0];
-				}
+        if (nameStr.includes("@")) {
+          nameStr = nameStr.split("@")[0];
+        }
 
-				// Convert dots, underscores, or hyphens into spaces and capitalize
-				return nameStr
-					.replace(/[._-]+/g, " ")
-					.trim()
-					.split(/\s+/)
-					.map(
-						(word) =>
-							word.charAt(0).toUpperCase() +
-							word.slice(1).toLowerCase(),
-					)
-					.join(" ");
-			};
+        return nameStr
+          .replace(/[._-]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
+      };
 
-			const isToday = (date) => {
-				if (!date) return false;
-				const d = new Date(date);
-				return d >= today;
-			};
+      // 🟢 FIX: Check if the task was done within the target Start and End boundaries!
+      const isCompletedOnTargetDate = (date) => {
+        if (!date) return false;
+        const d = new Date(date);
+        return d >= targetStart && d <= targetEnd;
+      };
 
-			for (const task of tasks) {
-				const name = getName(task);
-				if (!name) continue;
+      for (const task of tasks) {
+        const name = getName(task);
+        if (!name) continue;
 
-				const status = (task.status || "").toLowerCase();
-				const isBlocked =
-					status === "blocked" ||
-					task.blocked_reason ||
-					task.block_reason_pending;
-				const isDone = status === "completed" || status === "done";
-				const isCurrent = !isBlocked && !isDone;
+        const status = (task.status || "").toLowerCase();
+        const isBlocked =
+          status === "blocked" ||
+          task.blocked_reason ||
+          task.block_reason_pending;
+        const isDone = status === "completed" || status === "done";
+        const isCurrent = !isBlocked && !isDone;
 
-				if (!memberMap.has(name)) {
-					memberMap.set(name, {
-						name,
-						current: 0,
-						blocked: 0,
-						doneToday: 0,
-					});
-				}
-				const member = memberMap.get(name);
+        if (!memberMap.has(name)) {
+          memberMap.set(name, { name, current: 0, blocked: 0, doneToday: 0 });
+        }
+        const member = memberMap.get(name);
 
-				if (isBlocked) member.blocked++;
-				else if (isDone) {
-					if (
-						isToday(
-							task.updated_time ||
-								task.updatedAt ||
-								task.created_time,
-						)
-					) {
-						member.doneToday++;
-					}
-				} else if (isCurrent) member.current++;
-			}
+        if (isBlocked) member.blocked++;
+        else if (isDone) {
+          // 🟢 FIX: Use the new function here
+          if (isCompletedOnTargetDate(task.updated_time || task.updatedAt || task.created_time)) {
+            member.doneToday++;
+          }
+        } else if (isCurrent) member.current++;
+      }
 
-			for (const issue of issues) {
-				const name = getName(issue);
-				if (!name) continue;
+      for (const issue of issues) {
+        const name = getName(issue);
+        if (!name) continue;
 
-				const status = (issue.status || "").toLowerCase();
-				const isBlocked =
-					status === "hold" ||
-					issue.blocked_reason ||
-					issue.block_reason_pending;
-				const isResolved = status === "resolved";
-				const isCurrent = !isBlocked && !isResolved;
+        const status = (issue.status || "").toLowerCase();
+        const isBlocked =
+          status === "hold" ||
+          issue.blocked_reason ||
+          issue.block_reason_pending;
+        const isResolved = status === "resolved";
+        const isCurrent = !isBlocked && !isResolved;
 
-				if (!memberMap.has(name)) {
-					memberMap.set(name, {
-						name,
-						current: 0,
-						blocked: 0,
-						doneToday: 0,
-					});
-				}
-				const member = memberMap.get(name);
+        if (!memberMap.has(name)) {
+          memberMap.set(name, { name, current: 0, blocked: 0, doneToday: 0 });
+        }
+        const member = memberMap.get(name);
 
-				if (isBlocked) member.blocked++;
-				else if (isResolved) {
-					if (
-						isToday(
-							issue.updated_time ||
-								issue.updatedAt ||
-								issue.created_time,
-						)
-					) {
-						member.doneToday++;
-					}
-				} else if (isCurrent) member.current++;
-			}
+        if (isBlocked) member.blocked++;
+        else if (isResolved) {
+          // 🟢 FIX: Use the new function here
+          if (isCompletedOnTargetDate(issue.updated_time || issue.updatedAt || issue.created_time)) {
+            member.doneToday++;
+          }
+        } else if (isCurrent) member.current++;
+      }
 
-			res.json(Array.from(memberMap.values()));
-		} catch (err) {
-			next(err);
-		}
-	});
+      res.json(Array.from(memberMap.values()));
+    } catch (err) {
+      next(err);
+    }
+  });
 
 	router.post(
 		"/parse",
