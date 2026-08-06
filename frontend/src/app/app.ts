@@ -1,5 +1,5 @@
 import { Component, inject } from '@angular/core';
-import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
+import { RouterOutlet, RouterLink, RouterLinkActive, Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { DashboardService } from './services/dashboard.service';
 import { AuthService } from './services/auth.service';
@@ -9,60 +9,75 @@ import { AuthService } from './services/auth.service';
   standalone: true,
   imports: [RouterOutlet, RouterLink, RouterLinkActive, CommonModule],
   template: `
-    <div class="app-container" *ngIf="auth.user(); else loginTpl">
-      <!-- Sidebar -->
-      <aside class="sidebar">
-        <div class="sidebar-brand">
-          <span class="brand-name">Ai Engineering Manager</span>
-          <span class="brand-role">{{ auth.user()?.role || 'User' }}</span>
-        </div>
+<div class="app-container" *ngIf="auth.user(); else loginTpl">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-brand">
+        <span class="brand-name">Ai Engineering Manager</span>
+        <span class="brand-role">{{ auth.user()?.role || 'User' }}</span>
+      </div>
 
-        <!-- Navigation Menu -->
-        <nav class="sidebar-nav">
-          <a routerLink="/dashboard" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Dashboard
-          </a>
-          <a routerLink="/tasks" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Tasks
-          </a>
-          <a routerLink="/standup-summary" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Stand-up Summary
-          </a>
-          <a routerLink="/team" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Team
-          </a>
-          <a routerLink="/issues" routerLinkActive="active" class="nav-item">
-            <span class="nav-dot"></span>Issues
-          </a>
-         
-          <a routerLink="/new-user" routerLinkActive="active" *ngIf="auth.isAdmin()" class="nav-item">
-            <span class="nav-dot"></span> Create New User
-          </a>
-        </nav>
-      </aside>
-
-      <!-- Main Content -->
-      <main class="main-content">
-        <router-outlet />
-      </main>
+      <!-- Navigation Menu -->
+      <nav class="sidebar-nav">
+        <a routerLink="/dashboard" routerLinkActive="active" class="nav-item">
+          <span class="nav-dot"></span>Dashboard
+        </a>
+        <a routerLink="/tasks" routerLinkActive="active" class="nav-item">
+          <span class="nav-dot"></span>Tasks
+        </a>
+        <a routerLink="/standup-summary" routerLinkActive="active" class="nav-item">
+          <span class="nav-dot"></span>Stand-up Summary
+        </a>
+        <a routerLink="/team" routerLinkActive="active" class="nav-item">
+          <span class="nav-dot"></span>Team
+        </a>
+        <a routerLink="/issues" routerLinkActive="active" class="nav-item">
+          <span class="nav-dot"></span>Issues
+        </a>
+       
+        <a routerLink="/new-user" routerLinkActive="active" *ngIf="auth.isAdmin()" class="nav-item">
+          <span class="nav-dot"></span> Create New User
+        </a>
+      </nav>
     </div>
 
-    <ng-template #loginTpl>
-      <router-outlet />
-    </ng-template>
+    <!-- Bottom Sidebar Footer (Role & Logout) -->
+    <div class="sidebar-footer" *ngIf="auth.user()">
+      <button class="refresh-btn" (click)="refreshAll()" [disabled]="dashService.loading()">
+        {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
+      </button>
+      <div class="sidebar-footer-row">
+        <span class="role-badge">{{ auth.user()?.role }}</span>
+        <button class="logout-btn" (click)="logout()">Logout</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <router-outlet />
+  </main>
+</div>
+
+<ng-template #loginTpl>
+  <router-outlet />
+</ng-template>
   `,
-   styles: [
+  styles: [
     `
       :host {
         display: block;
         min-height: 100vh;
+        overflow: hidden;
         caret-color: transparent;
         user-select: none;
       }
+      
       .app-container {
         display: flex;
-        min-height: 100vh;
+        height: 100vh;
         background: #f8f9fa;
+        overflow: hidden;
       }
 
       .sidebar {
@@ -71,6 +86,14 @@ import { AuthService } from './services/auth.service';
         background: #ffffff;
         border-right: 1px solid #e9ecef;
         padding: 24px 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        height: 100%;
+        box-sizing: border-box;
+      }
+
+      .sidebar-top {
         display: flex;
         flex-direction: column;
       }
@@ -103,7 +126,7 @@ import { AuthService } from './services/auth.service';
         gap: 2px;
         padding: 0 12px;
       }
-
+ 
       .nav-item {
         display: flex;
         align-items: center;
@@ -129,6 +152,28 @@ import { AuthService } from './services/auth.service';
         color: #5b4fcf;
         font-weight: 500;
       }
+      
+      .refresh-btn { 
+        width: 100%;
+        background: #5b4fcf; 
+        color: white; 
+        border: none; 
+        border-radius: 6px; 
+        padding: 8px 12px; 
+        font-size: 13px; 
+        font-weight: 500; 
+        cursor: pointer; 
+        text-align: center;
+      }
+
+      .refresh-btn:hover:not(:disabled) { 
+        background: #4a3ebc; 
+      }
+
+      .refresh-btn:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
 
       .nav-item.active .nav-dot {
         background: #5b4fcf;
@@ -140,6 +185,47 @@ import { AuthService } from './services/auth.service';
         border-radius: 50%;
         background: #ccc;
         flex-shrink: 0;
+      }
+
+      .sidebar-footer {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 16px 20px;
+        background: #ffffff;
+      }
+
+      .sidebar-footer-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+      }
+
+      .role-badge {
+        background: #eef2ff;
+        color: #5b4fcf;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 3px;
+        text-transform: uppercase;
+      }
+
+      .logout-btn {
+        background: transparent;
+        color: #e05050;
+        border: 1px solid #e05050;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .logout-btn:hover {
+        background: #e05050;
+        color: white;
       }
 
       .main-content {
@@ -157,6 +243,7 @@ import { AuthService } from './services/auth.service';
 export class App {
   dashService = inject(DashboardService);
   auth = inject(AuthService);
+  private router = inject(Router);
 
   ngOnInit() {
     this.auth.checkAuth().then(() => {
@@ -165,8 +252,12 @@ export class App {
     });
   }
 
+  refreshAll(): void {
+    this.dashService.refresh();
+  }
+
   logout(): void {
     this.auth.logout();
+    this.router.navigate(['/login']);
   }
 }
-

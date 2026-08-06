@@ -28,28 +28,28 @@ import { DashboardService } from '../services/dashboard.service';
             title="Show All Dates"
           >✕</button>
         </div>
-        <select
-    [value]="dashService.selectedChannel() || 'all'"
-    (change)="onChannelChange($event)"
->
-    <option value="all">All Channels</option>
 
-    <option
-        *ngFor="let channel of dashService.channels()"
-        [value]="channel.id"
-    >
-        {{ channel.name }}
-    </option>
-</select>
+        <div class="select-wrapper">
+          <select
+            [value]="dashService.selectedChannel() || 'all'"
+            (change)="onChannelChange($event)"
+            class="channel-select"
+          >
+            <option value="all">All Channels</option>
+            <option
+              *ngFor="let channel of dashService.channels()"
+              [value]="channel.id"
+            >
+              {{ channel.name }}
+            </option>
+          </select>
+        </div>
+
         <button class="connect-slack-btn" (click)="connectSlack()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 9h-4V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2V9z"></path>
           </svg>
           Connect Slack
-        </button>
-
-        <button class="refresh-btn" (click)="refreshAll()" [disabled]="dashService.loading()">
-          {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
         </button>
       </div>
     </app-page-header>
@@ -170,16 +170,69 @@ import { DashboardService } from '../services/dashboard.service';
       .date-input { border: 1px solid #5b4fcf; border-radius: 6px; padding: 6px 12px; font-size: 13px; color: #1a1a2e; outline: none; background: #fafafd; cursor: pointer; }
       .clear-date-btn { background: #f0f0f0; border: 1px solid #d0d0d0; border-radius: 6px; width: 28px; height: 32px; cursor: pointer; font-size: 12px; color: #555; display: flex; align-items: center; justify-content: center; }
       .clear-date-btn:hover { background: #e0e0e0; }
-      .connect-slack-btn { background: #ffffff; color: #1a1a2e; border: 1px solid #e9ecef; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-      .connect-slack-btn:hover { border-color: #5b4fcf; color: #5b4fcf; background: #fafafd; }
-      .refresh-btn { background: #5b4fcf; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
-      .refresh-btn:hover:not(:disabled) { background: #4a3ebc; }
+
+      /* Styled Channel Select Dropdown */
+      .select-wrapper {
+        position: relative;
+        display: inline-block;
+      }
+      .channel-select {
+        appearance: none;
+        background-color: #fafafd;
+        border: 1px solid #dcd6f7;
+        border-radius: 6px;
+        padding: 7px 32px 7px 12px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #333;
+        outline: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235b4fcf' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+      }
+      .channel-select:hover {
+        border-color: #5b4fcf;
+        background-color: #ffffff;
+      }
+      .channel-select:focus {
+        border-color: #5b4fcf;
+        box-shadow: 0 0 0 3px rgba(91, 79, 207, 0.12);
+        background-color: #ffffff;
+      }
+
+      /* Polished Connect Slack Button */
+      .connect-slack-btn { 
+        background: linear-gradient(135deg, #4A154B 0%, #611f69 100%);
+        color: #ffffff; 
+        border: none; 
+        border-radius: 6px; 
+        padding: 7px 16px; 
+        font-size: 13px; 
+        font-weight: 600; 
+        cursor: pointer; 
+        display: flex; 
+        align-items: center; 
+        gap: 8px; 
+        box-shadow: 0 2px 4px rgba(74, 21, 75, 0.15);
+        transition: all 0.2s ease;
+      }
+      .connect-slack-btn:hover { 
+        background: linear-gradient(135deg, #3c113d.5 0%, #4a154b 100%);
+        box-shadow: 0 4px 8px rgba(74, 21, 75, 0.25);
+        transform: translateY(-1px);
+      }
+      .connect-slack-btn:active {
+        transform: translateY(0);
+        box-shadow: 0 1px 2px rgba(74, 21, 75, 0.2);
+      }
+
       .error-banner { background: #ffeaea; color: #e53e3e; padding: 12px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
       .loading-state { color: #888; font-size: 14px; padding: 40px; text-align: center; background: white; border-radius: 8px; border: 1px solid #e9ecef; }
       .empty-text { color: #888; font-size: 13px; font-style: italic; }
       .stats-row { display: flex; gap: 16px; }
       .stat-card { flex: 1; background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 18px 20px; }
-      .stat-card.highlighted { border: 2px solid #5b4fcf; }
       .stat-label { font-size: 11px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
       .stat-value { font-size: 28px; font-weight: 700; color: #1a1a2e; margin: 4px 0; }
       .stat-value.critical { color: #e53e3e; }
@@ -229,12 +282,8 @@ export class DashboardComponent implements OnInit {
   }
   
   onChannelChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value;
-  this.dashService.setChannel(value);
-}
-
-  refreshAll(): void {
-    this.dashService.refresh();
+    const value = (event.target as HTMLSelectElement).value;
+    this.dashService.setChannel(value);
   }
 
   connectSlack(): void {
@@ -272,7 +321,7 @@ export class DashboardComponent implements OnInit {
   }
 
   private matchesSelectedDate(itemDate: any, targetDateStr: string): boolean {
-    if (!targetDateStr) return true; // If no date is selected, show all items!
+    if (!targetDateStr) return true;
     if (!itemDate) return false;
     if (typeof itemDate === 'string' && itemDate.startsWith(targetDateStr)) {
       return true;

@@ -581,134 +581,138 @@ class MessageProcessor {
 
 			// 🟢 BATCH PERSISTENCE LOOP: Handles multiple assigned users from documents
 			if (
-				parsed.action === "CREATE_BATCH" &&
-				Array.isArray(parsed.items)
-			) {
-				let lastResult = null;
-				const userDir = raw.user_directory || {};
-				const senderRef = sender || { id: "", name: "Unassigned" }; // 🟢 Ensure senderRef is safely set
+                parsed.action === "CREATE_BATCH" &&
+                Array.isArray(parsed.items)
+            ) {
+                const batchResults = []; // 🟢 FIX: Array to hold all processed items
+                const userDir = raw.user_directory || {};
+                const senderRef = sender || { id: "", name: "Unassigned" }; 
 
-				for (const item of parsed.items) {
-					let assignedUser = { id: "", name: "Unassigned" };
-					if (item.assigned_to?.name) {
-						const searchName = item.assigned_to.name.toLowerCase();
-						const foundUser = Object.values(userDir).find(
-							(u) =>
-								(u.name || "")
-									.toLowerCase()
-									.includes(searchName) ||
-								(u.display_name || "")
-									.toLowerCase()
-									.includes(searchName) ||
-								(u.real_name || "")
-									.toLowerCase()
-									.includes(searchName),
-						);
-						assignedUser = foundUser || {
-							id: "",
-							name: item.assigned_to.name,
-						};
-					} else {
-						assignedUser = senderRef;
-					}
+                for (const item of parsed.items) {
+                    let assignedUser = { id: "", name: "Unassigned" };
+                    if (item.assigned_to?.name) {
+                        const searchName = item.assigned_to.name.toLowerCase();
+                        const foundUser = Object.values(userDir).find(
+                            (u) =>
+                                (u.name || "")
+                                    .toLowerCase()
+                                    .includes(searchName) ||
+                                (u.display_name || "")
+                                    .toLowerCase()
+                                    .includes(searchName) ||
+                                (u.real_name || "")
+                                    .toLowerCase()
+                                    .includes(searchName),
+                        );
+                        assignedUser = foundUser || {
+                            id: "",
+                            name: item.assigned_to.name,
+                        };
+                    } else {
+                        assignedUser = senderRef;
+                    }
 
-					// 🟢 FIX: Execute Similarity Checks inside the batch loop to prevent document duplicates!
-					let finalAction =
-						item.type === "ISSUE" ? "CREATE_ISSUE" : "CREATE_TASK";
-					let matchedTask = null;
-					let matchedIssue = null;
+                    // 🟢 Similarity Checks inside the batch loop
+                    let finalAction =
+                        item.type === "ISSUE" ? "CREATE_ISSUE" : "CREATE_TASK";
+                    let matchedTask = null;
+                    let matchedIssue = null;
 
-					if (item.type === "TASK") {
-						const sim = await findSimilarTask(
-							item.title,
-							item.description,
-							workspace_id,
-							channel,
-							0.6,
-						);
-						if (sim) {
-							finalAction = "UPDATE_TASK";
-							matchedTask = sim.task;
-						}
-					} else if (item.type === "ISSUE") {
-						// Pass assignedUser.id to strictly check for the same person on the same day rule
-						const sim = await findSimilarIssue(
-							item.title,
-							item.description,
-							workspace_id,
-							channel,
-							0.6,
-							assignedUser.id || senderRef.id,
-						);
-						if (sim) {
-							finalAction = "UPDATE_ISSUE";
-							matchedIssue = sim.issue;
-						}
-					}
+                    if (item.type === "TASK") {
+                        const sim = await findSimilarTask(
+                            item.title,
+                            item.description,
+                            workspace_id,
+                            channel,
+                            0.6,
+                        );
+                        if (sim) {
+                            finalAction = "UPDATE_TASK";
+                            matchedTask = sim.task;
+                        }
+                    } else if (item.type === "ISSUE") {
+                        const sim = await findSimilarIssue(
+                            item.title,
+                            item.description,
+                            workspace_id,
+                            channel,
+                            0.6,
+                            assignedUser.id || senderRef.id,
+                        );
+                        if (sim) {
+                            finalAction = "UPDATE_ISSUE";
+                            matchedIssue = sim.issue;
+                        }
+                    }
 
-					const subParsed = {
-						...parsed,
-						classification: item.type || "TASK",
-						action: finalAction,
-						sender: senderRef,
-						owner: assignedUser,
-						assigned_to: assignedUser,
-						assigned_by: senderRef,
-						reporter: senderRef,
-						updates: { status: item.status },
-						task:
-							item.type === "TASK"
-								? {
-										id: matchedTask?.task_id,
-										title: item.title,
-										description: item.description,
-										priority: item.priority,
-										status: item.status,
-										due_date: item.due_date,
-									}
-								: null,
-						issue:
-							item.type === "ISSUE"
-								? {
-										id: matchedIssue?.issue_id,
-										title: item.title,
-										description: item.description,
-										priority: item.priority,
-										status: item.status,
-										due_date: item.due_date,
-									}
-								: null,
-						confidence: 0.99,
-					};
+                    const subParsed = {
+                        ...parsed,
+                        classification: item.type || "TASK",
+                        action: finalAction,
+                        sender: senderRef,
+                        owner: assignedUser,
+                        assigned_to: assignedUser,
+                        assigned_by: senderRef,
+                        reporter: senderRef,
+                        updates: { status: item.status },
+                        task:
+                            item.type === "TASK"
+                                ? {
+                                        id: matchedTask?.task_id,
+                                        title: item.title,
+                                        description: item.description,
+                                        priority: item.priority,
+                                        status: item.status,
+                                        due_date: item.due_date,
+                                    }
+                                : null,
+                        issue:
+                            item.type === "ISSUE"
+                                ? {
+                                        id: matchedIssue?.issue_id,
+                                        title: item.title,
+                                        description: item.description,
+                                        priority: item.priority,
+                                        status: item.status,
+                                        due_date: item.due_date,
+                                    }
+                                : null,
+                        confidence: 0.99,
+                    };
 
-					lastResult = await this.persist(subParsed, {
-						text: item.title,
-						sender: senderRef,
-						channel,
-						thread_id: threadRoot,
-						workspace_id,
-						team,
-						message_ts,
-						text_hash: textHash,
-						slack_client,
-						user_directory: userDir,
-						local_attachments,
-						existing_task: matchedTask || existing_task,
-						existing_issue: matchedIssue || existing_issue,
-					});
+                    const singleResult = await this.persist(subParsed, {
+                        text: item.title,
+                        sender: senderRef,
+                        channel,
+                        thread_id: threadRoot,
+                        workspace_id,
+                        team,
+                        message_ts,
+                        text_hash: textHash,
+                        slack_client,
+                        user_directory: userDir,
+                        local_attachments,
+                        existing_task: matchedTask || existing_task,
+                        existing_issue: matchedIssue || existing_issue,
+                    });
 
-					if (this.io && !quiet) {
-						this.io.emit("dashboard:update", {
-							action: lastResult.action,
-							classification: lastResult.classification,
-							task_id: lastResult.task?.id || null,
-							issue_id: lastResult.issue?.id || null,
-							at: new Date().toISOString(),
-						});
-					}
-				}
-				return lastResult;
-			}
+                    // 🟢 Add the completed item to our results array
+                    batchResults.push(singleResult);
+
+                    if (this.io && !quiet) {
+                        this.io.emit("dashboard:update", {
+                            action: singleResult.action,
+                            classification: singleResult.classification,
+                            task_id: singleResult.task?.id || null,
+                            issue_id: singleResult.issue?.id || null,
+                            at: new Date().toISOString(),
+                        });
+                    }
+                }
+                
+                // 🟢 FIX: Return the entire array of results!
+                return { action: "CREATE_BATCH", classification: "BATCH", items: batchResults };
+            }
 			// 🟢 FIX 2: Title Failsafe (Removes AI hallucinated brackets from the dashboard title)
 			if (parsed.task?.title) {
 				parsed.task.title = parsed.task.title

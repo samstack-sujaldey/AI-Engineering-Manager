@@ -631,7 +631,7 @@ function createSlackApp({
       const textsToProcess =
         explicitLines.length > 0 && !hasFiles ? explicitLines : [processedLines.join("\n") || text];
 
-      for (let i = 0; i < textsToProcess.length; i++) {
+     for (let i = 0; i < textsToProcess.length; i++) {
         const chunk = textsToProcess[i];
         const chunkTs =
           explicitLines.length > 1 ? `${event.ts}_${i}` : event.ts;
@@ -650,127 +650,133 @@ function createSlackApp({
           local_attachments: downloadedFiles,
         });
 
-		console.log(
-					`[slack] ${result.action} classification=${result.classification} confidence=${result.confidence}`,
-				);
+        console.log(
+          `[slack] ${result.action} classification=${result.classification} confidence=${result.confidence}`,
+        );
 
-				// 🟢 FIXED: Now listens for task_updated and issue_updated events from MessageProcessor
-        if (
-          result &&
-          (result.task_created ||
-            result.issue_created ||
-            result.task_updated ||
-            result.issue_updated)
-        ) {
-          const isTask = result.task_created || result.task_updated;
-          const workItem = isTask ? result.task : result.issue;
+        // 🟢 FIX: Convert a single result into an array, or grab the batch items array
+        const resultsToProcess = result?.action === "CREATE_BATCH" ? result.items : [result];
 
-          const title = workItem?.title || "Untitled";
-          const priority = workItem?.priority || "HIGH";
-          const status = workItem?.status || "HOLD";
-          const assignedName = workItem?.assigned_to?.id
-            ? `<@${workItem.assigned_to.id}>`
-            : workItem?.assigned_to?.name || "Unassigned";
+        // 🟢 FIX: Loop over every single task/issue created and post a confirmation
+        for (const res of resultsToProcess) {
+          if (
+            res &&
+            (res.task_created ||
+              res.issue_created ||
+              res.task_updated ||
+              res.issue_updated)
+          ) {
+            const isTask = res.task_created || res.task_updated;
+            const workItem = isTask ? res.task : res.issue;
 
-				// Change the label dynamically based on whether it is new or an update
-          const actionText =
-						result.task_created || result.issue_created
-							? "Tracked"
-							: "Updated";
+            const title = workItem?.title || "Untitled";
+            const priority = workItem?.priority || "HIGH";
+            const status = workItem?.status || "HOLD";
+            const assignedName = workItem?.assigned_to?.id
+              ? `<@${workItem.assigned_to.id}>`
+              : workItem?.assigned_to?.name || "Unassigned";
 
-          const label = isTask
-            ? `🎯 *Task ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`
-            : `🚨 *Issue ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`;
+            // Change the label dynamically based on whether it is new or an update
+            const actionText =
+              res.task_created || res.issue_created
+                ? "Tracked"
+                : "Updated";
 
-					console.log(
-						`[slack] Posting confirmation for ${isTask ? "task" : "issue"}: ${label}`,
-					);
+            const label = isTask
+              ? `🎯 *Task ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`
+              : `🚨 *Issue ${actionText}:* '${title}'\nAssigned to: ${assignedName} [${priority}/${status}]`;
 
-          try {
-            await client.chat.postMessage({
-              channel: event.channel,
-              thread_ts: event.thread_ts || event.ts,
-              text: label,
-            });
-			console.log(
-							"[slack] Confirmation thread reply posted successfully",
-						);
-          } catch (err) {
-            console.error(
-              "[slack] confirmation thread reply failed:",
-              err.message,
+            console.log(
+              `[slack] Posting confirmation for ${isTask ? "task" : "issue"}: ${label}`,
+            );
+
+            try {
+              await client.chat.postMessage({
+                channel: event.channel,
+                thread_ts: event.thread_ts || event.ts,
+                text: label,
+              });
+              console.log(
+                "[slack] Confirmation thread reply posted successfully",
+              );
+            } catch (err) {
+              console.error(
+                "[slack] confirmation thread reply failed:",
+                err.message,
+              );
+            }
+          } else {
+            console.log(
+              `[slack] No confirmation sent - action=${res?.action}`,
             );
           }
-				} else {
-					console.log(
-						`[slack] No confirmation sent - action=${result?.action}`,
-					);
-				}
 
-				if (
-					result &&
-					result.issue_created &&
-					result.related_work?.length
-				) {
-					try {
-						const related = result.related_work;
-						const textLines = related.map(
-							(r, idx) =>
-								`${idx + 1}. [${r.type.toUpperCase()}] *${r.title}* — ${r.reason}`,
-						);
-						const users = related.flatMap(
-							(r) => r.related_users || [],
-						);
-						const uniqueUsers = [];
-						const seen = new Set();
-						for (const u of users) {
-							if (!seen.has(u.id)) {
-								seen.add(u.id);
-								uniqueUsers.push(u);
-							}
-						}
+          // 🟢 FIX: Ensure related work checks run per item in the batch
+          if (
+            res &&
+            res.issue_created &&
+            res.related_work?.length
+          ) {
+            try {
+              const related = res.related_work;
+              const textLines = related.map(
+                (r, idx) =>
+                  `${idx + 1}. [${r.type.toUpperCase()}] *${r.title}* — ${r.reason}`,
+              );
+              const users = related.flatMap(
+                (r) => r.related_users || [],
+              );
+              const uniqueUsers = [];
+              const seen = new Set();
+              for (const u of users) {
+                if (!seen.has(u.id)) {
+                  seen.add(u.id);
+                  uniqueUsers.push(u);
+                }
+              }
 
-						const userLines = uniqueUsers
-							.map(
-								(u) =>
-									`• <@${u.id}> (${u.display_name || u.name})`,
-							)
-							.join("\n");
+              const userLines = uniqueUsers
+                .map(
+                  (u) =>
+                    `• <@${u.id}> (${u.display_name || u.name})`,
+                )
+                .join("\n");
 
-						const blocks = [
-							{
-								type: "section",
-								text: {
-									type: "mrkdwn",
-									text: `🔍 *Related work found for this issue:*\n${textLines.join("\n")}\n\n*People who worked on these:*\n${userLines}\n\nReply in this thread with the person's name or @mention to connect, or say "no" to skip.`,
-								},
-							},
-						];
+              const blocks = [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: `🔍 *Related work found for this issue:*\n${textLines.join("\n")}\n\n*People who worked on these:*\n${userLines}\n\nReply in this thread with the person's name or @mention to connect, or say "no" to skip.`,
+                  },
+                },
+              ];
 
-						await client.chat.postMessage({
-							channel: event.channel,
-							thread_ts: event.thread_ts || event.ts,
-							text: `🔍 Related work found for this issue:\n${textLines.join("\n")}\n\nPeople who worked on these:\n${userLines}\n\nReply in this thread with the person's name or @mention to connect, or say "no" to skip.`,
-							blocks,
-						});
+              await client.chat.postMessage({
+                channel: event.channel,
+                thread_ts: event.thread_ts || event.ts,
+                text: `🔍 Related work found for this issue:\n${textLines.join("\n")}\n\nPeople who worked on these:\n${userLines}\n\nReply in this thread with the person's name or @mention to connect, or say "no" to skip.`,
+                blocks,
+              });
 
-						connect.createRelatedWorkRequest(
-							event.thread_ts || event.ts,
-							{
-								relatedUsers: uniqueUsers,
-								workItems: related,
-								channel: event.channel,
-							},
-						);
-					} catch (err) {
-						console.error(
-							"[slack] related work post failed:",
-							err.message,
-						);
-					}
-				}
-			}
-		}
+              connect.createRelatedWorkRequest(
+                event.thread_ts || event.ts,
+                {
+                  relatedUsers: uniqueUsers,
+                  workItems: related,
+                  channel: event.channel,
+                },
+              );
+            } catch (err) {
+              console.error(
+                "[slack] related work post failed:",
+                err.message,
+              );
+            }
+          }
+        } // <-- End of resultsToProcess Loop
+      }
+    }
 
     return result;
   }
