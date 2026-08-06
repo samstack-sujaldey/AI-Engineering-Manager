@@ -542,7 +542,13 @@ export interface MemberSummary {
       align-items: center;
       flex-shrink: 0;
     }
-
+     app-page-header ::ng-deep .search-wrapper,
+    app-page-header ::ng-deep input[type="text"],
+    app-page-header ::ng-deep input.search-input,
+    .search-bar,
+    .search-container {
+      display: none !important;
+    }
     .read-more-btn {
       background: none;
       border: none;

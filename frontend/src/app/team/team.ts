@@ -301,6 +301,13 @@ interface DayActivity {
         align-items: center;
         gap: 12px;
       }
+    app-page-header ::ng-deep .search-wrapper,
+    app-page-header ::ng-deep input[type="text"],
+    app-page-header ::ng-deep input.search-input,
+    .search-bar,
+    .search-container {
+      display: none !important;
+    }
       .date-picker-wrapper {
         display: flex;
         align-items: center;
