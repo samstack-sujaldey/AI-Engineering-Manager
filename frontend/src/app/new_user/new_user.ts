@@ -4,12 +4,15 @@ import { ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angula
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { environment } from '../../environments/environment';
 import { AuthService } from '../services/auth.service';
+import { PageHeaderComponent } from '../shared/page-header';
 
 @Component({
   selector: 'app-new-user',
   standalone: true,
-  imports: [CommonModule, ReactiveFormsModule],
+  imports: [CommonModule, PageHeaderComponent,ReactiveFormsModule],
   template: `
+  <app-page-header title="Admin" searchPlaceholder="Find a team member..."></app-page-header>
+
     <div class="card-container">
       <div class="form-card">
         <div class="header-block">
@@ -77,7 +80,13 @@ import { AuthService } from '../services/auth.service';
         --success: #0d5c34;
         font-family: 'Source Serif 4', 'Libre Baskerville', Georgia, serif;
       }
-
+       app-page-header ::ng-deep .search-wrapper,
+    app-page-header ::ng-deep input[type="text"],
+    app-page-header ::ng-deep input.search-input,
+    .search-bar,
+    .search-container {
+      display: none !important;
+    }
       .form-card {
         background: var(--panel);
         border: 1px solid var(--line);
