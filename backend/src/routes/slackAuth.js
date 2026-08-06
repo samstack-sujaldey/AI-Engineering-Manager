@@ -46,15 +46,7 @@ router.get("/oauth_redirect", async (req, res) => {
 			// TODO: Save the accessToken and teamId to your database (e.g., in a Workspace model)
 			// Example: await Workspace.findOneAndReplace({ teamId }, { accessToken, teamName }, { upsert: true });
 
-			res.send(`
-                <html>
-                    <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                        <h2>✅ Slack Workspace Connected!</h2>
-                        <p>Successfully linked <strong>${teamName}</strong> to Forgeboard.</p>
-                        <p>You can close this window and return to your dashboard.</p>
-                    </body>
-                </html>
-            `);
+			res.redirect(`${process.env.FRONTEND_URL}/dashboard?slackConnected=true`);
 		} else {
 			res.status(400).send(`Error from Slack: ${response.data.error}`);
 		}

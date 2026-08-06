@@ -41,7 +41,7 @@ async function main() {
 	const server = http.createServer(app);
 	const corsOptions = {
 		origin:
-			process.env.CORS_ORIGIN ||
+			process.env.FRONTEND_URL ||
 			"https://ai-engineering-manager-git-main-sujal-deys-projects.vercel.app",
 		methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 		credentials: true,
