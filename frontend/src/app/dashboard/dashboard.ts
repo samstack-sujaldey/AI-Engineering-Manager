@@ -557,7 +557,9 @@ export class DashboardComponent implements OnInit {
 
   onChannelChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value;
-    this.dashService.setChannel(value);
+    const channelId = value === 'all' ? '' : value;
+    // Updates channel state and fetches data independently without triggering the sync pipeline
+    this.dashService.setChannel(channelId);
   }
 
   connectSlack(): void {
