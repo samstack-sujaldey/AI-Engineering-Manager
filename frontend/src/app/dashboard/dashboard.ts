@@ -219,7 +219,7 @@ import { DashboardService } from '../services/dashboard.service';
         transition: all 0.2s ease;
       }
       .connect-slack-btn:hover { 
-        background: linear-gradient(135deg, #3c113d.5 0%, #4a154b 100%);
+        background: linear-gradient(135deg, #3c113d 0%, #4a154b 100%);
         box-shadow: 0 4px 8px rgba(74, 21, 75, 0.25);
         transform: translateY(-1px);
       }
@@ -283,7 +283,9 @@ export class DashboardComponent implements OnInit {
   
   onChannelChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value;
-    this.dashService.setChannel(value);
+    const channelId = value === 'all' ? '' : value;
+    // Updates channel state and fetches data independently without triggering the sync pipeline
+    this.dashService.setChannel(channelId);
   }
 
   connectSlack(): void {

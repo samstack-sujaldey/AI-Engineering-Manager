@@ -42,10 +42,7 @@ import { AuthService } from './services/auth.service';
     </div>
 
     <!-- Bottom Sidebar Footer (Role & Logout) -->
-    <div class="sidebar-footer" *ngIf="auth.user()">
-      <button class="refresh-btn" (click)="refreshAll()" [disabled]="dashService.loading()">
-        {{ dashService.loading() ? 'Refreshing...' : 'Refresh Data' }}
-      </button>
+    <div class="sidebar-footer">
       <div class="sidebar-footer-row">
         <span class="role-badge">{{ auth.user()?.role }}</span>
         <button class="logout-btn" (click)="logout()">Logout</button>
@@ -85,7 +82,7 @@ import { AuthService } from './services/auth.service';
         min-width: 220px;
         background: #ffffff;
         border-right: 1px solid #e9ecef;
-        padding: 24px 0;
+        padding: 24px 0 0 0;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
@@ -152,28 +149,6 @@ import { AuthService } from './services/auth.service';
         color: #5b4fcf;
         font-weight: 500;
       }
-      
-      .refresh-btn { 
-        width: 100%;
-        background: #5b4fcf; 
-        color: white; 
-        border: none; 
-        border-radius: 6px; 
-        padding: 8px 12px; 
-        font-size: 13px; 
-        font-weight: 500; 
-        cursor: pointer; 
-        text-align: center;
-      }
-
-      .refresh-btn:hover:not(:disabled) { 
-        background: #4a3ebc; 
-      }
-
-      .refresh-btn:disabled {
-        opacity: 0.7;
-        cursor: not-allowed;
-      }
 
       .nav-item.active .nav-dot {
         background: #5b4fcf;
@@ -190,9 +165,10 @@ import { AuthService } from './services/auth.service';
       .sidebar-footer {
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        padding: 16px 20px;
+        padding: 16px 16px 20px 16px;
         background: #ffffff;
+        border-top: 1px solid #f0f0f0;
+        box-sizing: border-box;
       }
 
       .sidebar-footer-row {
@@ -200,6 +176,7 @@ import { AuthService } from './services/auth.service';
         align-items: center;
         justify-content: space-between;
         width: 100%;
+        gap: 8px;
       }
 
       .role-badge {
@@ -207,9 +184,10 @@ import { AuthService } from './services/auth.service';
         color: #5b4fcf;
         font-size: 11px;
         font-weight: 700;
-        padding: 3px 8px;
-        border-radius: 3px;
+        padding: 4px 8px;
+        border-radius: 4px;
         text-transform: uppercase;
+        letter-spacing: 0.3px;
       }
 
       .logout-btn {
@@ -221,6 +199,7 @@ import { AuthService } from './services/auth.service';
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
+        transition: all 0.15s ease;
       }
 
       .logout-btn:hover {
@@ -250,10 +229,6 @@ export class App {
       this.dashService.load();
       this.dashService.connectLive();
     });
-  }
-
-  refreshAll(): void {
-    this.dashService.refresh();
   }
 
   logout(): void {
