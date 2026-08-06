@@ -135,7 +135,7 @@ async function readTextFile(file, captionText = "") {
 }
 
 /**
- * Read JSON files with MD5 Caching
+ * Read JSON files with MD5 Caching & Guaranteed Parse Safety
  */
 async function readJsonFile(file, captionText = "") {
   validateAttachment(file);
@@ -150,23 +150,36 @@ async function readJsonFile(file, captionText = "") {
 
   console.log(`[Cache Miss]: Reading JSON file ${file.fileName}...`);
   const content = await fs.readFile(file.localPath, "utf8");
-  const json = JSON.parse(content);
-  const aiBatch = await analyzeTextDocument(JSON.stringify(json).substring(0, 40000), captionText, file.fileName);
+  
+  let result;
+  try {
+    // 🟢 FIX: Wrap in try/catch to prevent server crash on invalid JSON upload
+    const json = JSON.parse(content);
+    const aiBatch = await analyzeTextDocument(JSON.stringify(json).substring(0, 40000), captionText, file.fileName);
 
-  const result = {
-    extracted: true,
-    type: "JSON",
-    content: json, // Original JSON intact
-    ai_batch: aiBatch,
-    metadata: {
-      fileName: file.fileName,
-      keys: Object.keys(json),
-      totalKeys: Object.keys(json).length,
-    },
-    error: null,
-  };
+    result = {
+      extracted: true,
+      type: "JSON",
+      content: json,
+      ai_batch: aiBatch,
+      metadata: {
+        fileName: file.fileName,
+        keys: Object.keys(json),
+        totalKeys: Object.keys(json).length,
+      },
+      error: null,
+    };
+    attachmentCache.set(cacheKey, result);
+  } catch (parseErr) {
+    result = {
+      extracted: false,
+      type: "JSON",
+      content: null,
+      metadata: { fileName: file.fileName },
+      error: "Failed to parse JSON file: " + parseErr.message,
+    };
+  }
 
-  attachmentCache.set(cacheKey, result);
   return result;
 }
 
@@ -387,7 +400,7 @@ async function extractPresentation(file, captionText = "") {
 }
 
 /**
- * Image analysis via OpenAI Vision (gpt-4o) with Content-Hash Caching & Cleanup
+ * Image analysis via OpenAI Vision (gpt-4o) with Content-Hash Caching
  */
 async function analyzeImage(file, captionText = "") {
   validateAttachment(file);
@@ -399,7 +412,7 @@ async function analyzeImage(file, captionText = "") {
   const cachedAnalysis = attachmentCache.get(cacheKey);
   if (cachedAnalysis) {
     console.log(`[Cache Hit]: Image content already analyzed! (Hash: ${hash})`);
-    await fs.unlink(file.localPath).catch(() => {});
+    
     return {
       extracted: true,
       type: "IMAGE",
@@ -425,7 +438,7 @@ async function analyzeImage(file, captionText = "") {
             content: [
               {
                 type: "text",
-                // 🟢 PROMPT: Original fields retained, Batch fields appended, Caption utilized!
+                
                 text: `You are an AI task extraction assistant analyzing an attached image for an engineering manager dashboard.
 ${captionText ? `\nUser's message/caption accompanying this image: "${captionText}"\n` : ""}
 
@@ -478,8 +491,7 @@ Respond STRICTLY in valid JSON format with these exact keys:
 
     // Save result to cache
     attachmentCache.set(cacheKey, result);
-
-    await fs.unlink(file.localPath).catch(() => {});
+    
 
     return {
       extracted: true,
@@ -489,7 +501,7 @@ Respond STRICTLY in valid JSON format with these exact keys:
       error: null,
     };
   } catch (err) {
-    await fs.unlink(file.localPath).catch(() => {});
+
     console.warn(`[analyzeImage] Skipping image analysis for ${file.fileName}:`, err.message);
     return {
       extracted: true,

@@ -3,6 +3,7 @@ const { Task, Issue, Discussion, Team } = require("../models");
 const DailySummary = require("../models/DailySummary");
 const { callOpenAI } = require("../ai/openai");
 
+
 /**
  * 🟢 Resolves Display Name / Real Name and strips email domain if needed
  * e.g., "john.doe@company.com" -> "John Doe"
@@ -73,12 +74,13 @@ function startStandupScheduler() {
           await generateAndCacheSummary(team.channel_id, targetDateStr, startOfDay, endOfDay);
         }
       }
-
       console.log(`[StandupScheduler] ✅ Finished pre-caching for ${targetDateStr}.`);
     } catch (err) {
       console.error("[StandupScheduler Error]:", err.message);
     }
-  });
+   }, {
+    timezone: process.env.TZ // 🟢 Ensure this matches your team's actual timezone (e.g., "America/New_York")
+   });
 
   console.log("[StandupScheduler] 🕒 Initialized daily job.");
 }
@@ -264,7 +266,7 @@ ${rawPayload}`;
       issues_count: issues.length,
       discussions_count: discussions.length,
       is_stale: false,
-      generated_by: "single_pass_ai",
+      generated_by: "ai",
     },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
   );

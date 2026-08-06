@@ -6,23 +6,21 @@ const { toUser } = require("../agent/parser");
  */
 function safeJsonParse(response) {
 	if (typeof response !== "string") return response;
+	
 	let cleaned = response.trim();
 	if (cleaned.startsWith("```")) {
 		cleaned = cleaned
-			.replace(/^```(?:json)?/i, "")
-			.replace(/```$/g, "")
+			.replace(/^```(?:json)?\s*/i, "")
+			.replace(/\s*```$/g, "")
 			.trim();
 	}
-	return JSON.parse(cleaned);
-	if (typeof response !== "string") return response;
-	let cleaned = response.trim();
-	if (cleaned.startsWith("```")) {
-		cleaned = cleaned
-			.replace(/^```(?:json)?/i, "")
-			.replace(/```$/g, "")
-			.trim();
+	
+	try {
+		return JSON.parse(cleaned);
+	} catch (err) {
+		console.error("[momParser] Failed to parse AI JSON response:", err.message);
+		return {}; // Fallback to an empty object to prevent process crash
 	}
-	return JSON.parse(cleaned);
 }
 
 /**

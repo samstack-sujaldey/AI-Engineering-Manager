@@ -127,9 +127,7 @@ class MessageProcessor {
 		const { quiet = false } = options;
 
 		try {
-			if (text) {
-				text = text.replace(/<@[A-Z0-9]+>/g, "").trim();
-			}
+			
 
 			// 🟢 TEAM RESOLUTION
 			if (!team && channel) {

@@ -393,7 +393,7 @@ Instructions:
  router.delete('/tasks/:id', verifyToken, requireAdmin, async (req, res) => {
     try {
         const taskId = req.params.id; // Cleaned up variable name
-        const result = await Task.findByIdAndDelete(taskId);
+        const result = await Task.findOneAndDelete(taskId);
         
         if (!result) {
             return res.status(404).json({ error: "Task not found" }); // Fixed text

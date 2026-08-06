@@ -122,6 +122,7 @@ function createSlackApp({
 				"[slack] Failed to fetch workspace users",
 				err.message,
 			);
+      workspaceUsersCache = null;
     }
     return workspaceUsersCache;
   }
