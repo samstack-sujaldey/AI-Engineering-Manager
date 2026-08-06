@@ -54,25 +54,6 @@ interface DayActivity {
               class="team-date-input"
             />
           </div>
-          <div class="select-wrapper">
-            <svg
-              class="select-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-            </svg>
-            <select
-              class="team-filter-select"
-              [(ngModel)]="selectedChannelId"
-              (change)="onChannelChange()"
-            >
-              <option value="all">All Channels</option>
-              <option *ngFor="let ch of channels" [value]="ch.id">#{{ ch.name }}</option>
-            </select>
-          </div>
         </div>
       </div>
 
@@ -234,10 +215,13 @@ interface DayActivity {
               <div
                 class="task-block-reason"
                 *ngIf="
-                  task.blocked_reason ||
-                  task.block_reason_pending ||
-                  (task.status || '').toLowerCase().includes('block') ||
-                  (task.status || '').toLowerCase() === 'hold'
+                  (task.status || '').toLowerCase() !== 'completed' &&
+                  (task.status || '').toLowerCase() !== 'done' &&
+                  (task.status || '').toLowerCase() !== 'resolved' &&
+                  (task.blocked_reason ||
+                    task.block_reason_pending ||
+                    (task.status || '').toLowerCase().includes('block') ||
+                    (task.status || '').toLowerCase() === 'hold')
                 "
               >
                 <strong>🚨 Blocker:</strong> {{ task.blocked_reason || 'Waiting for reason...' }}
@@ -283,6 +267,29 @@ interface DayActivity {
   `,
   styles: [
     `
+      .set-default-btn {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        width: 34px;
+        height: 34px;
+        cursor: pointer;
+        font-size: 16px;
+        color: #cbd5e1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+      }
+      .set-default-btn:hover {
+        border-color: #f59e0b;
+        color: #f59e0b;
+      }
+      .set-default-btn.is-default {
+        background: #fffbeb;
+        border-color: #f59e0b;
+        color: #f59e0b;
+      }
       .team-body {
         padding: 24px 32px;
         display: flex;
@@ -311,7 +318,7 @@ interface DayActivity {
         white-space: nowrap;
       }
       .team-date-input {
-        border: 1px solid #5b4fcf;
+        border: 1px solid #cbd5e1;
         border-radius: 6px;
         padding: 6px 12px;
         font-size: 13px;
@@ -1086,31 +1093,39 @@ export class TeamComponent implements OnInit {
       );
       const taskDueDate = task.due_date ? new Date(task.due_date) : null;
 
-      // 🟢 THE NEW STRICT DUE-DATE FILTERING LOGIC
-      const isTaskRelevantForDate = (checkDate: Date) => {
+      // 🟢 THE NEW BACKLOG-FRIENDLY FILTERING LOGIC
+      const isTaskRelevantForDate = (checkDate: Date, isForChart: boolean) => {
         const checkStr = checkDate.toDateString();
         const updateStr = taskUpdateDate.toDateString();
         const dueStr = taskDueDate ? taskDueDate.toDateString() : null;
 
-        // Rule 1: Task was completed exactly on this day
+        // Rule 1: Completed tasks ONLY show up on the exact day they were finished (Applies to both)
         if (isCompleted && updateStr === checkStr) return true;
 
-        // Rule 2: Active task is DUE exactly on this day
-        if (!isCompleted && dueStr === checkStr) return true;
+        // Rule 2: If we are calculating the Weekly Chart, strictly map by daily activity
+        if (isForChart) {
+          if (!isCompleted && dueStr === checkStr) return true;
+          if (!isCompleted && !taskDueDate && updateStr === checkStr) return true;
+          return false;
+        }
 
-        // Rule 3: Active task has NO due date, but was actively worked on (updated) this day
-        if (!isCompleted && !taskDueDate && updateStr === checkStr) return true;
+        // Rule 3: For the Cards & Modal, ALWAYS show pending/blocked tasks so you can see the full backlog!
+        if (!isCompleted) return true;
 
         return false;
       };
 
       // Apply to Selected Date (Cards & Modal)
-      if (isTaskRelevantForDate(selectedDate)) {
-        data.tasks.push(task); // ONLY feeds the modal if it belongs to this date!
+      if (isTaskRelevantForDate(selectedDate, false)) {
+        data.tasks.push(task); // Feeds the full active backlog into the modal
 
-        if (hasBlockedReason || status.includes('block') || status === 'hold') data.blocked++;
-        else if (isCompleted) data.doneToday++;
-        else data.current++;
+        if (isCompleted) {
+          data.doneToday++;
+        } else if (hasBlockedReason || status.includes('block') || status === 'hold') {
+          data.blocked++;
+        } else {
+          data.current++;
+        }
       }
 
       // Apply to Weekly Chart
@@ -1118,13 +1133,16 @@ export class TeamComponent implements OnInit {
         const loopDate = new Date(selectedDate);
         loopDate.setDate(loopDate.getDate() - i);
 
-        if (isTaskRelevantForDate(loopDate)) {
+        if (isTaskRelevantForDate(loopDate, true)) {
           const dayStats = weeklyDataMap.get(loopDate.toDateString());
           if (dayStats) {
-            if (hasBlockedReason || status.includes('block') || status === 'hold')
+            if (isCompleted) {
+              dayStats.completed++;
+            } else if (hasBlockedReason || status.includes('block') || status === 'hold') {
               dayStats.blocked++;
-            else if (isCompleted) dayStats.completed++;
-            else dayStats.current++;
+            } else {
+              dayStats.current++;
+            }
           }
         }
       }

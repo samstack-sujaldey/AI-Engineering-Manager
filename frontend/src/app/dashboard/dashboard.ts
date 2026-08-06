@@ -26,7 +26,9 @@ import { DashboardService } from '../services/dashboard.service';
             *ngIf="dashService.selectedDate()"
             (click)="clearDate()"
             title="Show All Dates"
-          >✕</button>
+          >
+            ✕
+          </button>
         </div>
 
         <div class="select-wrapper">
@@ -36,18 +38,26 @@ import { DashboardService } from '../services/dashboard.service';
             class="channel-select"
           >
             <option value="all">All Channels</option>
-            <option
-              *ngFor="let channel of dashService.channels()"
-              [value]="channel.id"
-            >
+            <option *ngFor="let channel of dashService.channels()" [value]="channel.id">
               {{ channel.name }}
             </option>
           </select>
         </div>
 
         <button class="connect-slack-btn" (click)="connectSlack()">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 9h-4V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2V9z"></path>
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M22 9h-4V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4h4a2 2 0 0 0 2-2V9z"
+            ></path>
           </svg>
           Connect Slack
         </button>
@@ -68,7 +78,9 @@ import { DashboardService } from '../services/dashboard.service';
           </div>
           <div class="stat-card">
             <div class="stat-label">In Progress</div>
-            <div class="stat-value">{{ countStatus(data.tasks, ['PROCESSING', 'IN_PROGRESS', 'CURRENT', 'OPEN']) }}</div>
+            <div class="stat-value">
+              {{ countStatus(data.tasks, ['PROCESSING', 'IN_PROGRESS', 'CURRENT', 'OPEN']) }}
+            </div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Blocked</div>
@@ -90,14 +102,20 @@ import { DashboardService } from '../services/dashboard.service';
             <div class="card-header">
               <span class="card-title">Recent Discussion & Timeline</span>
             </div>
-            <div class="standup-entry" *ngFor="let disc of getCleanDiscussion(data.discussion_timeline).slice(0, 3)">
+            <div
+              class="standup-entry"
+              *ngFor="let disc of getCleanDiscussion(data.discussion_timeline).slice(0, 3)"
+            >
               <div class="standup-text">{{ disc.content }}</div>
               <div class="standup-meta">
                 <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
               </div>
             </div>
-            <div *ngIf="getCleanDiscussion(data.discussion_timeline).length === 0" class="empty-text">
+            <div
+              *ngIf="getCleanDiscussion(data.discussion_timeline).length === 0"
+              class="empty-text"
+            >
               No discussions found for this date.
             </div>
           </div>
@@ -105,11 +123,16 @@ import { DashboardService } from '../services/dashboard.service';
           <div class="activity-card">
             <div class="card-title">Recent Activity</div>
             <div class="activity-list">
-              <div class="activity-item" *ngFor="let activity of getCleanActivity(data.recent_activity).slice(0, 5)">
+              <div
+                class="activity-item"
+                *ngFor="let activity of getCleanActivity(data.recent_activity).slice(0, 5)"
+              >
                 <span class="activity-dot"></span>
                 <div class="activity-content">
                   <div class="activity-text">{{ activity.summary }}</div>
-                  <div class="activity-time">{{ activity.created_at | date: 'M/d/yy, h:mm a' }}</div>
+                  <div class="activity-time">
+                    {{ activity.created_at | date: 'M/d/yy, h:mm a' }}
+                  </div>
                 </div>
               </div>
               <div *ngIf="getCleanActivity(data.recent_activity).length === 0" class="empty-text">
@@ -141,7 +164,9 @@ import { DashboardService } from '../services/dashboard.service';
                     {{ getInitials(w.name) }}
                   </div>
                   <div>
-                    <div class="member-name">{{ displayName({ name: w.name }) || 'Unassigned' }}</div>
+                    <div class="member-name">
+                      {{ displayName({ name: w.name }) || 'Unassigned' }}
+                    </div>
                     <div class="member-role">Developer</div>
                   </div>
                 </td>
@@ -150,7 +175,9 @@ import { DashboardService } from '../services/dashboard.service';
                 <td [class.critical-value]="w.blocked > 0">{{ w.blocked }}</td>
               </tr>
               <tr *ngIf="getCleanWorkload(data.owner_workload).length === 0">
-                <td colspan="4" class="empty-text" style="padding: 16px 0;">No active human team members for this date.</td>
+                <td colspan="4" class="empty-text" style="padding: 16px 0;">
+                  No active human team members for this date.
+                </td>
               </tr>
             </tbody>
           </table>
@@ -164,12 +191,74 @@ import { DashboardService } from '../services/dashboard.service';
   `,
   styles: [
     `
-      .dashboard-body { padding: 24px 32px; display: flex; flex-direction: column; gap: 20px; }
-      .header-controls { display: flex; align-items: center; gap: 12px; }
-      .date-picker-wrapper { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; font-weight: 500; }
-      .date-input { border: 1px solid #5b4fcf; border-radius: 6px; padding: 6px 12px; font-size: 13px; color: #1a1a2e; outline: none; background: #fafafd; cursor: pointer; }
-      .clear-date-btn { background: #f0f0f0; border: 1px solid #d0d0d0; border-radius: 6px; width: 28px; height: 32px; cursor: pointer; font-size: 12px; color: #555; display: flex; align-items: center; justify-content: center; }
-      .clear-date-btn:hover { background: #e0e0e0; }
+      .set-default-btn {
+        background: #fff;
+        border: 1px solid #dcd6f7;
+        border-radius: 6px;
+        width: 32px;
+        height: 32px;
+        cursor: pointer;
+        font-size: 16px;
+        color: #dcd6f7;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+      }
+      .set-default-btn:hover {
+        border-color: #f59e0b;
+        color: #f59e0b;
+      }
+      .set-default-btn.is-default {
+        background: #fffbeb;
+        border-color: #f59e0b;
+        color: #f59e0b;
+      }
+      .dashboard-body {
+        padding: 24px 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .date-picker-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        color: #333;
+        font-weight: 500;
+      }
+      .date-input {
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 6px 12px;
+        font-size: 13px;
+        color: #1a1a2e;
+        outline: none;
+        background: #fafafd;
+        cursor: pointer;
+      }
+      .clear-date-btn {
+        background: #f0f0f0;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        width: 28px;
+        height: 32px;
+        cursor: pointer;
+        font-size: 12px;
+        color: #555;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .clear-date-btn:hover {
+        background: #e0e0e0;
+      }
 
       /* Styled Channel Select Dropdown */
       .select-wrapper {
@@ -203,22 +292,22 @@ import { DashboardService } from '../services/dashboard.service';
       }
 
       /* Polished Connect Slack Button */
-      .connect-slack-btn { 
-        background: linear-gradient(135deg, #4A154B 0%, #611f69 100%);
-        color: #ffffff; 
-        border: none; 
-        border-radius: 6px; 
-        padding: 7px 16px; 
-        font-size: 13px; 
-        font-weight: 600; 
-        cursor: pointer; 
-        display: flex; 
-        align-items: center; 
-        gap: 8px; 
+      .connect-slack-btn {
+        background: linear-gradient(135deg, #4a154b 0%, #611f69 100%);
+        color: #ffffff;
+        border: none;
+        border-radius: 6px;
+        padding: 7px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
         box-shadow: 0 2px 4px rgba(74, 21, 75, 0.15);
         transition: all 0.2s ease;
       }
-      .connect-slack-btn:hover { 
+      .connect-slack-btn:hover {
         background: linear-gradient(135deg, #3c113d.5 0%, #4a154b 100%);
         box-shadow: 0 4px 8px rgba(74, 21, 75, 0.25);
         transform: translateY(-1px);
@@ -228,42 +317,227 @@ import { DashboardService } from '../services/dashboard.service';
         box-shadow: 0 1px 2px rgba(74, 21, 75, 0.2);
       }
 
-      .error-banner { background: #ffeaea; color: #e53e3e; padding: 12px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
-      .loading-state { color: #888; font-size: 14px; padding: 40px; text-align: center; background: white; border-radius: 8px; border: 1px solid #e9ecef; }
-      .empty-text { color: #888; font-size: 13px; font-style: italic; }
-      .stats-row { display: flex; gap: 16px; }
-      .stat-card { flex: 1; background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 18px 20px; }
-      .stat-label { font-size: 11px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-      .stat-value { font-size: 28px; font-weight: 700; color: #1a1a2e; margin: 4px 0; }
-      .stat-value.critical { color: #e53e3e; }
-      .stat-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px; }
-      .stat-badge.critical { background: #fff0f0; color: #e53e3e; }
-      .view-list-link { font-size: 12px; color: #5b4fcf; cursor: pointer; text-decoration: none; }
-      .middle-row { display: flex; gap: 20px; }
-      .standup-card { flex: 1.8; background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-      .activity-card { flex: 1; background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; }
-      .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-      .card-title { font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; }
-      .standup-entry { padding: 14px; border: 1px solid #e9ecef; border-radius: 6px; }
-      .standup-text { font-size: 13.5px; color: #333; margin-bottom: 10px; line-height: 1.4; }
-      .standup-meta { display: flex; align-items: center; gap: 10px; }
-      .slack-badge { background: #f0f0f0; color: #555; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; text-transform: capitalize; }
-      .standup-time { font-size: 11.5px; color: #999; }
-      .activity-list { display: flex; flex-direction: column; gap: 12px; }
-      .activity-item { display: flex; align-items: flex-start; gap: 10px; }
-      .activity-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; margin-top: 4px; flex-shrink: 0; }
-      .activity-text { font-size: 12.5px; color: #333; line-height: 1.4; }
-      .activity-time { font-size: 11px; color: #aaa; margin-top: 2px; }
-      .team-overview-card { background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; }
-      .manage-team-link { font-size: 13px; color: #5b4fcf; text-decoration: none; font-weight: 500; }
-      .team-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-      .team-table th { text-align: left; font-size: 11px; color: #888; font-weight: 600; letter-spacing: 0.5px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-      .team-table td { padding: 14px 0; font-size: 13.5px; color: #333; border-bottom: 1px solid #f5f5f5; }
-      .member-cell { display: flex; align-items: center; gap: 12px; }
-      .avatar { width: 34px; height: 34px; border-radius: 50%; color: white; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; text-transform: uppercase; }
-      .member-name { font-size: 13.5px; font-weight: 500; color: #1a1a2e; text-transform: capitalize; }
-      .member-role { font-size: 11.5px; color: #888; }
-      .critical-value { color: #e53e3e !important; font-weight: 600; }
+      .error-banner {
+        background: #ffeaea;
+        color: #e53e3e;
+        padding: 12px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      .loading-state {
+        color: #888;
+        font-size: 14px;
+        padding: 40px;
+        text-align: center;
+        background: white;
+        border-radius: 8px;
+        border: 1px solid #e9ecef;
+      }
+      .empty-text {
+        color: #888;
+        font-size: 13px;
+        font-style: italic;
+      }
+      .stats-row {
+        display: flex;
+        gap: 16px;
+      }
+      .stat-card {
+        flex: 1;
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 18px 20px;
+      }
+      .stat-label {
+        font-size: 11px;
+        color: #888;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .stat-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #1a1a2e;
+        margin: 4px 0;
+      }
+      .stat-value.critical {
+        color: #e53e3e;
+      }
+      .stat-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 3px;
+      }
+      .stat-badge.critical {
+        background: #fff0f0;
+        color: #e53e3e;
+      }
+      .view-list-link {
+        font-size: 12px;
+        color: #5b4fcf;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .middle-row {
+        display: flex;
+        gap: 20px;
+      }
+      .standup-card {
+        flex: 1.8;
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .activity-card {
+        flex: 1;
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 20px;
+      }
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+      }
+      .card-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1a1a2e;
+        margin-bottom: 12px;
+      }
+      .standup-entry {
+        padding: 14px;
+        border: 1px solid #e9ecef;
+        border-radius: 6px;
+      }
+      .standup-text {
+        font-size: 13.5px;
+        color: #333;
+        margin-bottom: 10px;
+        line-height: 1.4;
+      }
+      .standup-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .slack-badge {
+        background: #f0f0f0;
+        color: #555;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 4px;
+        text-transform: capitalize;
+      }
+      .standup-time {
+        font-size: 11.5px;
+        color: #999;
+      }
+      .activity-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .activity-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .activity-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #22c55e;
+        margin-top: 4px;
+        flex-shrink: 0;
+      }
+      .activity-text {
+        font-size: 12.5px;
+        color: #333;
+        line-height: 1.4;
+      }
+      .activity-time {
+        font-size: 11px;
+        color: #aaa;
+        margin-top: 2px;
+      }
+      .team-overview-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 20px;
+      }
+      .manage-team-link {
+        font-size: 13px;
+        color: #5b4fcf;
+        text-decoration: none;
+        font-weight: 500;
+      }
+      .team-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+      }
+      .team-table th {
+        text-align: left;
+        font-size: 11px;
+        color: #888;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        padding: 8px 0;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .team-table td {
+        padding: 14px 0;
+        font-size: 13.5px;
+        color: #333;
+        border-bottom: 1px solid #f5f5f5;
+      }
+      .member-cell {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        color: white;
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        text-transform: uppercase;
+      }
+      .member-name {
+        font-size: 13.5px;
+        font-weight: 500;
+        color: #1a1a2e;
+        text-transform: capitalize;
+      }
+      .member-role {
+        font-size: 11.5px;
+        color: #888;
+      }
+      .critical-value {
+        color: #e53e3e !important;
+        font-weight: 600;
+      }
     `,
   ],
 })
@@ -280,7 +554,7 @@ export class DashboardComponent implements OnInit {
   ngOnInit() {
     this.dashService.load();
   }
-  
+
   onChannelChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value;
     this.dashService.setChannel(value);
@@ -304,7 +578,9 @@ export class DashboardComponent implements OnInit {
   isBotUser(m: any): boolean {
     if (!m) return true;
     const rawId = (typeof m === 'object' && m?.id ? m.id : '').toLowerCase();
-    const rawName = (typeof m === 'string' ? m : (m.real_name || m.display_name || m.name || '')).toLowerCase();
+    const rawName = (
+      typeof m === 'string' ? m : m.real_name || m.display_name || m.name || ''
+    ).toLowerCase();
 
     return (
       rawId === 'uslackbot' ||
@@ -386,7 +662,10 @@ export class DashboardComponent implements OnInit {
   getCleanWorkload(workload: any[]): any[] {
     const tasks = this.getCleanTasks(this.dashService.data()?.tasks || []);
     const issues = this.getCleanIssues(this.dashService.data()?.issues || []);
-    const memberMap = new Map<string, { name: string; tasks: number; issues: number; blocked: number }>();
+    const memberMap = new Map<
+      string,
+      { name: string; tasks: number; issues: number; blocked: number }
+    >();
 
     const rawWorkload = workload || [];
     rawWorkload.forEach((w) => {
@@ -451,7 +730,10 @@ export class DashboardComponent implements OnInit {
     const trimmed = String(value).trim();
     if (!trimmed) return '';
     if (trimmed.includes('@')) {
-      return trimmed.split('@')[0].replace(/[._-]+/g, ' ').trim();
+      return trimmed
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .trim();
     }
     return trimmed.replace(/[._-]+/g, ' ').trim();
   }
