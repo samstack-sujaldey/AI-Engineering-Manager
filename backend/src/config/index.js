@@ -8,7 +8,7 @@ function env(name, fallback = '') {
 
 const config = {
   mongodbUri: env('MONGODB_URI'),
-  nodeEnv: env('NODE_ENV',  'development'),
+  nodeEnv: env('NODE_ENV'),
   timezone: env('TZ'),
   slack: {
     botToken: env('SLACK_BOT_TOKEN'),
@@ -21,8 +21,8 @@ const config = {
     model: env('OPENAI_MODEL', 'gpt-4o-mini'),
   },
   reminderIntervalMs: parseInt(env('REMINDER_INTERVAL_MS', '3600000'), 10),
-  corsOrigin: env('FRONTEND_URL', 'http://localhost:4200'),
-  jwtSecret: env('JWT_SECRET', 'change-me-in-production'),
+  corsOrigin: env('FRONTEND_URL'),
+  jwtSecret: env('JWT_SECRET'),
   similarityThreshold: 0.9,
   confidenceFloor: 0.7,
 };
