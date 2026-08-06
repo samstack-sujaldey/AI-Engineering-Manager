@@ -10,7 +10,12 @@ import { DashboardService } from '../services/dashboard.service';
   imports: [CommonModule, RouterLink, PageHeaderComponent],
   providers: [DatePipe],
   template: `
-    <app-page-header title="Dashboard" searchPlaceholder="Search tasks, teams, or summaries...">
+    <app-page-header 
+      title="Dashboard" 
+      searchPlaceholder="Search tasks, teams, or summaries..."
+      [searchQuery]="searchQuery()"
+      [suggestions]="searchSuggestions"
+      (searchChange)="onSearchChange($event)">
       <div class="header-controls">
         <div class="date-picker-wrapper">
           <label for="dashboardDate">Date:</label>
@@ -74,7 +79,7 @@ import { DashboardService } from '../services/dashboard.service';
         <div class="stats-row">
           <div class="stat-card">
             <div class="stat-label">Total Tasks</div>
-            <div class="stat-value">{{ getCleanTasks(data.tasks).length }}</div>
+            <div class="stat-value">{{ getFilteredTasks(data.tasks).length }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">In Progress</div>
@@ -91,7 +96,7 @@ import { DashboardService } from '../services/dashboard.service';
           </div>
           <div class="stat-card highlighted">
             <div class="stat-label">Issues</div>
-            <div class="stat-value">{{ getCleanIssues(data.issues).length }}</div>
+            <div class="stat-value">{{ getFilteredIssues(data.issues).length }}</div>
             <a routerLink="/issues" class="view-list-link">View list</a>
           </div>
         </div>
@@ -102,31 +107,22 @@ import { DashboardService } from '../services/dashboard.service';
             <div class="card-header">
               <span class="card-title">Recent Discussion & Timeline</span>
             </div>
-            <div
-              class="standup-entry"
-              *ngFor="let disc of getCleanDiscussion(data.discussion_timeline).slice(0, 3)"
-            >
+            <div class="standup-entry" *ngFor="let disc of getFilteredDiscussion(data.discussion_timeline).slice(0, 3)">
               <div class="standup-text">{{ disc.content }}</div>
               <div class="standup-meta">
                 <span class="slack-badge">{{ displayName(disc.author) || 'User' }}</span>
                 <span class="standup-time">{{ disc.timestamp | date: 'MMM d, y, h:mm a' }}</span>
               </div>
             </div>
-            <div
-              *ngIf="getCleanDiscussion(data.discussion_timeline).length === 0"
-              class="empty-text"
-            >
-              No discussions found for this date.
+            <div *ngIf="getFilteredDiscussion(data.discussion_timeline).length === 0" class="empty-text">
+              No matching discussions found.
             </div>
           </div>
 
           <div class="activity-card">
             <div class="card-title">Recent Activity</div>
             <div class="activity-list">
-              <div
-                class="activity-item"
-                *ngFor="let activity of getCleanActivity(data.recent_activity).slice(0, 5)"
-              >
+              <div class="activity-item" *ngFor="let activity of getFilteredActivity(data.recent_activity).slice(0, 5)">
                 <span class="activity-dot"></span>
                 <div class="activity-content">
                   <div class="activity-text">{{ activity.summary }}</div>
@@ -135,8 +131,8 @@ import { DashboardService } from '../services/dashboard.service';
                   </div>
                 </div>
               </div>
-              <div *ngIf="getCleanActivity(data.recent_activity).length === 0" class="empty-text">
-                No activity found for this date.
+              <div *ngIf="getFilteredActivity(data.recent_activity).length === 0" class="empty-text">
+                No matching activity found.
               </div>
             </div>
           </div>
@@ -543,7 +539,9 @@ import { DashboardService } from '../services/dashboard.service';
 })
 export class DashboardComponent implements OnInit {
   dashService = inject(DashboardService);
-  allTasks = signal<any[]>([]);
+  
+  // Signal to hold search query input
+  searchQuery = signal<string>('');
 
   constructor() {
     effect(() => {
@@ -555,10 +553,51 @@ export class DashboardComponent implements OnInit {
     this.dashService.load();
   }
 
+  onSearchChange(query: string): void {
+    this.searchQuery.set(query.toLowerCase().trim());
+  }
+
+  // Computed getter to feed matching tasks/issues as dropdown suggestions into the page header
+  get searchSuggestions() {
+    const q = this.searchQuery();
+    if (!q) return [];
+    
+    const data = this.dashService.data();
+    if (!data) return [];
+
+    const taskResults = (data.tasks || [])
+      .filter((t: any) => 
+        (t.title && t.title.toLowerCase().includes(q)) || 
+        (t.description && t.description.toLowerCase().includes(q))
+      )
+      .slice(0, 5)
+      .map((t: any) => ({
+        id: t.id || t._id,
+        title: t.title || t.description,
+        subtitle: `Task • Status: ${t.status || 'Open'}`,
+        type: 'task' as const
+      }));
+
+    const issueResults = (data.issues || [])
+      .filter((i: any) => 
+        (i.title && i.title.toLowerCase().includes(q)) || 
+        (i.description && i.description.toLowerCase().includes(q))
+      )
+      .slice(0, 5)
+      .map((i: any) => ({
+        id: i.id || i._id,
+        title: i.title || i.description,
+        subtitle: `Issue • Status: ${i.status || 'Open'}`,
+        type: 'issue' as const
+      }));
+
+    return [...taskResults, ...issueResults];
+  }
+  
+
   onChannelChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value;
     const channelId = value === 'all' ? '' : value;
-    // Updates channel state and fetches data independently without triggering the sync pipeline
     this.dashService.setChannel(channelId);
   }
 
@@ -619,6 +658,16 @@ export class DashboardComponent implements OnInit {
     return `${yyyy}-${mm}-${dd}` === targetDateStr;
   }
 
+  private matchesSearch(item: any, fields: string[]): boolean {
+    const q = this.searchQuery();
+    if (!q) return true;
+    return fields.some((field) => {
+      const val = item[field];
+      if (!val) return false;
+      return String(val).toLowerCase().includes(q);
+    });
+  }
+
   getCleanTasks(tasks: any[]): any[] {
     if (!tasks) return [];
     const selectedDate = this.dashService.selectedDate();
@@ -629,6 +678,13 @@ export class DashboardComponent implements OnInit {
       const taskDate = t.created_time || t.created_at || t.date || t.updated_time;
       return this.matchesSelectedDate(taskDate, selectedDate);
     });
+  }
+
+  getFilteredTasks(tasks: any[]): any[] {
+    const clean = this.getCleanTasks(tasks);
+    const q = this.searchQuery();
+    if (!q) return clean;
+    return clean.filter((t) => this.matchesSearch(t, ['title', 'description', 'status', 'assigned_to', 'owner', 'assignee']));
   }
 
   getCleanIssues(issues: any[]): any[] {
@@ -643,6 +699,13 @@ export class DashboardComponent implements OnInit {
     });
   }
 
+  getFilteredIssues(issues: any[]): any[] {
+    const clean = this.getCleanIssues(issues);
+    const q = this.searchQuery();
+    if (!q) return clean;
+    return clean.filter((i) => this.matchesSearch(i, ['title', 'description', 'status', 'assigned_to', 'owner', 'assignee']));
+  }
+
   getCleanDiscussion(discussions: any[]): any[] {
     if (!discussions) return [];
     const selectedDate = this.dashService.selectedDate();
@@ -650,6 +713,13 @@ export class DashboardComponent implements OnInit {
       const discDate = disc.timestamp || disc.created_at || disc.date;
       return this.matchesSelectedDate(discDate, selectedDate);
     });
+  }
+
+  getFilteredDiscussion(discussions: any[]): any[] {
+    const clean = this.getCleanDiscussion(discussions);
+    const q = this.searchQuery();
+    if (!q) return clean;
+    return clean.filter((disc) => this.matchesSearch(disc, ['content', 'author', 'title']));
   }
 
   getCleanActivity(activities: any[]): any[] {
@@ -661,13 +731,17 @@ export class DashboardComponent implements OnInit {
     });
   }
 
+  getFilteredActivity(activities: any[]): any[] {
+    const clean = this.getCleanActivity(activities);
+    const q = this.searchQuery();
+    if (!q) return clean;
+    return clean.filter((act) => this.matchesSearch(act, ['summary', 'action', 'type']));
+  }
+
   getCleanWorkload(workload: any[]): any[] {
-    const tasks = this.getCleanTasks(this.dashService.data()?.tasks || []);
-    const issues = this.getCleanIssues(this.dashService.data()?.issues || []);
-    const memberMap = new Map<
-      string,
-      { name: string; tasks: number; issues: number; blocked: number }
-    >();
+    const tasks = this.getFilteredTasks(this.dashService.data()?.tasks || []);
+    const issues = this.getFilteredIssues(this.dashService.data()?.issues || []);
+    const memberMap = new Map<string, { name: string; tasks: number; issues: number; blocked: number }>();
 
     const rawWorkload = workload || [];
     rawWorkload.forEach((w) => {
@@ -713,7 +787,7 @@ export class DashboardComponent implements OnInit {
   }
 
   countStatus(tasks: any[], targetStatuses: string[]): number {
-    const clean = this.getCleanTasks(tasks);
+    const clean = this.getFilteredTasks(tasks);
     if (!clean) return 0;
     return clean.filter((t) => {
       const status = (t.status || '').toUpperCase();

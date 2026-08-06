@@ -1,10 +1,13 @@
-import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { ActivatedRoute } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service';
+import { AuthService } from '../services/auth.service';
+import { environment } from '../../environments/environment';
 
 @Component({
   selector: 'app-issues',
@@ -13,23 +16,28 @@ import { DashboardService } from '../services/dashboard.service';
   providers: [DatePipe],
   template: `
     <app-page-header
-      title="Issues & Blockers"
-      searchPlaceholder="Search issues or blockers..."
+      title="Issues & Tickets"
+      searchPlaceholder="Search issues..."
+      (searchChange)="onSearchQueryChange($event)"
     ></app-page-header>
 
     <div class="issues-body">
       <div class="filters-row">
         <select class="filter-select" [(ngModel)]="statusFilter">
           <option value="all">Status: All</option>
-          <option value="HOLD">Hold</option>
+          <option value="OPEN">Open</option>
+          <option value="IN_PROGRESS">In Progress</option>
           <option value="RESOLVED">Resolved</option>
+          <option value="CLOSED">Closed</option>
         </select>
         <select class="filter-select" [(ngModel)]="priorityFilter">
           <option value="all">Priority: All</option>
           <option value="LOW">Low</option>
+          <option value="MEDIUM">Medium</option>
           <option value="HIGH">High</option>
+          <option value="URGENT">Urgent</option>
         </select>
-        
+
         <!-- Date Filter with Clear Button -->
         <div class="date-filter-group">
           <input
@@ -38,10 +46,10 @@ import { DashboardService } from '../services/dashboard.service';
             [value]="dashService.selectedDate()"
             (change)="onDateChange($event)"
           />
-          <button 
-            class="clear-date-btn" 
-            *ngIf="dashService.selectedDate()" 
-            (click)="clearDateFilter()" 
+          <button
+            class="clear-date-btn"
+            *ngIf="dashService.selectedDate()"
+            (click)="clearDateFilter()"
             title="Show All Dates"
           >✕</button>
         </div>
@@ -51,17 +59,19 @@ import { DashboardService } from '../services/dashboard.service';
         <table class="issues-table">
           <thead>
             <tr>
-              <th style="width: 38%;">ISSUE / BLOCKER TITLE</th>
-              <th style="width: 24%;">ASSIGNED TO</th>
-              <th style="width: 14%;">PRIORITY</th>
-              <th style="width: 10%;">STATUS</th>
-              <th style="width: 14%; text-align: right; padding-right: 20px;">CREATED AT</th>
+              <th style="width: 35%;">ISSUE NAME</th>
+              <th style="width: 25%;">ASSIGNED TO</th>
+              <th style="width: 15%;">PRIORITY</th>
+              <th style="width: 15%;">STATUS</th>
+              <th style="width: 20%;">CREATED AT</th>
             </tr>
           </thead>
           <tbody>
             <tr
-              *ngFor="let issue of filteredIssues(); let i = index"
+              *ngFor="let issue of dropdownFilteredIssues()"
               class="clickable-row"
+              [class.highlighted-row]="isHighlighted(issue)"
+              [id]="'issue-' + getIssueId(issue)"
               (click)="openIssueModal(issue)"
             >
               <td class="issue-name-cell">
@@ -87,25 +97,24 @@ import { DashboardService } from '../services/dashboard.service';
                   issue.status || 'Open'
                 }}</span>
               </td>
-              <td class="due-date" [ngClass]="getDateColorClass(i)">
-                {{ (issue.created_time || issue.created_at || issue.date || issue.updated_time) ? ((issue.created_time || issue.created_at || issue.date || issue.updated_time) | date: 'MMM d, y, h:mm a') : '—' }}
+              <td class="due-date">
+                {{ (issue.created_time || issue.created_at || issue.date) ? ((issue.created_time || issue.created_at || issue.date) | date: 'MMM d, y, h:mm a') : '—' }}
               </td>
             </tr>
-            <tr *ngIf="filteredIssues().length === 0">
-              <td colspan="5" class="empty-state">No human-assigned issues found matching your filters.</td>
+            <tr *ngIf="dropdownFilteredIssues().length === 0">
+              <td colspan="5" class="empty-state">No issues found matching your filters.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- ISSUE DETAILS MODAL OVERLAY (WITH DELETE BUTTON INSIDE) -->
+    <!-- ISSUE DETAILS MODAL OVERLAY -->
     <div class="modal-overlay" *ngIf="selectedIssue && !issueToDelete" (click)="closeModal()">
       <div class="modal-content" (click)="$event.stopPropagation()">
         <div class="modal-header">
           <div class="modal-title-wrapper">
-            <span class="alert-icon" *ngIf="selectedIssue.status === 'BLOCKED'">🚨</span>
-            <span class="alert-icon" *ngIf="selectedIssue.status !== 'BLOCKED'">📋</span>
+            <span class="alert-icon">🐛</span>
             <h2 class="modal-title">Issue Details</h2>
           </div>
           <button class="close-btn" (click)="closeModal()">&times;</button>
@@ -113,28 +122,15 @@ import { DashboardService } from '../services/dashboard.service';
 
         <div class="modal-body">
           <div class="info-group">
-            <h3 class="info-label">Full Issue Description</h3>
+            <h3 class="info-label">FULL ISSUE DESCRIPTION</h3>
             <p class="info-value" style="white-space: pre-wrap; word-break: break-word; line-height: 1.5;">
               {{ selectedIssue.description || selectedIssue.text || selectedIssue.title }}
             </p>
           </div>
-
-          <!-- ONLY show if the issue is BLOCKED -->
-          <div class="info-group" *ngIf="selectedIssue.status === 'BLOCKED'">
-            <h3 class="info-label">Blocker Reason</h3>
-            <div class="reason-box">
-              <p class="reason-text">
-                {{
-                  selectedIssue.blocked_reason ||
-                    'No reason provided yet. Awaiting reply in Slack.'
-                }}
-              </p>
-            </div>
-          </div>
         </div>
 
         <div class="modal-footer modal-footer-between">
-          <button class="btn-danger-outline" (click)="confirmDelete(selectedIssue)">
+          <button *ngIf="auth.isAdmin()" class="btn-danger-outline" (click)="confirmDelete(selectedIssue)">
             🗑️ Delete Issue
           </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
@@ -242,7 +238,7 @@ import { DashboardService } from '../services/dashboard.service';
         text-align: left;
       }
       .issues-table tr {
-        transition: background-color 0.2s ease;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
       }
       .issues-table tr:last-child td {
         border-bottom: none;
@@ -251,8 +247,13 @@ import { DashboardService } from '../services/dashboard.service';
         cursor: pointer;
       }
       .clickable-row:hover td {
-        background-color: #fff9f9;
+        background-color: #f8f9fa !important;
       }
+
+      .highlighted-row td {
+        background-color: #f3f0ff !important;
+      }
+
       .issue-name-cell {
         padding-right: 16px;
         overflow: hidden;
@@ -311,43 +312,20 @@ import { DashboardService } from '../services/dashboard.service';
       .priority-badge.medium { background: #fff8e1; color: #f59e0b; }
       .priority-badge.high { background: #fff3e0; color: #e67e22; }
       .priority-badge.urgent { background: #ffeaea; color: #e53e3e; }
-
-      /* --- Status Badge Styles --- */
       .status-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 5px 12px;
-        border-radius: 20px;
-        font-size: 11.5px;
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 5px;
+        font-size: 11px;
         font-weight: 600;
         text-transform: capitalize;
-        letter-spacing: 0.3px;
         white-space: nowrap;
-        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.03);
       }
-      .status-open { background: #eef2ff; color: #4f46e5; }
-      .status-resolved { background: #ecfdf5; color: #059669; }
-      .status-blocked { background: #fef2f2; color: #dc2626; }
-      .status-hold { background: #fffbeb; color: #d97706; }
-
-      /* --- Created At / Date Column Styles & Alignment --- */
-      .due-date {
-        font-size: 12.5px;
-        font-weight: 500;
-        white-space: nowrap;
-        letter-spacing: -0.2px;
-        text-align: right;
-        padding-right: 20px !important;
-      }
-      
-      /* Vibrant distinct color rotations for dates */
-      .date-color-0 { color: #2563eb; } /* Blue */
-      .date-color-1 { color: #7c3aed; } /* Purple */
-      .date-color-2 { color: #059669; } /* Emerald */
-      .date-color-3 { color: #d97706; } /* Amber */
-      .date-color-4 { color: #dc2626; } /* Rose */
-
+      .status-open { background: #e8eeff; color: #5b4fcf; }
+      .status-in_progress { background: #e3f2fd; color: #1976d2; }
+      .status-resolved { background: #e8f5e9; color: #27ae60; }
+      .status-closed { background: #f1f3f5; color: #495057; }
+      .due-date { color: #555; font-size: 13px; white-space: nowrap; }
       .empty-state { text-align: center; color: #888; padding: 30px !important; }
 
       /* Modal Styles */
@@ -428,18 +406,6 @@ import { DashboardService } from '../services/dashboard.service';
         font-size: 14px;
         color: #333;
         font-weight: 500;
-      }
-      .reason-box {
-        background: #fff9f9;
-        border: 1px solid #ffeaea;
-        border-radius: 6px;
-        padding: 12px 16px;
-      }
-      .reason-text {
-        margin: 0;
-        color: #c0392b;
-        font-size: 13.5px;
-        line-height: 1.5;
       }
       .delete-msg {
         margin: 0 0 12px 0;
@@ -522,30 +488,54 @@ export class IssuesComponent implements OnInit {
   http = inject(HttpClient);
   dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
+  auth = inject(AuthService);
+  private route = inject(ActivatedRoute);
 
   issues: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  private isInitialized = false;
+  searchQuery = signal('');
+  highlightedId: string | null = null;
 
   selectedIssue: any = null;
   issueToDelete: any = null;
 
-  constructor() {
-    effect(() => {
-      const globalChannel = this.dashService.selectedChannel();
-      const globalDate = this.dashService.selectedDate();
-      
-      untracked(() => {
-        if (!this.isInitialized) return;
-        this.loadIssues();
+  ngOnInit() {
+    this.route.queryParamMap.subscribe(params => {
+      const highlightId = params.get('highlight') || params.get('id') || params.get('issueId');
+      if (highlightId) {
+        this.highlightedId = String(highlightId);
+        this.statusFilter = 'all';
+        this.priorityFilter = 'all';
+        this.searchQuery.set('');
+        this.dashService.setSelectedDate('');
+      } else {
+        this.highlightedId = null;
+      }
+
+      this.loadIssues().then(() => {
+        if (this.highlightedId) {
+          setTimeout(() => this.scrollToHighlightedIssue(), 300);
+        }
       });
     });
   }
 
-  ngOnInit() {
-    this.loadIssues();
-    this.isInitialized = true;
+  getIssueId(issue: any): string {
+    if (!issue) return '';
+    if (typeof issue === 'string') return issue;
+    const rawId = issue.issue_id || issue.id || issue._id?.$oid || issue._id || '';
+    return typeof rawId === 'object' ? String(rawId.$oid || JSON.stringify(rawId)) : String(rawId);
+  }
+
+  isHighlighted(issue: any): boolean {
+    if (!this.highlightedId || !issue) return false;
+    const currentId = this.getIssueId(issue);
+    return currentId === String(this.highlightedId);
+  }
+
+  onSearchQueryChange(query: string): void {
+    this.searchQuery.set(query);
   }
 
   onDateChange(event: Event): void {
@@ -557,11 +547,6 @@ export class IssuesComponent implements OnInit {
   clearDateFilter(): void {
     this.dashService.setSelectedDate('');
     this.loadIssues();
-  }
-
-  private isResolvedStatus(status: any): boolean {
-    const s = String(status || '').toLowerCase();
-    return s === 'resolved' || s === 'done' || s === 'completed';
   }
 
   async loadIssues() {
@@ -597,24 +582,60 @@ export class IssuesComponent implements OnInit {
     }
   }
 
+  scrollToHighlightedIssue() {
+    if (!this.highlightedId) return;
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      const el = document.getElementById('issue-' + this.highlightedId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        clearInterval(interval);
+      } else if (attempts > 30) {
+        clearInterval(interval);
+      }
+    }, 100);
+  }
+
   filteredIssues(): any[] {
     const selectedDate = this.dashService.selectedDate();
+    const q = this.searchQuery().toLowerCase().trim();
     
     const filtered = this.issues.filter((issue) => {
       const matchStatus = this.statusFilter === 'all' || (issue.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (issue.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
-      
-      const issueDate = issue.created_time || issue.created_at || issue.date || issue.updated_time;
+      const issueDate = issue.created_time || issue.created_at;
       const matchDate = this.matchesSelectedDate(issueDate, selectedDate, issue.status);
-      
-      return matchStatus && matchPriority && matchDate;
+
+      const titleMatch = (issue.title || issue.description || '').toLowerCase().includes(q);
+      const assigneeMatch = (issue.assigneeName || '').toLowerCase().includes(q);
+      const matchSearch = !q || titleMatch || assigneeMatch;
+
+      return matchStatus && matchPriority && matchDate && matchSearch;
     });
 
     return filtered.sort((a, b) => {
-      const dateA = new Date(a.created_at || a.created_time || a.date || a.updated_time || 0).getTime();
-      const dateB = new Date(b.created_at || b.created_time || b.date || b.updated_time || 0).getTime();
+      const dateA = new Date(a.created_at || a.created_time || 0).getTime();
+      const dateB = new Date(b.created_at || b.created_time || 0).getTime();
       return dateB - dateA;
     });
+  }
+
+  dropdownFilteredIssues(): any[] {
+    const baseIssues = [...this.filteredIssues()];
+
+    if (this.highlightedId) {
+      const targetIssue = this.issues.find(issue => this.getIssueId(issue) === String(this.highlightedId));
+      if (targetIssue) {
+        const index = baseIssues.findIndex(issue => this.getIssueId(issue) === String(this.highlightedId));
+        if (index > -1) {
+          baseIssues.splice(index, 1);
+        }
+        baseIssues.unshift(targetIssue);
+      }
+    }
+
+    return baseIssues;
   }
 
   private isBotUser(m: any): boolean {
@@ -642,7 +663,7 @@ export class IssuesComponent implements OnInit {
 
   private extractStringName(input: any): string {
     if (!input || this.isBotUser(input)) return 'Unassigned';
-    
+
     let raw = '';
     if (typeof input === 'string') raw = input;
     else if (typeof input === 'object') {
@@ -663,6 +684,11 @@ export class IssuesComponent implements OnInit {
 
     const normalized = raw || 'Unassigned';
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  private isCompletedStatus(status: any): boolean {
+    const s = String(status || '').toLowerCase();
+    return s === 'resolved' || s === 'closed' || s === 'done';
   }
 
   private matchesSelectedDate(itemDate: any, targetDateStr: string, status?: any): boolean {
@@ -686,7 +712,7 @@ export class IssuesComponent implements OnInit {
 
     if (itemDateStr === targetDateStr) return true;
 
-    if (!this.isResolvedStatus(status)) {
+    if (!this.isCompletedStatus(status)) {
       const [ty, tm, td] = targetDateStr.split('-').map(Number);
       if (ty && tm && td) {
         const targetEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999);
@@ -699,10 +725,6 @@ export class IssuesComponent implements OnInit {
 
   getStatusClass(status: string): string {
     return status ? `status-${status.toLowerCase()}` : 'status-open';
-  }
-
-  getDateColorClass(index: number): string {
-    return `date-color-${index % 5}`;
   }
 
   getInitials(name?: string): string {
@@ -739,21 +761,28 @@ export class IssuesComponent implements OnInit {
 
   async executeDelete() {
     if (!this.issueToDelete) return;
-    const issueId = this.issueToDelete._id || this.issueToDelete.id;
+    const issueId = this.getIssueId(this.issueToDelete);
 
     try {
-      await firstValueFrom(this.http.delete(`/api/issues/${issueId}`)).catch(() => {});
-      
-      this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
+      const token = localStorage.getItem('auth_token');
+      const headers = new HttpHeaders({
+        'Authorization': `Bearer ${token}`
+      });
+
+      await firstValueFrom(
+        this.http.delete(`${environment.apiUrl}/issues/${issueId}`, { headers })
+      );
+
+      this.issues = this.issues.filter(i => this.getIssueId(i) !== issueId);
       this.issueToDelete = null;
       this.selectedIssue = null;
       this.cdr.detectChanges();
+      
     } catch (err) {
       console.error('Failed to delete issue:', err);
-      this.issues = this.issues.filter(i => (i._id || i.id) !== issueId);
-      this.issueToDelete = null;
-      this.selectedIssue = null;
+      this.issueToDelete = null; 
       this.cdr.detectChanges();
+      alert('Failed to delete issue. You might not have permission.');
     }
   }
 }

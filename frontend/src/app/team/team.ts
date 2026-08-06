@@ -212,22 +212,17 @@ interface DayActivity {
                 {{ task.description }}
               </div>
 
+              <!-- 🟢 FIX: Strictly only show the block reason banner if the status is actually blocked! -->
               <div
                 class="task-block-reason"
                 *ngIf="
-                  (task.status || '').toLowerCase() !== 'completed' &&
-                  (task.status || '').toLowerCase() !== 'done' &&
-                  (task.status || '').toLowerCase() !== 'resolved' &&
-                  (task.blocked_reason ||
-                    task.block_reason_pending ||
-                    (task.status || '').toLowerCase().includes('block') ||
-                    (task.status || '').toLowerCase() === 'hold')
+                  (task.status || '').toLowerCase().includes('block') ||
+                  (task.status || '').toLowerCase() === 'hold'
                 "
               >
                 <strong>🚨 Blocker:</strong> {{ task.blocked_reason || 'Waiting for reason...' }}
               </div>
 
-              <!-- 🟢 NEW: Added Created and Due Dates -->
               <div class="task-dates">
                 <div
                   class="date-item"
@@ -352,7 +347,6 @@ interface DayActivity {
         pointer-events: none;
       }
 
-      /* 🟢 NEW: Styles for the date footer */
       .task-dates {
         display: flex;
         gap: 20px;
@@ -865,22 +859,16 @@ export class TeamComponent implements OnInit {
     if (this.selectedChannelId === 'all') {
       this.dashService.setChannel(null);
     } else {
-      // 🟢 FIX 1: Send the strict Channel ID to the backend instead of the channel name
       this.dashService.setChannel(this.selectedChannelId);
     }
 
     this.updateSelectedChannelName();
-
-    // 🟢 FIX 2: Removed this.loadTeamData() from here!
-    // The dashService signal update will automatically trigger the constructor's effect to reload safely.
   }
 
   onDateChange(event: Event): void {
     const input = event.target as HTMLInputElement;
     if (input.value) {
       this.dashService.setSelectedDate(input.value);
-
-      // 🟢 FIX 2: Removed this.loadTeamData() to prevent double-fetching race conditions
     }
   }
 
@@ -1084,22 +1072,31 @@ export class TeamComponent implements OnInit {
       const data = memberMap.get(assigneeName);
       if (!data) continue;
 
+      // 🟢 FIX: Strictly map status and remove 'hasBlockedReason' trickery!
       const status = (task.status || '').toLowerCase();
-      const hasBlockedReason = !!task.blocked_reason || !!task.block_reason_pending;
       const isCompleted = status === 'done' || status === 'completed' || status === 'resolved';
+      const isBlocked = status.includes('block') || status === 'hold';
 
+      // 🟢 FIX: Extract creation date so we know exactly when this task came into existence
+      const taskCreatedDate = new Date(
+        task.created_time || task.created_at || task.date || task.updated_time || Date.now(),
+      );
       const taskUpdateDate = new Date(
         task.updated_time || task.updatedAt || task.created_at || Date.now(),
       );
       const taskDueDate = task.due_date ? new Date(task.due_date) : null;
 
-      // 🟢 THE NEW BACKLOG-FRIENDLY FILTERING LOGIC
+      // 🟢 THE NEW HISTORICAL BACKLOG FILTERING LOGIC
       const isTaskRelevantForDate = (checkDate: Date, isForChart: boolean) => {
         const checkStr = checkDate.toDateString();
         const updateStr = taskUpdateDate.toDateString();
         const dueStr = taskDueDate ? taskDueDate.toDateString() : null;
 
-        // Rule 1: Completed tasks ONLY show up on the exact day they were finished (Applies to both)
+        // Set boundary to 11:59 PM of the selected date for accurate "on or before" comparison
+        const checkEndOfDay = new Date(checkDate);
+        checkEndOfDay.setHours(23, 59, 59, 999);
+
+        // Rule 1: Completed tasks ONLY show up on the exact day they were finished
         if (isCompleted && updateStr === checkStr) return true;
 
         // Rule 2: If we are calculating the Weekly Chart, strictly map by daily activity
@@ -1109,8 +1106,11 @@ export class TeamComponent implements OnInit {
           return false;
         }
 
-        // Rule 3: For the Cards & Modal, ALWAYS show pending/blocked tasks so you can see the full backlog!
-        if (!isCompleted) return true;
+        // Rule 3: For Cards & Modal, show pending/blocked tasks ONLY if they were created on or before the selected date!
+        // This stops future tasks from bleeding into past dates.
+        if (!isCompleted && taskCreatedDate.getTime() <= checkEndOfDay.getTime()) {
+          return true;
+        }
 
         return false;
       };
@@ -1119,9 +1119,10 @@ export class TeamComponent implements OnInit {
       if (isTaskRelevantForDate(selectedDate, false)) {
         data.tasks.push(task); // Feeds the full active backlog into the modal
 
+        // 🟢 FIX: Clean counting logic relying solely on actual task status!
         if (isCompleted) {
           data.doneToday++;
-        } else if (hasBlockedReason || status.includes('block') || status === 'hold') {
+        } else if (isBlocked) {
           data.blocked++;
         } else {
           data.current++;
@@ -1136,9 +1137,10 @@ export class TeamComponent implements OnInit {
         if (isTaskRelevantForDate(loopDate, true)) {
           const dayStats = weeklyDataMap.get(loopDate.toDateString());
           if (dayStats) {
+            // 🟢 FIX: Clean counting logic relying solely on actual task status!
             if (isCompleted) {
               dayStats.completed++;
-            } else if (hasBlockedReason || status.includes('block') || status === 'hold') {
+            } else if (isBlocked) {
               dayStats.blocked++;
             } else {
               dayStats.current++;

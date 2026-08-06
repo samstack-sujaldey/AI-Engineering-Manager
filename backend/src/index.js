@@ -20,7 +20,7 @@ const { createSlackApp } = require("./slack/app");
 const { startReminderScheduler } = require("./jobs/reminders");
 const slackAuthRoutes = require("./routes/slackAuth");
 const { createAuthRouter } = require("./routes/auth");
-const  seedAdmin  =require("./scripts/seed.js"); 
+const seedAdmin = require("./scripts/seed.js");
 
 // Load Standup Scheduler & Retention Cleanup
 require("./config/scheduler");
@@ -30,9 +30,9 @@ process.env.TZ = "Asia/Kolkata";
 const PORT=process.env.PORT || 5000;
 async function main() {
 	if (mongoose.connection.readyState === 0) {
-        await mongoose.connect(config.mongodbUri || process.env.MONGODB_URI);
-        console.log("✅ Connected to MongoDB");
-    }
+		await mongoose.connect(config.mongodbUri || process.env.MONGODB_URI);
+		console.log("✅ Connected to MongoDB");
+	}
 
 	await seedAdmin(); // Seed the admin user before starting the server
 
@@ -303,16 +303,55 @@ async function main() {
 			const slackErr = err?.data?.error || err.message;
 			console.error(
 				`[slack] Failed to start (${slackErr}). API will keep running without Slack. ` +
-					"Fix tokens in backend/.env: SLACK_BOT_TOKEN (xoxb-…), SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (xapp-…).",
+				"Fix tokens in backend/.env: SLACK_BOT_TOKEN (xoxb-…), SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (xapp-…).",
 			);
 			if (slackErr === "invalid_auth") {
 				console.error(
 					"[slack] invalid_auth usually means the bot token was revoked, regenerated, or copied incorrectly. " +
-						"Reinstall the app to the workspace and copy the Bot User OAuth Token from OAuth & Permissions.",
+					"Reinstall the app to the workspace and copy the Bot User OAuth Token from OAuth & Permissions.",
 				);
 			}
 		}
 	}
+
+	// Express backend example
+	// Example Express Backend Route for Search
+	app.get('/api/search', async (req, res) => {
+		try {
+			const searchQuery = req.query.q;
+			if (!searchQuery) {
+				return res.json({ tasks: [], issues: [], members: [] });
+			}
+
+			const regex = new RegExp(searchQuery, 'i'); // Case-insensitive search
+
+			// Replace Task, Issue, and User with your actual Mongoose/Database models
+			const matchingTasks = await Task.find({
+				$or: [
+					{ title: regex },
+					{ description: regex }
+				]
+			}).limit(20);
+
+			const matchingIssues = await Issue.find({
+				$or: [
+					{ title: regex },
+					{ description: regex }
+				]
+			}).limit(20);
+
+			res.json({
+				tasks: matchingTasks,
+				issues: matchingIssues,
+				query: searchQuery
+			});
+		} catch (err) {
+			console.error('Database search error:', err);
+			res.status(500).json({ error: 'Internal server error during search' });
+		}
+	});
+
+
 
 	// 🟢 Get All Slack Channels for Dropdown
 	app.get("/api/slack/channels", async (req, res) => {
