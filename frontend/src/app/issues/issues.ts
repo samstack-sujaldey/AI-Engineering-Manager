@@ -59,12 +59,11 @@ import { environment } from '../../environments/environment';
         <table class="issues-table">
           <thead>
             <tr>
-              <th style="width: 30%;">ISSUE NAME</th>
-              <th style="width: 20%;">ASSIGNED TO</th>
-              <th style="width: 10%;">PRIORITY</th>
-              <th style="width: 10%;">STATUS</th>
-              <th style="width: 15%;">DUE DATE</th>
-              <th style="width: 15%;">CREATED AT</th>
+              <th style="width: 35%;">ISSUE NAME</th>
+              <th style="width: 25%;">ASSIGNED TO</th>
+              <th style="width: 15%;">PRIORITY</th>
+              <th style="width: 15%;">STATUS</th>
+              <th style="width: 20%;">CREATED AT</th>
             </tr>
           </thead>
           <tbody>
@@ -98,16 +97,12 @@ import { environment } from '../../environments/environment';
                   issue.status || 'Open'
                 }}</span>
               </td>
-              <td class="due-date" [ngClass]="{ 'overdue-text': isOverdue(issue) }">
-                <span *ngIf="isOverdue(issue)" class="alert-icon-small">⚠️</span>
-                {{ issue.due_date ? (issue.due_date | date: 'MMM d, y, h:mm a') : '—' }}
-              </td>
               <td class="due-date">
                 {{ (issue.created_time || issue.created_at || issue.date) ? ((issue.created_time || issue.created_at || issue.date) | date: 'MMM d, y, h:mm a') : '—' }}
               </td>
             </tr>
             <tr *ngIf="dropdownFilteredIssues().length === 0">
-              <td colspan="6" class="empty-state">No issues found matching your filters.</td>
+              <td colspan="5" class="empty-state">No issues found matching your filters.</td>
             </tr>
           </tbody>
         </table>
@@ -255,7 +250,6 @@ import { environment } from '../../environments/environment';
         background-color: #f8f9fa !important;
       }
 
-      /* Soft highlight effect matching tasks page */
       .highlighted-row td {
         background-color: #f3f0ff !important;
       }
@@ -332,8 +326,6 @@ import { environment } from '../../environments/environment';
       .status-resolved { background: #e8f5e9; color: #27ae60; }
       .status-closed { background: #f1f3f5; color: #495057; }
       .due-date { color: #555; font-size: 13px; white-space: nowrap; }
-      .overdue-text { color: #e53e3e; font-weight: 600; }
-      .alert-icon-small { margin-right: 4px; }
       .empty-state { text-align: center; color: #888; padding: 30px !important; }
 
       /* Modal Styles */
@@ -623,8 +615,8 @@ export class IssuesComponent implements OnInit {
     });
 
     return filtered.sort((a, b) => {
-      const dateA = new Date(a.created_at || a.created_time || a.due_date || 0).getTime();
-      const dateB = new Date(b.created_at || b.created_time || b.due_date || 0).getTime();
+      const dateA = new Date(a.created_at || a.created_time || 0).getTime();
+      const dateB = new Date(b.created_at || b.created_time || 0).getTime();
       return dateB - dateA;
     });
   }
@@ -644,13 +636,6 @@ export class IssuesComponent implements OnInit {
     }
 
     return baseIssues;
-  }
-
-  isOverdue(issue: any): boolean {
-    if (!issue.due_date) return false;
-    const status = (issue.status || '').toLowerCase();
-    if (status === 'resolved' || status === 'closed') return false;
-    return new Date(issue.due_date).getTime() < Date.now();
   }
 
   private isBotUser(m: any): boolean {
