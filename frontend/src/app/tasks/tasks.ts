@@ -1,12 +1,13 @@
-import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, signal } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { ActivatedRoute } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { DashboardService } from '../services/dashboard.service';
-import { AuthService } from '../services/auth.service'; // 🟢 Added AuthService
-import { environment } from '../../environments/environment'; // 🟢 Added environment
+import { AuthService } from '../services/auth.service';
+import { environment } from '../../environments/environment';
 
 @Component({
   selector: 'app-tasks',
@@ -17,6 +18,7 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
     <app-page-header
       title="Tasks & Action Items"
       searchPlaceholder="Search tasks..."
+      (searchChange)="onSearchQueryChange($event)"
     ></app-page-header>
 
     <div class="tasks-body">
@@ -67,8 +69,10 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
           </thead>
           <tbody>
             <tr
-              *ngFor="let task of filteredTasks()"
+              *ngFor="let task of dropdownFilteredTasks()"
               class="clickable-row"
+              [class.highlighted-row]="isHighlighted(task)"
+              [id]="'task-' + getTaskId(task)"
               (click)="openTaskModal(task)"
             >
               <td class="task-name-cell">
@@ -102,7 +106,7 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
                 {{ (task.created_time || task.created_at || task.date) ? ((task.created_time || task.created_at || task.date) | date: 'MMM d, y, h:mm a') : '—' }}
               </td>
             </tr>
-            <tr *ngIf="filteredTasks().length === 0">
+            <tr *ngIf="dropdownFilteredTasks().length === 0">
               <td colspan="6" class="empty-state">No human-assigned tasks found matching your filters.</td>
             </tr>
           </tbody>
@@ -144,7 +148,7 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
         </div>
 
         <div class="modal-footer modal-footer-between">
-          <button *ngIf="auth.isAdmin()" class="btn-danger-outline"  (click)="confirmDelete(selectedTask)">
+          <button *ngIf="auth.isAdmin()" class="btn-danger-outline" (click)="confirmDelete(selectedTask)">
             🗑️ Delete Task
           </button>
           <button class="btn-primary" (click)="closeModal()">Close</button>
@@ -252,7 +256,7 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
         text-align: left;
       }
       .tasks-table tr {
-        transition: background-color 0.2s ease;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
       }
       .tasks-table tr:last-child td {
         border-bottom: none;
@@ -261,8 +265,14 @@ import { environment } from '../../environments/environment'; // 🟢 Added envi
         cursor: pointer;
       }
       .clickable-row:hover td {
-        background-color: #f8f9fa;
+        background-color: #f8f9fa !important;
       }
+
+      /* Highlight effect when redirected from search dropdown */
+      .highlighted-row td {
+        background-color: #ede9fe !important;
+      }
+
       .task-name-cell {
         padding-right: 16px;
         overflow: hidden;
@@ -512,30 +522,53 @@ export class TasksComponent implements OnInit {
   dashService = inject(DashboardService);
   private cdr = inject(ChangeDetectorRef);
   auth = inject(AuthService);
+  private route = inject(ActivatedRoute);
 
   tasks: any[] = [];
   statusFilter = 'all';
   priorityFilter = 'all';
-  private isInitialized = false;
+  searchQuery = signal('');
+  highlightedId: string | null = null;
 
   selectedTask: any = null;
   taskToDelete: any = null;
 
-  constructor() {
-    effect(() => {
-      const globalChannel = this.dashService.selectedChannel();
-      const globalDate = this.dashService.selectedDate();
+  ngOnInit() {
+    this.route.queryParamMap.subscribe(params => {
+      const highlightId = params.get('highlight') || params.get('id') || params.get('taskId');
+      if (highlightId) {
+        this.highlightedId = String(highlightId);
+        this.statusFilter = 'all';
+        this.priorityFilter = 'all';
+        this.searchQuery.set('');
+        this.dashService.setSelectedDate('');
+      } else {
+        this.highlightedId = null;
+      }
 
-      untracked(() => {
-        if (!this.isInitialized) return;
-        this.loadTasks();
+      this.loadTasks().then(() => {
+        if (this.highlightedId) {
+          setTimeout(() => this.scrollToHighlightedTask(), 300);
+        }
       });
     });
   }
 
-  ngOnInit() {
-    this.loadTasks();
-    this.isInitialized = true;
+  getTaskId(task: any): string {
+    if (!task) return '';
+    if (typeof task === 'string') return task;
+    const rawId = task.task_id || task.id || task._id?.$oid || task._id || '';
+    return typeof rawId === 'object' ? String(rawId.$oid || JSON.stringify(rawId)) : String(rawId);
+  }
+
+  isHighlighted(task: any): boolean {
+    if (!this.highlightedId || !task) return false;
+    const currentId = this.getTaskId(task);
+    return currentId === String(this.highlightedId);
+  }
+
+  onSearchQueryChange(query: string): void {
+    this.searchQuery.set(query);
   }
 
   onDateChange(event: Event): void {
@@ -582,25 +615,62 @@ export class TasksComponent implements OnInit {
     }
   }
 
-filteredTasks(): any[] {
+  scrollToHighlightedTask() {
+    if (!this.highlightedId) return;
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      const el = document.getElementById('task-' + this.highlightedId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        clearInterval(interval);
+      } else if (attempts > 30) {
+        clearInterval(interval);
+      }
+    }, 100);
+  }
+
+  filteredTasks(): any[] {
     const selectedDate = this.dashService.selectedDate();
+    const q = this.searchQuery().toLowerCase().trim();
     
-    // 1. Filter tasks based on status, priority, and date match rules
     const filtered = this.tasks.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
       const taskDate = task.created_time || task.created_at;
       const matchDate = this.matchesSelectedDate(taskDate, selectedDate, task.status);
-      return matchStatus && matchPriority && matchDate;
+
+      const titleMatch = (task.title || task.description || '').toLowerCase().includes(q);
+      const assigneeMatch = (task.assigneeName || '').toLowerCase().includes(q);
+      const matchSearch = !q || titleMatch || assigneeMatch;
+
+      return matchStatus && matchPriority && matchDate && matchSearch;
     });
 
-    // 2. Sort tasks date-wise: newest creation dates/timestamps shown above older ones (30th above 29th)
     return filtered.sort((a, b) => {
       const dateA = new Date(a.created_at || a.created_time || a.due_date || 0).getTime();
       const dateB = new Date(b.created_at || b.created_time || b.due_date || 0).getTime();
-      return dateB - dateA; // Descending order
+      return dateB - dateA;
     });
   }
+
+  dropdownFilteredTasks(): any[] {
+    const baseTasks = [...this.filteredTasks()];
+
+    if (this.highlightedId) {
+      const targetTask = this.tasks.find(task => this.getTaskId(task) === String(this.highlightedId));
+      if (targetTask) {
+        const index = baseTasks.findIndex(task => this.getTaskId(task) === String(this.highlightedId));
+        if (index > -1) {
+          baseTasks.splice(index, 1);
+        }
+        baseTasks.unshift(targetTask);
+      }
+    }
+
+    return baseTasks;
+  }
+
   isOverdue(task: any): boolean {
     if (!task.due_date) return false;
     const status = (task.status || '').toLowerCase();
@@ -682,10 +752,6 @@ filteredTasks(): any[] {
 
     if (itemDateStr === targetDateStr) return true;
 
-    // Carry-forward: a still-pending task created on/before the selected
-    // date should keep showing up on every later day (today, tomorrow, ...)
-    // until it's actually completed, instead of only appearing on the exact
-    // day it was created.
     if (!this.isCompletedStatus(status)) {
       const [ty, tm, td] = targetDateStr.split('-').map(Number);
       if (ty && tm && td) {
@@ -735,29 +801,25 @@ filteredTasks(): any[] {
 
   async executeDelete() {
     if (!this.taskToDelete) return;
-    const taskId = this.taskToDelete._id || this.taskToDelete.id;
+    const taskId = this.getTaskId(this.taskToDelete);
 
     try {
-      // 🟢 1. Get token and set headers
       const token = localStorage.getItem('auth_token');
       const headers = new HttpHeaders({
         'Authorization': `Bearer ${token}`
       });
 
-      // 🟢 2. Send the secure request using environment.apiUrl
       await firstValueFrom(
         this.http.delete(`${environment.apiUrl}/tasks/${taskId}`, { headers })
       );
 
-      // 3. Only remove from UI if the server succeeded
-      this.tasks = this.tasks.filter(t => (t._id || t.id) !== taskId);
+      this.tasks = this.tasks.filter(t => this.getTaskId(t) !== taskId);
       this.taskToDelete = null;
       this.selectedTask = null;
       this.cdr.detectChanges();
       
     } catch (err) {
       console.error('Failed to delete task:', err);
-      // 🟢 4. FIXED: Do NOT delete from UI if it failed on the server
       this.taskToDelete = null; 
       this.cdr.detectChanges();
       alert('Failed to delete task. You might not have permission.');

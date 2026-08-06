@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectorRef, effect, untracked ,signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PageHeaderComponent } from '../shared/page-header';
 import { FormsModule } from '@angular/forms';
@@ -34,7 +34,7 @@ interface DayActivity {
   standalone: true,
   imports: [CommonModule, PageHeaderComponent, FormsModule],
   template: `
-    <app-page-header title="Team" searchPlaceholder="Find a team member..."></app-page-header>
+    <app-page-header title="Team" searchPlaceholder="Find a team member..." (searchChange)="onSearchQueryChange($event)"></app-page-header>
 
     <div class="team-body">
       <div class="team-section-header">
@@ -110,7 +110,7 @@ interface DayActivity {
         </div>
 
         <!-- Empty State Graphic -->
-        <div *ngIf="members.length === 0" class="no-members-card">
+        <div *ngIf="filteredMembers.length === 0" class="no-members-card">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M17 21v-2a4 4 0 00-2-2H8a4 4 0 00-2 2v2M12 11a4 4 0 100-8 4 4 0 000 8z"></path>
           </svg>
@@ -773,7 +773,7 @@ export class TeamComponent implements OnInit {
   private isInitialized = false;
 
   selectedMember: TeamMember | null = null;
-
+  searchQuery = signal('');
   constructor() {
     effect(() => {
       const globalChannel = this.dashService.selectedChannel();
@@ -800,6 +800,22 @@ export class TeamComponent implements OnInit {
     await this.fetchChannels();
     await this.loadTeamData();
     this.isInitialized = true;
+  }
+
+  onSearchQueryChange(event: any): void {
+    const query = typeof event === 'string' ? event : event?.target?.value || '';
+    this.searchQuery.set(query);
+  }
+
+  // 🟢 Add a computed/filtered list of members
+  get filteredMembers(): TeamMember[] {
+    const q = this.searchQuery().toLowerCase().trim();
+    if (!q) return this.members;
+
+    return this.members.filter(member => 
+      member.name.toLowerCase().includes(q) || 
+      (member.role && member.role.toLowerCase().includes(q))
+    );
   }
 
   openMemberModal(member: TeamMember) {

@@ -235,4 +235,19 @@ export class DashboardService {
     this.socket = null;
     this.live.set(false);
   }
+
+  /**
+   * 🟢 Global database search method.
+   * Sends a search query request directly to the backend database search route.
+   */
+  async searchDatabase(query: string): Promise<any> {
+    try {
+      if (!query || !query.trim()) return null;
+      const url = `${environment.apiUrl}/search?q=${encodeURIComponent(query.trim())}`;
+      return await firstValueFrom(this.http.get<any>(url));
+    } catch (err) {
+      console.error('Failed to execute global database search:', err);
+      return null;
+    }
+  }
 }
