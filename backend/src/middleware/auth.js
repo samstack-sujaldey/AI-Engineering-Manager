@@ -20,7 +20,7 @@ function verifyToken(req, res, next) {
 
 function requireAdmin(req, res, next) {
   // Matching the exact lowercase 'admin' from your schema's enum
-  if (req.user?.role !== process.env.ADMIN_ROLE) {
+  if (req.user?.role !== 'admin') {
     return res.status(403).json({ error: "Forbidden. Admin access required to perform this action." });
   }
   next();

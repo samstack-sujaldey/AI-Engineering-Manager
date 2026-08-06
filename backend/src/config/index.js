@@ -7,11 +7,9 @@ function env(name, fallback = '') {
 }
 
 const config = {
-  port: parseInt(env('PORT', '4000'), 10),
-  mongodbUri: env('MONGODB_URI', 'mongodb://localhost:27017/ai-engineering-manager'),
-  redisUrl: env('REDIS_URL', 'redis://localhost:6379'),
-  nodeEnv: env('NODE_ENV', 'development'),
-  timezone: env('TZ', 'Asia/Kolkata'),
+  mongodbUri: env('MONGODB_URI'),
+  nodeEnv: env('NODE_ENV',  'development'),
+  timezone: env('TZ'),
   slack: {
     botToken: env('SLACK_BOT_TOKEN'),
     signingSecret: env('SLACK_SIGNING_SECRET'),

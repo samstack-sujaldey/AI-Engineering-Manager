@@ -4,7 +4,6 @@ const User = require("../models/User.js"); // Ensure this path matches your stru
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
-const ADMIN_ROLE = process.env.ADMIN_ROLE;
 
 async function seedAdmin() {
   try {
@@ -27,7 +26,7 @@ async function seedAdmin() {
     await User.create({
       email: ADMIN_EMAIL,
       password: hashedPassword,
-      role: ADMIN_ROLE,
+      role: 'admin',
       active: true,
     });
 

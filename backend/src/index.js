@@ -27,6 +27,7 @@ require("./config/scheduler");
 const { cleanupCompletedWork } = require("./utils/retention");
 
 process.env.TZ = "Asia/Kolkata";
+const PORT=process.env.PORT || 5000;
 async function main() {
 	if (mongoose.connection.readyState === 0) {
         await mongoose.connect(config.mongodbUri || process.env.MONGODB_URI);
@@ -295,7 +296,7 @@ async function main() {
 			if (config.slack.socketMode) {
 				await slackApp.start();
 			} else {
-				await slackApp.start(config.port + 1);
+				await slackApp.start(PORT + 1);
 			}
 			console.log("[slack] Bolt app started");
 		} catch (err) {
@@ -350,7 +351,7 @@ async function main() {
 		console.error("[retention warning]", err.message),
 	);
 
-	server.listen(config.port, () => {
+	server.listen(PORT, () => {
 		console.log(
 			`[api] AI Engineering Manager listening on http://localhost:${config.port}`,
 		);
