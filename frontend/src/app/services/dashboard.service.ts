@@ -47,17 +47,30 @@ export class DashboardService {
   readonly error = signal<string | null>(null);
   readonly live = signal(false);
   readonly syncInfo = signal<string | null>(null);
+
   readonly activeChannelId = signal<string | null>(null);
   readonly selectedChannel = signal<string | null>(null);
+  readonly defaultChannelId = signal<string | null>(null); // 🟢 The Star Setting
   readonly selectedDate = signal<string>(getTodayStr());
   readonly channels = signal<SlackChannel[]>([]);
 
   constructor() {
+    // 🟢 Load the default channel first
+    const defaultChannel = localStorage.getItem('default_channel_id');
+    if (defaultChannel) {
+      this.defaultChannelId.set(defaultChannel);
+    }
+
     const storedChannel = localStorage.getItem('active_channel_id');
     if (storedChannel) {
       this.activeChannelId.set(storedChannel);
       this.selectedChannel.set(storedChannel);
+    } else if (defaultChannel) {
+      // 🟢 Fallback to the default channel if no active session is found
+      this.activeChannelId.set(defaultChannel);
+      this.selectedChannel.set(defaultChannel);
     }
+
     const storedDate = localStorage.getItem('selected_date');
     if (storedDate) {
       this.selectedDate.set(storedDate);
@@ -93,39 +106,37 @@ export class DashboardService {
     return `${baseUrl}${separator}${parts.join('&')}`;
   }
 
-  /**
-   * Modified to run the pipeline extraction when a specific channel is selected,
-   * matching the exact same behavior as the Integrations page.
-   */
-  async setChannel(channel: string | null): Promise<void> {
+  // 🟢 FIX: This simply sets the global filter and reloads the DB. No more pipeline freezing!
+  setChannel(channel: string | null): void {
     const cleanChan = channel === 'all' ? null : channel;
     this.selectedChannel.set(cleanChan);
-    this.setActiveChannel(cleanChan);
+    this.activeChannelId.set(cleanChan);
 
     if (cleanChan) {
-      try {
-        this.loading.set(true);
-        // Automatically run the pipeline extraction for this specific channel
-        const result: any = await firstValueFrom(
-          this.http.post(`${environment.apiUrl}/slack/pipeline/${encodeURIComponent(cleanChan)}`, {
-            channel_id: cleanChan,
-            fetch_all: true,
-            all: true,
-            limit: 200
-          })
-        );
-        if (result?.dashboard) {
-          this.data.set(result.dashboard);
-          return;
-        }
-      } catch (err) {
-        console.error('Failed to auto-run pipeline on channel selection, falling back to standard load:', err);
-      } finally {
-        this.loading.set(false);
-      }
+      localStorage.setItem('active_channel_id', cleanChan);
+    } else {
+      localStorage.removeItem('active_channel_id');
     }
 
     this.load();
+  }
+
+  // 🟢 NEW: Toggle the current channel as the permanent default
+  setDefaultChannel(): void {
+    const current = this.selectedChannel();
+    const existingDefault = this.defaultChannelId();
+
+    if (current && current !== 'all') {
+      if (current === existingDefault) {
+        // Untoggle (Remove Default)
+        this.defaultChannelId.set(null);
+        localStorage.removeItem('default_channel_id');
+      } else {
+        // Set New Default
+        this.defaultChannelId.set(current);
+        localStorage.setItem('default_channel_id', current);
+      }
+    }
   }
 
   async load(): Promise<void> {
@@ -147,22 +158,11 @@ export class DashboardService {
   }
 
   setActiveChannel(channelId: string | null) {
-    const cleanId = channelId === 'all' ? null : channelId;
-    this.activeChannelId.set(cleanId);
-    this.selectedChannel.set(cleanId);
-
-    if (cleanId) {
-      localStorage.setItem('active_channel_id', cleanId);
-    } else {
-      localStorage.removeItem('active_channel_id');
-    }
+    this.setChannel(channelId);
   }
 
   clearActiveChannel() {
-    this.activeChannelId.set(null);
-    this.selectedChannel.set(null);
-    localStorage.removeItem('active_channel_id');
-    this.load();
+    this.setChannel(null);
   }
 
   async refresh(channels?: string[]): Promise<void> {
@@ -212,16 +212,14 @@ export class DashboardService {
   async loadChannels(): Promise<void> {
     try {
       const response = await firstValueFrom(
-        this.http.get<{ channels: SlackChannel[] }>(
-          `${environment.apiUrl}/slack/channels`
-        )
+        this.http.get<{ channels: SlackChannel[] }>(`${environment.apiUrl}/slack/channels`),
       );
 
       const channels = response.channels ?? [];
       this.channels.set(channels);
 
       const current = this.activeChannelId();
-      if (current && !channels.some(c => c.id === current)) {
+      if (current && !channels.some((c) => c.id === current)) {
         this.clearActiveChannel();
       }
     } catch (err) {

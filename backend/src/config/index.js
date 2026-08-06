@@ -23,7 +23,7 @@ const config = {
     model: env('OPENAI_MODEL', 'gpt-4o-mini'),
   },
   reminderIntervalMs: parseInt(env('REMINDER_INTERVAL_MS', '3600000'), 10),
-  corsOrigin: env('CORS_ORIGIN', 'http://localhost:4200'),
+  corsOrigin: env('FRONTEND_URL', 'http://localhost:4200'),
   jwtSecret: env('JWT_SECRET', 'change-me-in-production'),
   similarityThreshold: 0.9,
   confidenceFloor: 0.7,
