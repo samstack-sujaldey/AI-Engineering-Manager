@@ -674,17 +674,6 @@ Instructions:
 
 	router.get("/issues/:id", async (req, res, next) => {
 		try {
-			const query = {
-				$or: [
-					{ issue_id: req.params.id },
-					{
-						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-							? req.params.id
-							: null,
-					},
-				],
-			};
-			const issue = await Issue.findOne(query).lean();
 			if (!issue)
 				return res.status(404).json({ error: "Issue not found" });
 			res.json(issue);
@@ -699,18 +688,30 @@ Instructions:
 		requireAdmin,
 		async (req, res) => {
 			try {
-				const issue_id = req.params.id;
-				const result = await Issue.findByIdAndDelete(issue_id);
+				const issueId = req.params.id; // :large_green_circle: FIX: Handle both custom issue_id and MongoDB _id without CastErrors
+				const query = {
+					$or: [
+						{ issue_id: issueId },
+						{
+							_id: issueId.match(/^[0-9a-fA-F]{24}$/)
+								? issueId
+								: null,
+						},
+					],
+				};
+				const result = await Issue.findOneAndDelete(query);
 
 				if (!result) {
 					return res.status(404).json({ error: "Issue not found" });
 				}
 
-				return res.status(200).json({
-					success: true,
-					message:
-						"Issue deleted successfully directly from database",
-				});
+				return res
+					.status(200)
+					.json({
+						success: true,
+						message:
+							"Issue deleted successfully directly from database",
+					});
 			} catch (err) {
 				console.error(
 					"Failed to delete issue from database:",
