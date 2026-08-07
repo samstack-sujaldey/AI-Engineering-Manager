@@ -212,10 +212,14 @@ export class DashboardService {
   async loadChannels(): Promise<void> {
     try {
       const response = await firstValueFrom(
-        this.http.get<{ channels: SlackChannel[] }>(`${environment.apiUrl}/slack/channels`),
+        this.http.get<any>(`${environment.apiUrl}/teams/channels`),
       );
 
-      const channels = response.channels ?? [];
+      const rawChannels = response?.channels || (Array.isArray(response) ? response : response?.data || []);
+      const channels: SlackChannel[] = (rawChannels || []).map((c: any) => ({
+        id: c.id || c.channel_id,
+        name: (c.name || c.channel_name || 'channel').replace(/^#/, '').trim(),
+      }));
       this.channels.set(channels);
 
       const current = this.activeChannelId();

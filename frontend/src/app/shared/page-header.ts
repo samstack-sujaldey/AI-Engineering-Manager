@@ -76,6 +76,7 @@ import { Router } from '@angular/router';
       .suggestion-content { overflow: hidden; }
       .suggestion-title { font-size: 13px; font-weight: 500; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .suggestion-subtitle { font-size: 11px; color: #64748b; margin-top: 2px; }
+      
     `,
   ],
 })
