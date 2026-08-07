@@ -79,7 +79,7 @@ export class AuthService {
     if (!token) return false;
     try {
       const user = await firstValueFrom(
-        this.http.get<AuthUser>(`${environment.apiUrl}/auth/me`)
+        this.http.get<AuthUser>(`${environment.apiUrl}/auth/check-user`)
       );
       localStorage.setItem('auth_user', JSON.stringify(user));
       this.user.set(user);
