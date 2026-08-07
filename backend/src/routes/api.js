@@ -15,7 +15,7 @@ const { callOpenAI } = require(".././ai/openai.js");
 const { verifyToken, requireAdmin } = require("../middleware/auth");
 
 function createApiRouter({ messageProcessor }) {
-  const router = express.Router();
+	const router = express.Router();
 
   // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
   // Replace GET /discussions/daily-summary in routes/api.js with this:
@@ -392,272 +392,226 @@ Instructions:
         : undefined;
       const channelId = req.body?.channel_id || undefined;
 
-      const result = await syncFromSlack(messageProcessor, {
-        ...(limit ? { limitPerChannel: limit } : {}),
-        ...(channelId ? { channelId } : {}),
-      });
-      res.json(result);
-    } catch (err) {
-      if (err.status) {
-        return res.status(err.status).json({
-          error: err.message,
-          code: err.code || "slack_sync_failed",
-        });
-      }
-      next(err);
-    }
-  });
+			const result = await syncFromSlack(messageProcessor, {
+				...(limit ? { limitPerChannel: limit } : {}),
+				...(channelId ? { channelId } : {}),
+			});
+			res.json(result);
+		} catch (err) {
+			if (err.status) {
+				return res.status(err.status).json({
+					error: err.message,
+					code: err.code || "slack_sync_failed",
+				});
+			}
+			next(err);
+		}
+	});
 
-     router.get("/slack/channels", async (_req, res, next) => {
-    try {
-      const [teams, tasks, issues] = await Promise.all([
-        Team.find({}).lean(),
-        Task.find({}, { channel: 1, team: 1 }).lean(),
-        Issue.find({}, { channel: 1, team: 1 }).lean()
-      ]);
+	router.get("/slack/channels", async (_req, res, next) => {
+		try {
+			const client = createSlackClient();
+			const rawChannels = await listChannels(client);
 
-      const channelsMap = new Map();
+			const channels = rawChannels.map((ch) => ({
+				id: ch.id,
+				name: `#${ch.name}`,
+				members: ch.num_members || 4,
+				status: "Bot in channel",
+			}));
 
-      if (teams && teams.length > 0) {
-        teams.forEach((t) => {
-          const chId = String(t.channel_id || '').trim();
-          const team = String(t.team || t.channel_name || '').trim();
-          
-          if (chId) {
-            const formattedName = team ? (team.startsWith('#') ? team : `#${team}`) : `#channel-${chId.toLowerCase()}`;
-            channelsMap.set(chId, {
-              id: chId,
-              name: formattedName,
-              members: t.members?.length || 4,
-              status: "Active in DB",
-            });
-          }
-        });
-      }
+			res.json({ channels });
+		} catch (err) {
+			next(err);
+		}
+	});
 
-      const processItems = (items) => {
-        if (!items) return;
-        items.forEach((item) => {
-          const channelId = String(item.channel || '').trim();
-          const team = String(item.team || '').trim();
+	router.get("/tasks", async (req, res, next) => {
+		try {
+			const filter = {};
 
-          if (channelId) {
-            let displayName = channelId;
-            
-            if (team) {
-              displayName = team.startsWith('#') ? team : `#${team}`;
-            } else if (channelsMap.has(channelId)) {
-              displayName = channelsMap.get(channelId).name;
-            } else if (channelId.match(/^C[A-Z0-9]{8,}$/)) {
-              displayName = `#channel-${channelId.toLowerCase()}`;
-            }
+			if (req.query.status) {
+				filter.status = req.query.status;
+			} else {
+				filter.status = {
+					$nin: [
+						"done",
+						"completed",
+						"Complete",
+						"Done",
+						"COMPLETE",
+						"DONE",
+						"complete",
+					],
+				};
+				filter.title = {
+					$not: /(- completed|- done| - done| - completed)$/i,
+				};
+			}
 
-            channelsMap.set(channelId, {
-              id: channelId,
-              name: displayName,
-              members: 4,
-              status: "Derived from Data",
-            });
-          }
-        });
-      };
+			if (req.query.priority) filter.priority = req.query.priority;
 
-      processItems(tasks);
-      processItems(issues);
+			if (req.query.channel) {
+				filter.channel = req.query.channel;
+			}
 
-      res.json({ channels: Array.from(channelsMap.values()) });
-    } catch (err) {
-      next(err);
-    }
-  });
+			if (req.query.date) {
+				const [year, month, day] = String(req.query.date)
+					.split("-")
+					.map(Number);
+				if (year && month && day) {
+					const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+					const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+					const completedStatuses = [
+						"done",
+						"completed",
+						"Complete",
+						"Done",
+						"COMPLETE",
+						"DONE",
+					];
+					filter.$or = [
+						{ created_time: { $gte: start, $lte: end } },
+						{ updated_time: { $gte: start, $lte: end } },
+						{ due_date: { $gte: start, $lte: end } },
+						// Carry-forward: a still-pending task created on/before this day
+						// keeps showing up every day until it's completed, not just on
+						// its original creation day. Overdue-but-not-done tasks fall
+						// squarely into this bucket.
+						{
+							status: { $nin: completedStatuses },
+							created_time: { $lte: end },
+						},
+					];
+				}
+			}
 
+			if (req.query.assignee) {
+				filter.$or = [
+					{ "assigned_to.id": req.query.assignee },
+					{ "assigned_to.name": new RegExp(req.query.assignee, "i") },
+				];
+			}
 
-  router.get("/tasks", async (req, res, next) => {
-    try {
-      const filter = {};
+			const tasks = await Task.find(filter)
+				.sort({ updated_time: -1 })
+				.lean();
 
-      if (req.query.status) {
-        filter.status = req.query.status;
-      } else {
-        filter.status = {
-          $nin: [
-            "done",
-            "completed",
-            "Complete",
-            "Done",
-            "COMPLETE",
-            "DONE",
-            "complete",
-          ],
-        };
-        filter.title = {
-          $not: /(- completed|- done| - done| - completed)$/i,
-        };
-      }
+			res.json(tasks);
+		} catch (err) {
+			next(err);
+		}
+	});
 
-      if (req.query.priority) filter.priority = req.query.priority;
+	router.delete("/tasks/:id", verifyToken, requireAdmin, async (req, res) => {
+		try {
+			const taskId = req.params.id; // Cleaned up variable name
+			const query = {
+				$or: [
+					{ task_id: taskId },
+					{ _id: taskId.match(/^[0-9a-fA-F]{24}$/) ? taskId : null },
+				],
+			};
+			const result = await Task.findOneAndDelete(query);
 
-      if (req.query.channel) {
-        filter.channel = req.query.channel;
-      }
+			if (!result) {
+				return res.status(404).json({ error: "Task not found" }); // Fixed text
+			}
 
-      if (req.query.date) {
-        const [year, month, day] = String(req.query.date)
-          .split("-")
-          .map(Number);
-        if (year && month && day) {
-          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-          const completedStatuses = [
-            "done",
-            "completed",
-            "Complete",
-            "Done",
-            "COMPLETE",
-            "DONE",
-          ];
-          filter.$or = [
-            { created_time: { $gte: start, $lte: end } },
-            { updated_time: { $gte: start, $lte: end } },
-            { due_date: { $gte: start, $lte: end } },
-            // Carry-forward: a still-pending task created on/before this day
-            // keeps showing up every day until it's completed, not just on
-            // its original creation day. Overdue-but-not-done tasks fall
-            // squarely into this bucket.
-            {
-              status: { $nin: completedStatuses },
-              created_time: { $lte: end },
-            },
-          ];
-        }
-      }
+			return res.status(200).json({
+				success: true,
+				message: "Task deleted successfully directly from database",
+			});
+		} catch (err) {
+			console.error("Failed to delete task from database:", err.message);
+			return res.status(500).json({ error: err.message });
+		}
+	});
 
-      if (req.query.assignee) {
-        filter.$or = [
-          { "assigned_to.id": req.query.assignee },
-          { "assigned_to.name": new RegExp(req.query.assignee, "i") },
-        ];
-      }
+	router.all("/slack/standup-briefing", async (req, res) => {
+		try {
+			const { team, userId, hours, meetingTime } = {
+				...req.query,
+				...req.body,
+			};
 
-      const tasks = await Task.find(filter)
-        .sort({ updated_time: -1 })
-        .lean();
+			const result = await sendDailyStandupBriefings({
+				team,
+				userId,
+				lookbackHours: hours ? parseInt(hours, 10) : 24,
+				meetingTime,
+			});
 
-      res.json(tasks);
-    } catch (err) {
-      next(err);
-    }
-  });
+			res.json({ ok: true, ...result });
+		} catch (err) {
+			res.status(500).json({ ok: false, error: err.message });
+		}
+	});
 
-  router.delete("/tasks/:id", verifyToken, requireAdmin, async (req, res) => {
-    try {
-      const taskId = req.params.id; // Cleaned up variable name
-      const query = {
-        $or: [
-          { task_id: taskId },
-          { _id: taskId.match(/^[0-9a-fA-F]{24}$/) ? taskId : null },
-        ],
-      };
-      const result = await Task.findOneAndDelete(query);
+	router.get("/tasks/:id", async (req, res, next) => {
+		try {
+			const query = {
+				$or: [
+					{ task_id: req.params.id },
+					{
+						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+							? req.params.id
+							: null,
+					},
+				],
+			};
+			const task = await Task.findOne(query).lean();
+			if (!task) return res.status(404).json({ error: "Task not found" });
+			res.json(task);
+		} catch (err) {
+			next(err);
+		}
+	});
 
-      if (!result) {
-        return res.status(404).json({ error: "Task not found" }); // Fixed text
-      }
+	router.patch("/tasks/:id", async (req, res, next) => {
+		try {
+			const { status } = req.body;
+			const allowed = [
+				"title",
+				"description",
+				"priority",
+				"status",
+				"due_date",
+				"blocked_reason",
+				"owner",
+				"assigned_to",
+			];
 
-      return res.status(200).json({
-        success: true,
-        message: "Task deleted successfully directly from database",
-      });
-    } catch (err) {
-      console.error("Failed to delete task from database:", err.message);
-      return res.status(500).json({ error: err.message });
-    }
-  });
+			const updateData = { updated_time: new Date() };
+			for (const key of allowed) {
+				if (req.body[key] !== undefined)
+					updateData[key] = req.body[key];
+			}
 
-  router.all("/slack/standup-briefing", async (req, res) => {
-    try {
-      const { team, userId, hours, meetingTime } = {
-        ...req.query,
-        ...req.body,
-      };
+			if (updateData.due_date) {
+				updateData.due_date = new Date(updateData.due_date);
+				updateData.due_date_pending = false;
+			}
+			if (updateData.blocked_reason) {
+				updateData.block_reason_pending = false;
+			}
 
-      const result = await sendDailyStandupBriefings({
-        team,
-        userId,
-        lookbackHours: hours ? parseInt(hours, 10) : 24,
-        meetingTime,
-      });
+			if (status === "done" || status === "completed") {
+				updateData.completed_at = new Date();
+			} else if (status) {
+				updateData.completed_at = null;
+			}
 
-      res.json({ ok: true, ...result });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
-    }
-  });
-
-  router.get("/tasks/:id", async (req, res, next) => {
-    try {
-      const query = {
-        $or: [
-          { task_id: req.params.id },
-          {
-            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-              ? req.params.id
-              : null,
-          },
-        ],
-      };
-      const task = await Task.findOne(query).lean();
-      if (!task) return res.status(404).json({ error: "Task not found" });
-      res.json(task);
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.patch("/tasks/:id", async (req, res, next) => {
-    try {
-      const { status } = req.body;
-      const allowed = [
-        "title",
-        "description",
-        "priority",
-        "status",
-        "due_date",
-        "blocked_reason",
-        "owner",
-        "assigned_to",
-      ];
-
-      const updateData = { updated_time: new Date() };
-      for (const key of allowed) {
-        if (req.body[key] !== undefined)
-          updateData[key] = req.body[key];
-      }
-
-      if (updateData.due_date) {
-        updateData.due_date = new Date(updateData.due_date);
-        updateData.due_date_pending = false;
-      }
-      if (updateData.blocked_reason) {
-        updateData.block_reason_pending = false;
-      }
-
-      if (status === "done" || status === "completed") {
-        updateData.completed_at = new Date();
-      } else if (status) {
-        updateData.completed_at = null;
-      }
-
-      const query = {
-        $or: [
-          { task_id: req.params.id },
-          {
-            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-              ? req.params.id
-              : null,
-          },
-        ],
-      };
+			const query = {
+				$or: [
+					{ task_id: req.params.id },
+					{
+						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+							? req.params.id
+							: null,
+					},
+				],
+			};
 
 			const updatedTask = await Task.findOneAndUpdate(
 				query,
@@ -667,16 +621,16 @@ Instructions:
 				},
 			);
 
-      if (!updatedTask)
-        return res.status(404).json({ error: "Task not found" });
-      res.json(updatedTask);
-    } catch (err) {
-      next(err);
-    }
-  });
-  router.get("/issues", async (req, res, next) => {
-    try {
-      const filter = {};
+			if (!updatedTask)
+				return res.status(404).json({ error: "Task not found" });
+			res.json(updatedTask);
+		} catch (err) {
+			next(err);
+		}
+	});
+	router.get("/issues", async (req, res, next) => {
+		try {
+			const filter = {};
 
       if (req.query.status) filter.status = req.query.status;
 
@@ -684,39 +638,39 @@ Instructions:
 
       if (req.query.channel) filter.channel = req.query.channel;
 
-      if (req.query.date) {
-        const [year, month, day] = String(req.query.date)
-          .split("-")
-          .map(Number);
+			if (req.query.date) {
+				const [year, month, day] = String(req.query.date)
+					.split("-")
+					.map(Number);
 
-        if (year && month && day) {
-          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+				if (year && month && day) {
+					const start = new Date(year, month - 1, day, 0, 0, 0, 0);
 
-          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+					const end = new Date(year, month - 1, day, 23, 59, 59, 999);
 
-          filter.$or = [
-            { created_time: { $gte: start, $lte: end } },
+					filter.$or = [
+						{ created_time: { $gte: start, $lte: end } },
 
-            { updated_time: { $gte: start, $lte: end } },
+						{ updated_time: { $gte: start, $lte: end } },
 
-            // 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
+						// 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
 
-            {
-              status: { $nin: ["RESOLVED", "resolved"] },
-              created_time: { $lte: end },
-            },
-          ];
-        }
-      }
-      const issues = await Issue.find(filter)
-        .sort({ updated_time: -1 })
-        .lean();
+						{
+							status: { $nin: ["RESOLVED", "resolved"] },
+							created_time: { $lte: end },
+						},
+					];
+				}
+			}
+			const issues = await Issue.find(filter)
+				.sort({ updated_time: -1 })
+				.lean();
 
-      res.json(issues);
-    } catch (err) {
-      next(err);
-    }
-  });
+			res.json(issues);
+		} catch (err) {
+			next(err);
+		}
+	});
 
 	router.get("/issues/:id", async (req, res, next) => {
 		try {
@@ -741,77 +695,76 @@ Instructions:
 		}
 	});
 
-  router.delete(
-    "/issues/:id",
-    verifyToken,
-    requireAdmin,
-    async (req, res) => {
-      try {
-        const issueId = req.params.id; // :large_green_circle: FIX: Handle both custom issue_id and MongoDB _id without CastErrors
-        const query = {
-          $or: [
-            { issue_id: issueId },
-            {
-              _id: issueId.match(/^[0-9a-fA-F]{24}$/)
-                ? issueId
-                : null,
-            },
-          ],
-        };
-        const result = await Issue.findOneAndDelete(query);
+	router.delete(
+		"/issues/:id",
+		verifyToken,
+		requireAdmin,
+		async (req, res) => {
+			try {
+				const issueId = req.params.id; // :large_green_circle: FIX: Handle both custom issue_id and MongoDB _id without CastErrors
+				const query = {
+					$or: [
+						{ issue_id: issueId },
+						{
+							_id: issueId.match(/^[0-9a-fA-F]{24}$/)
+								? issueId
+								: null,
+						},
+					],
+				};
+				const result = await Issue.findOneAndDelete(query);
 
-        if (!result) {
-          return res.status(404).json({ error: "Issue not found" });
-        }
+				if (!result) {
+					return res.status(404).json({ error: "Issue not found" });
+				}
 
-        return res
-          .status(200)
-          .json({
-            success: true,
-            message:
-              "Issue deleted successfully directly from database",
-          });
-      } catch (err) {
-        console.error(
-          "Failed to delete issue from database:",
-          err.message,
-        );
-        return res.status(500).json({ error: err.message });
-      }
-    },
-  );
+				return res
+					.status(200)
+					.json({
+						success: true,
+						message:
+							"Issue deleted successfully directly from database",
+					});
+			} catch (err) {
+				console.error(
+					"Failed to delete issue from database:",
+					err.message,
+				);
+				return res.status(500).json({ error: err.message });
+			}
+		},
+	);
 
-  router.get("/discussions", async (req, res, next) => {
-    try {
-      const filter = {};
-      if (req.query.channel) filter.channel = req.query.channel;
+	router.get("/discussions", async (req, res, next) => {
+		try {
+			const filter = {};
+			if (req.query.channel) filter.channel = req.query.channel;
 
-      const discussions = await Discussion.find(filter)
-        .sort({ timestamp: -1 })
-        .limit(200)
-        .lean();
-      res.json(discussions);
-    } catch (err) {
-      next(err);
-    }
-  });
+			const discussions = await Discussion.find(filter)
+				.sort({ timestamp: -1 })
+				.limit(200)
+				.lean();
+			res.json(discussions);
+		} catch (err) {
+			next(err);
+		}
+	});
 
-  router.get("/teams", async (req, res, next) => {
-    try {
-      const channelId = req.query.channelId;
-      const filter = {};
-      if (channelId) filter.channel_id = channelId;
+	router.get("/teams", async (req, res, next) => {
+		try {
+			const channelId = req.query.channelId;
+			const filter = {};
+			if (channelId) filter.channel_id = channelId;
 
-      const teams = await Team.find(filter)
-        .sort({ updated_time: -1 })
-        .lean();
-      res.json(teams);
-    } catch (err) {
-      next(err);
-    }
-  });
-
-   router.get("/teams/channels", async (req, res, next) => {
+			const teams = await Team.find(filter)
+				.sort({ updated_time: -1 })
+				.lean();
+			res.json(teams);
+		} catch (err) {
+			next(err);
+		}
+	});
+	router.get("/teams/channels", async (req, res, next) => {
      try {
        const teams = await Team.find({}, { channel_id: 1, channel_name: 1, team: 1 }).lean();
        const channelIds = teams
@@ -912,10 +865,6 @@ router.get("/teams/workload", async (req, res, next) => {
         taskFilter.channel = channelId;
         issueFilter.channel = channelId;
       }
-      if (channelId) {
-        taskFilter.channel = channelId;
-        issueFilter.channel = channelId;
-      }
 
       if (dateStr) {
         const [year, month, day] = String(dateStr).split("-").map(Number);
@@ -946,9 +895,6 @@ router.get("/teams/workload", async (req, res, next) => {
       const getName = (item) => {
         const rawAssignee = item.assigned_to || item.owner;
         if (!rawAssignee) return null;
-      const getName = (item) => {
-        const rawAssignee = item.assigned_to || item.owner;
-        if (!rawAssignee) return null;
 
         let nameStr = "";
         if (typeof rawAssignee === "string") {
@@ -962,7 +908,6 @@ router.get("/teams/workload", async (req, res, next) => {
             "";
         }
 
-        if (!nameStr || nameStr === "Unassigned") return null;
         if (!nameStr || nameStr === "Unassigned") return null;
 
         const lower = nameStr.toLowerCase();
@@ -999,17 +944,7 @@ router.get("/teams/workload", async (req, res, next) => {
       for (const task of tasks) {
         const name = getName(task);
         if (!name) continue;
-      for (const task of tasks) {
-        const name = getName(task);
-        if (!name) continue;
 
-        const status = (task.status || "").toLowerCase();
-        const isBlocked =
-          status === "blocked" ||
-          task.blocked_reason ||
-          task.block_reason_pending;
-        const isDone = status === "completed" || status === "done";
-        const isCurrent = !isBlocked && !isDone;
         const status = (task.status || "").toLowerCase();
         const isBlocked =
           status === "blocked" ||
@@ -1063,80 +998,75 @@ router.get("/teams/workload", async (req, res, next) => {
       next(err);
     }
   });
-      res.json(Array.from(memberMap.values()));
-    } catch (err) {
-      next(err);
-    }
-  });
 
-  router.post(
-    "/parse",
-    body("text").isString().notEmpty(),
-    body("sender").isObject(),
-    async (req, res, next) => {
-      try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty())
-          return res.status(400).json({ errors: errors.array() });
+	router.post(
+		"/parse",
+		body("text").isString().notEmpty(),
+		body("sender").isObject(),
+		async (req, res, next) => {
+			try {
+				const errors = validationResult(req);
+				if (!errors.isEmpty())
+					return res.status(400).json({ errors: errors.array() });
 
-        const result = parseMessage({
-          text: req.body.text,
-          sender: req.body.sender,
-          channel: req.body.channel || "",
-          thread_id: req.body.thread_id || "",
-          workspace_id: req.body.workspace_id || "",
-          team: req.body.team || "",
-          message_ts: req.body.message_ts || "",
-          is_edit: !!req.body.is_edit,
-          user_directory: req.body.user_directory || {},
-          existing_task: req.body.existing_task || null,
-          existing_issue: req.body.existing_issue || null,
-          thread_context: req.body.thread_context || [],
-        });
+				const result = parseMessage({
+					text: req.body.text,
+					sender: req.body.sender,
+					channel: req.body.channel || "",
+					thread_id: req.body.thread_id || "",
+					workspace_id: req.body.workspace_id || "",
+					team: req.body.team || "",
+					message_ts: req.body.message_ts || "",
+					is_edit: !!req.body.is_edit,
+					user_directory: req.body.user_directory || {},
+					existing_task: req.body.existing_task || null,
+					existing_issue: req.body.existing_issue || null,
+					thread_context: req.body.thread_context || [],
+				});
 
-        res.json(result);
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
+				res.json(result);
+			} catch (err) {
+				next(err);
+			}
+		},
+	);
 
-  router.post(
-    "/messages/process",
-    body("text").isString().notEmpty(),
-    body("sender").isObject(),
-    async (req, res, next) => {
-      try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty())
-          return res.status(400).json({ errors: errors.array() });
+	router.post(
+		"/messages/process",
+		body("text").isString().notEmpty(),
+		body("sender").isObject(),
+		async (req, res, next) => {
+			try {
+				const errors = validationResult(req);
+				if (!errors.isEmpty())
+					return res.status(400).json({ errors: errors.array() });
 
-        if (!messageProcessor) {
-          return res
-            .status(503)
-            .json({ error: "Message processor not ready" });
-        }
+				if (!messageProcessor) {
+					return res
+						.status(503)
+						.json({ error: "Message processor not ready" });
+				}
 
-        const result = await messageProcessor.process({
-          text: req.body.text,
-          sender: req.body.sender,
-          channel: req.body.channel || "api",
-          thread_id: req.body.thread_id || "",
-          workspace_id: req.body.workspace_id || "",
-          team: req.body.team || "",
-          message_ts: req.body.message_ts || `api_${Date.now()}`,
-          is_edit: !!req.body.is_edit,
-          user_directory: req.body.user_directory || {},
-        });
+				const result = await messageProcessor.process({
+					text: req.body.text,
+					sender: req.body.sender,
+					channel: req.body.channel || "api",
+					thread_id: req.body.thread_id || "",
+					workspace_id: req.body.workspace_id || "",
+					team: req.body.team || "",
+					message_ts: req.body.message_ts || `api_${Date.now()}`,
+					is_edit: !!req.body.is_edit,
+					user_directory: req.body.user_directory || {},
+				});
 
-        res.json(result);
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
+				res.json(result);
+			} catch (err) {
+				next(err);
+			}
+		},
+	);
 
-  return router;
+	return router;
 }
 
 module.exports = { createApiRouter };
