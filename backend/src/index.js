@@ -21,8 +21,6 @@ const { startReminderScheduler } = require("./jobs/reminders");
 const slackAuthRoutes = require("./routes/slackAuth");
 const { createAuthRouter } = require("./routes/auth");
 const seedAdmin = require("./scripts/seed.js");
-const{Task} = require("./models/Task");
-const{Issue} = require("./models/Issue");
 
 // Load Standup Scheduler & Retention Cleanup
 require("./config/scheduler");
