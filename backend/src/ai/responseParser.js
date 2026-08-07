@@ -28,13 +28,28 @@ function mergeParserResult(baseResult, aiResult) {
     action = baseResult.existing_issue ? "UPDATE_ISSUE" : "CREATE_ISSUE";
   }
 
+  // 🟢 FIX: Safely merge AI text extractions without wiping out system IDs and assignments
+  let mergedTask = null;
+  if (classification === "TASK") {
+      mergedTask = aiResult.task && baseResult.task 
+          ? { ...baseResult.task, ...aiResult.task } 
+          : (aiResult.task || baseResult.task);
+  }
+
+  let mergedIssue = null;
+  if (classification === "ISSUE") {
+      mergedIssue = aiResult.issue && baseResult.issue 
+          ? { ...baseResult.issue, ...aiResult.issue } 
+          : (aiResult.issue || baseResult.issue);
+  }
+
   return {
     ...baseResult,
     classification,
     action,
     confidence: aiResult.confidence || 0.9,
-    task: classification === "TASK" ? (aiResult.task || baseResult.task) : null,
-    issue: classification === "ISSUE" ? (aiResult.issue || baseResult.issue) : null,
+    task: mergedTask,
+    issue: mergedIssue,
     discussion: classification === "GENERAL_DISCUSSION" ? {
       content: baseResult.text || "",
       flagged_for_review: false

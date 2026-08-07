@@ -3,12 +3,12 @@ const User = require("../models/User.js"); // Ensure this path matches your stru
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+
 
 async function seedAdmin() {
   try {
     // 1. Safety check for env vars
-    if (!ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_USERNAME) {
+    if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
       console.log("⚠️ Admin credentials missing in .env. Skipping auto-seed.");
       return;
     }

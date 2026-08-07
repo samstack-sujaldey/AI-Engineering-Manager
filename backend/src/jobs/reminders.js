@@ -46,39 +46,38 @@ function startReminderScheduler(notificationService) {
 				"awaiting_acknowledgement.user.id": { $exists: true, $ne: "" },
 			}).limit(50);
 
+			// 🟢 FIX: Move the 59-minute check into the DB query to prevent queue starvation
+			const oneHourAgo = new Date(Date.now() - 59 * 60 * 1000);
+
 			const overdueTasks = await Task.find({
 				status: { $ne: "COMPLETED" },
 				due_date: { $lt: new Date(), $ne: null },
 				"owner.id": { $exists: true, $ne: "" },
+				$or: [
+					{ overdue_notified_at: { $exists: false } },
+					// Re-enter the queue only if 59 minutes have passed
+					{ overdue_notified_at: { $lt: oneHourAgo } }
+				]
 			}).limit(50);
 
 			for (const t of overdueTasks) {
-				// 🟢 FIX 2: Check for 59 minutes to prevent cron overlap skips
-				const recentNotice = await Notification.findOne({
-					task_id: t.task_id,
+				const formattedTime = new Date(t.due_date).toLocaleString(
+					"en-IN",
+					{ timeZone: "Asia/Kolkata" },
+				);
+
+				await notificationService.createAndSend({
 					type: "GENERAL",
-					message: { $regex: /Overdue/i },
-					createdAt: {
-						$gte: new Date(Date.now() - 59 * 60 * 1000),
-					},
+					target_user_id: t.owner.id,
+					target_user_name: t.owner.name,
+					message: `🚨 *Overdue Task:* Your task '${t.title}' was due on ${formattedTime}. Please update the status to "done" or reply with a new due date!`,
+					task_id: t.task_id,
+					scheduleReminder: false,
 				});
 
-				if (!recentNotice) {
-					// 🟢 FIX 3: Force Indian Standard Time (IST) formatting
-					const formattedTime = new Date(t.due_date).toLocaleString(
-						"en-IN",
-						{ timeZone: "Asia/Kolkata" },
-					);
-
-					await notificationService.createAndSend({
-						type: "GENERAL",
-						target_user_id: t.owner.id,
-						target_user_name: t.owner.name,
-						message: `🚨 *Overdue Task:* Your task '${t.title}' was due on ${formattedTime}. Please update the status to "done" or reply with a new due date!`,
-						task_id: t.task_id,
-						scheduleReminder: false,
-					});
-				}
+				// 🟢 FIX: Update the timestamp so the task drops out of the queue for the next 59 minutes
+				t.overdue_notified_at = new Date();
+				await t.save();
 			}
 
 			for (const t of waitingAck) {

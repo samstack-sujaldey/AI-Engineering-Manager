@@ -29,7 +29,6 @@ async function findRelatedWorkWithAI({
 					const meta = metas[i] || {};
 					const docText = docs[i] || "";
 
-					// Exclude the newly posted message itself from matching
 					if (
 						docText &&
 						!docText
@@ -69,16 +68,22 @@ async function findRelatedWorkWithAI({
 	const filter = { workspace_id: workspaceId };
 	if (channel) filter.channel = channel;
 
-	const [tasks, issues] = await Promise.all([
-		Task.find({ ...filter, status: { $ne: "COMPLETED" } })
-			.sort({ updated_time: -1 })
-			.limit(30)
-			.lean(),
-		Issue.find({ ...filter, status: { $ne: "RESOLVED" } })
-			.sort({ updated_time: -1 })
-			.limit(30)
-			.lean(),
-	]).catch(() => [[], []]);
+	let tasks = [];
+	let issues = [];
+	try {
+		[tasks, issues] = await Promise.all([
+			Task.find({ ...filter, status: { $ne: "COMPLETED" } })
+				.sort({ updated_time: -1 })
+				.limit(30)
+				.lean(),
+			Issue.find({ ...filter, status: { $ne: "RESOLVED" } })
+				.sort({ updated_time: -1 })
+				.limit(30)
+				.lean(),
+		]);
+	} catch (err) {
+		console.error("[MongoDB] Failed to fetch fallback work items:", err.message);
+	}
 
 	const candidates = [
 		...tasks.map((t) => ({ type: "task", ...t })),
@@ -114,7 +119,17 @@ async function findRelatedWorkWithAI({
 			};
 		});
 
-	return [...chromaMatches, ...dbMatches].slice(0, limit);
+	// 🟢 FIX: Ensure absolute ID uniqueness across combined matches
+	const combined = [...chromaMatches, ...dbMatches];
+	const uniqueMap = new Map();
+	
+	for (const item of combined) {
+		if (item.id && !uniqueMap.has(item.id)) {
+			uniqueMap.set(item.id, item);
+		}
+	}
+
+	return Array.from(uniqueMap.values()).slice(0, limit);
 }
 
 module.exports = { findRelatedWorkWithAI };

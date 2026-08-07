@@ -90,6 +90,9 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
   const displayDateStr = `${String(reqDay).padStart(2, "0")}.${String(reqMonth).padStart(2, "0")}.${String(reqYear).slice(2)}`;
   const duration = process.env.STANDUP_DURATION || "15 Minutes";
 
+  const backlogLimit = new Date(startOfDay);
+  backlogLimit.setDate(backlogLimit.getDate() - 7); // 7 days back for carry-overs
+
   const taskFilter = {
     $or: [
       { created_time: { $gte: startOfDay, $lte: endOfDay } },
@@ -97,12 +100,12 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       { due_date: { $gte: startOfDay, $lte: endOfDay } },
       // Carry-overs: Created in the past but NOT completed
       {
-        created_time: { $lt: startOfDay },
+        created_time: { $lt: startOfDay, $gte: backlogLimit },
         status: { $nin: ["COMPLETED", "RESOLVED", "done", "completed", "Complete", "Done"] }
       },
       // Overdue: Due in the past but NOT completed
       {
-        due_date: { $lt: startOfDay },
+        due_date: { $lt: startOfDay, $gte: backlogLimit },
         status: { $nin: ["COMPLETED", "RESOLVED", "done", "completed", "Complete", "Done"] }
       }
     ],
@@ -114,7 +117,7 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
       { due_date: { $gte: startOfDay, $lte: endOfDay } },
       // Carry-overs/Overdue: Created or Due in the past but NOT resolved
       {
-        created_time: { $lt: startOfDay },
+        created_time: { $lt: startOfDay, $gte: backlogLimit },
         status: { $nin: ["RESOLVED", "resolved", "Resolved", "COMPLETED"] }
       },
       {

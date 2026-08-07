@@ -9,12 +9,23 @@ function verifyToken(req, res, next) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
+  // 🟢 FIX: Ensure the environment variable exists. Do NOT use a hardcoded fallback.
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    console.error("[AUTH FATAL] JWT_SECRET is not defined in environment variables.");
+    return res.status(500).json({ error: "Internal server configuration error." });
+  }
+
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "your-secret-key");
+    const decoded = jwt.verify(token, secret);
     req.user = decoded; // Contains { id, username, role }
     next();
   } catch (error) {
-    res.status(401).json({ error: "Invalid or expired token." });
+    // Distinguish between expired and malformed tokens for better client-side handling
+    if (error.name === "TokenExpiredError") {
+        return res.status(401).json({ error: "Token has expired. Please log in again." });
+    }
+    res.status(401).json({ error: "Invalid token." });
   }
 }
 

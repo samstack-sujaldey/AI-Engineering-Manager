@@ -13,7 +13,8 @@ function createAuthRouter() {
   // 1. LOGIN ROUTE (Public)
   router.post('/login', async (req, res) => {
     try {
-      const { email, password } = req.body || {};
+      const email = String(req.body?.email || "");
+      const password = String(req.body?.password || "");
       if (!email || !password) {
         return res.status(400).json({ error: 'Email and password are required' });
       }

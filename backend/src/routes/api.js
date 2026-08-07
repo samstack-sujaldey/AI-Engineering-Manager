@@ -613,11 +613,11 @@ Instructions:
 				],
 			};
 
-			const updatedTask = await Task.findOneAndReplace(
+			const updatedTask = await Task.findOneAndUpdate(
 				query,
-				updateData,
+				{ $set: updateData },
 				{
-					returnDocument: "after",
+					new: true, // This is the Mongoose equivalent to returnDocument: "after"
 				},
 			);
 
@@ -674,6 +674,19 @@ Instructions:
 
 	router.get("/issues/:id", async (req, res, next) => {
 		try {
+			// 🟢 FIX: Actually query the DB using the custom ID or MongoDB _id
+			const query = {
+				$or: [
+					{ issue_id: req.params.id },
+					{
+						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+							? req.params.id
+							: null,
+					},
+				],
+			};
+			const issue = await Issue.findOne(query).lean();
+            
 			if (!issue)
 				return res.status(404).json({ error: "Issue not found" });
 			res.json(issue);

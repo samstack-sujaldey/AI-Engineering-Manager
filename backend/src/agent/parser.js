@@ -807,7 +807,7 @@ async function parseMessage(input) {
 		if (dueDate && linkingTask) updates.due_date = dueDate;
 
 		// 🟢 FIX 2: Ensure the extracted reason is passed into the update payload
-		if (blockedReason && linkingTask)
+		if (blockedReason && (linkingTask || linkingIssue))
 			updates.blocked_reason = blockedReason;
 
 		if (Object.keys(updates).length > 0 || text.trim()) {

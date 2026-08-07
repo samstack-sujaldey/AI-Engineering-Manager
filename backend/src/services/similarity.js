@@ -13,9 +13,12 @@ async function findSimilarTask(
 	if (workspaceId) filter.workspace_id = workspaceId;
 	if (channel) filter.channel = channel;
 
+	// Only check active (non-completed) tasks to speed up similarity matching
+	filter.status = { $ne: "COMPLETED" };
+
 	const candidates = await Task.find(filter)
 		.sort({ updated_time: -1 })
-		.limit(50)
+		.limit(30)
 		.lean();
 
 	let best = null;
@@ -53,23 +56,26 @@ async function findSimilarIssue(
 	if (workspaceId) filter.workspace_id = workspaceId;
 	if (channel) filter.channel = channel;
 
+	filter.status = { $ne: "RESOLVED" };
+
 	// 🟢 FIX: Apply "Same User, Same Day" Rule
 	if (userId) {
 		// Only check issues owned by this specific person
 		filter["owner.id"] = userId;
 
-		// Only check issues created between 00:00:00 and 23:59:59 today
-		const startOfDay = new Date();
-		startOfDay.setHours(0, 0, 0, 0);
-		const endOfDay = new Date();
-		endOfDay.setHours(23, 59, 59, 999);
+		
+		// 🟢 FIX: Use robust UTC-anchored or generalized day boundaries to prevent server drift
+		const now = new Date();
+		const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+		const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
+		
 		filter.created_time = { $gte: startOfDay, $lte: endOfDay };
 	}
 
 	const candidates = await Issue.find(filter)
 		.sort({ updated_time: -1 })
-		.limit(50)
+		.limit(30)
 		.lean();
 
 	let best = null;

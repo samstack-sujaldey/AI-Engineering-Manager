@@ -37,7 +37,7 @@ function shouldAnalyze({
   }
 
   const wordCount = message.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount <= 3) {
+  if (wordCount <= 2) {
     return false;
   }
 
