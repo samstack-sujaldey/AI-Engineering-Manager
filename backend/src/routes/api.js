@@ -14,17 +14,14 @@ const { sendDailyStandupBriefings } = require("../config/scheduler.js");
 const { callOpenAI } = require(".././ai/openai.js");
 const { verifyToken, requireAdmin } = require("../middleware/auth");
 
+
 function createApiRouter({ messageProcessor }) {
-	const router = express.Router();
+  const router = express.Router();
 
-  // GET: Daily Summary formatted strictly as MOM (with Channel Filtering Support)
-  // Replace GET /discussions/daily-summary in routes/api.js with this:
-
+  //discussion routes
   router.get("/discussions/daily-summary", async (req, res) => {
     try {
-      const {
-        getTargetSummaryDate,
-      } = require("../jobs/standupScheduler");
+      const { getTargetSummaryDate } = require("../jobs/standupScheduler");
 
       // 1. Receive the raw date passed from frontend (or default to today's raw date)
       const rawDateStr = req.query.date
@@ -43,9 +40,9 @@ function createApiRouter({ messageProcessor }) {
       const cacheKey = channel
         ? { date: targetBusinessDateStr, channel: channel }
         : {
-          date: targetBusinessDateStr,
-          $or: [{ channel: null }, { channel: "" }],
-        };
+            date: targetBusinessDateStr,
+            $or: [{ channel: null }, { channel: "" }],
+          };
 
       const cachedDoc = await DailySummary.findOne(cacheKey).lean();
 
@@ -88,17 +85,12 @@ function createApiRouter({ messageProcessor }) {
     }
   });
 
-  // POST: Parse Raw Unstructured MOM Message using OpenAI Structured Output
-  // POST: Parse Raw Unstructured MOM Message with OpenAI, falling back to Regex if it fails
   router.post("/discussions/parse-mom", async (req, res) => {
     try {
-      const { rawText, channel, workspace_id, user_directory, team } =
-        req.body;
+      const { rawText, channel, workspace_id, user_directory, team } = req.body;
 
       if (!rawText || typeof rawText !== "string") {
-        return res
-          .status(400)
-          .json({ error: "rawText parameter is required" });
+        return res.status(400).json({ error: "rawText parameter is required" });
       }
 
       let parsedData = null;
@@ -145,11 +137,7 @@ Instructions:
                           items: { type: "string" },
                         },
                       },
-                      required: [
-                        "date",
-                        "duration",
-                        "present_members",
-                      ],
+                      required: ["date", "duration", "present_members"],
                       additionalProperties: false,
                     },
                     member_updates: {
@@ -198,9 +186,7 @@ Instructions:
         );
 
         parsedData =
-          typeof aiResponse === "string"
-            ? JSON.parse(aiResponse)
-            : aiResponse;
+          typeof aiResponse === "string" ? JSON.parse(aiResponse) : aiResponse;
       } catch (openaiErr) {
         console.warn(
           "[parse-mom] OpenAI parsing failed, falling back to local Regex parser:",
@@ -244,9 +230,7 @@ Instructions:
           }
 
           if (currentMember) {
-            const cleanLine = line
-              .replace(/^([-•*]|\d+\.)\s*/, "")
-              .trim();
+            const cleanLine = line.replace(/^([-•*]|\d+\.)\s*/, "").trim();
             if (!cleanLine) continue;
 
             const lower = cleanLine.toLowerCase();
@@ -262,17 +246,11 @@ Instructions:
               lower.includes("follow up");
 
             if (isIssue) {
-              memberUpdatesMap[currentMember].issues.push(
-                cleanLine,
-              );
+              memberUpdatesMap[currentMember].issues.push(cleanLine);
             } else if (isDiscussion) {
-              memberUpdatesMap[currentMember].discussions.push(
-                cleanLine,
-              );
+              memberUpdatesMap[currentMember].discussions.push(cleanLine);
             } else {
-              memberUpdatesMap[currentMember].tasks.push(
-                cleanLine,
-              );
+              memberUpdatesMap[currentMember].tasks.push(cleanLine);
             }
           }
         }
@@ -302,12 +280,8 @@ Instructions:
       parsedData.member_updates.forEach((m) => {
         formattedText += `**${m.member_name}**\n`;
         m.tasks.forEach((t) => (formattedText += `- ${t}\n`));
-        m.issues.forEach(
-          (i) => (formattedText += `- 🚨 Issue: ${i}\n`),
-        );
-        m.discussions.forEach(
-          (d) => (formattedText += `- 💬 Note: ${d}\n`),
-        );
+        m.issues.forEach((i) => (formattedText += `- 🚨 Issue: ${i}\n`));
+        m.discussions.forEach((d) => (formattedText += `- 💬 Note: ${d}\n`));
         formattedText += `\n`;
       });
 
@@ -348,14 +322,22 @@ Instructions:
     }
   });
 
-  router.get("/health", (_req, res) => {
-    res.json({
-      ok: true,
-      service: "ai-engineering-manager",
-      ts: new Date().toISOString(),
-    });
+  router.get("/discussions", async (req, res, next) => {
+    try {
+      const filter = {};
+      if (req.query.channel) filter.channel = req.query.channel;
+
+      const discussions = await Discussion.find(filter)
+        .sort({ timestamp: -1 })
+        .limit(200)
+        .lean();
+      res.json(discussions);
+    } catch (err) {
+      next(err);
+    }
   });
 
+  //dashboard routes
   router.get("/dashboard", async (req, res, next) => {
     try {
       const channel = req.query.channel || null;
@@ -377,260 +359,191 @@ Instructions:
     }
   });
 
-  router.post("/slack/sync", async (req, res, next) => {
+  //Tasks routes
+  router.get("/tasks", async (req, res, next) => {
     try {
-      if (!messageProcessor) {
-        return res
-          .status(503)
-          .json({ error: "Message processor not ready" });
+      const filter = {};
+
+      if (req.query.status) {
+        filter.status = req.query.status;
+      } else {
+        filter.status = {
+          $nin: [
+            "done",
+            "completed",
+            "Complete",
+            "Done",
+            "COMPLETE",
+            "DONE",
+            "complete",
+          ],
+        };
+        filter.title = {
+          $not: /(- completed|- done| - done| - completed)$/i,
+        };
       }
-      const limit = req.body?.limit_per_channel
-        ? parseInt(req.body.limit_per_channel, 10)
-        : undefined;
-      const channelIds = Array.isArray(req.body?.channels)
-        ? req.body.channels
-        : undefined;
-      const channelId = req.body?.channel_id || undefined;
 
-			const result = await syncFromSlack(messageProcessor, {
-				...(limit ? { limitPerChannel: limit } : {}),
-				...(channelId ? { channelId } : {}),
-			});
-			res.json(result);
-		} catch (err) {
-			if (err.status) {
-				return res.status(err.status).json({
-					error: err.message,
-					code: err.code || "slack_sync_failed",
-				});
-			}
-			next(err);
-		}
-	});
+      if (req.query.priority) filter.priority = req.query.priority;
 
-	router.get("/slack/channels", async (_req, res, next) => {
-		try {
-			const client = createSlackClient();
-			const rawChannels = await listChannels(client);
+      if (req.query.channel) {
+        filter.channel = req.query.channel;
+      }
 
-			const channels = rawChannels.map((ch) => ({
-				id: ch.id,
-				name: `#${ch.name}`,
-				members: ch.num_members || 4,
-				status: "Bot in channel",
-			}));
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          const completedStatuses = [
+            "done",
+            "completed",
+            "Complete",
+            "Done",
+            "COMPLETE",
+            "DONE",
+          ];
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
+            { due_date: { $gte: start, $lte: end } },
+            // Carry-forward: a still-pending task created on/before this day
+            // keeps showing up every day until it's completed, not just on
+            // its original creation day. Overdue-but-not-done tasks fall
+            // squarely into this bucket.
+            {
+              status: { $nin: completedStatuses },
+              created_time: { $lte: end },
+            },
+          ];
+        }
+      }
 
-			res.json({ channels });
-		} catch (err) {
-			next(err);
-		}
-	});
+      if (req.query.assignee) {
+        filter.$or = [
+          { "assigned_to.id": req.query.assignee },
+          { "assigned_to.name": new RegExp(req.query.assignee, "i") },
+        ];
+      }
 
-	router.get("/tasks", async (req, res, next) => {
-		try {
-			const filter = {};
+      const tasks = await Task.find(filter).sort({ updated_time: -1 }).lean();
 
-			if (req.query.status) {
-				filter.status = req.query.status;
-			} else {
-				filter.status = {
-					$nin: [
-						"done",
-						"completed",
-						"Complete",
-						"Done",
-						"COMPLETE",
-						"DONE",
-						"complete",
-					],
-				};
-				filter.title = {
-					$not: /(- completed|- done| - done| - completed)$/i,
-				};
-			}
+      res.json(tasks);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-			if (req.query.priority) filter.priority = req.query.priority;
+  router.delete("/tasks/:id", verifyToken, requireAdmin, async (req, res) => {
+    try {
+      const taskId = req.params.id; // Cleaned up variable name
+      const query = {
+        $or: [
+          { task_id: taskId },
+          { _id: taskId.match(/^[0-9a-fA-F]{24}$/) ? taskId : null },
+        ],
+      };
+      const result = await Task.findOneAndDelete(query);
 
-			if (req.query.channel) {
-				filter.channel = req.query.channel;
-			}
+      if (!result) {
+        return res.status(404).json({ error: "Task not found" }); // Fixed text
+      }
 
-			if (req.query.date) {
-				const [year, month, day] = String(req.query.date)
-					.split("-")
-					.map(Number);
-				if (year && month && day) {
-					const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-					const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-					const completedStatuses = [
-						"done",
-						"completed",
-						"Complete",
-						"Done",
-						"COMPLETE",
-						"DONE",
-					];
-					filter.$or = [
-						{ created_time: { $gte: start, $lte: end } },
-						{ updated_time: { $gte: start, $lte: end } },
-						{ due_date: { $gte: start, $lte: end } },
-						// Carry-forward: a still-pending task created on/before this day
-						// keeps showing up every day until it's completed, not just on
-						// its original creation day. Overdue-but-not-done tasks fall
-						// squarely into this bucket.
-						{
-							status: { $nin: completedStatuses },
-							created_time: { $lte: end },
-						},
-					];
-				}
-			}
+      return res.status(200).json({
+        success: true,
+        message: "Task deleted successfully directly from database",
+      });
+    } catch (err) {
+      console.error("Failed to delete task from database:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  });
 
-			if (req.query.assignee) {
-				filter.$or = [
-					{ "assigned_to.id": req.query.assignee },
-					{ "assigned_to.name": new RegExp(req.query.assignee, "i") },
-				];
-			}
+  router.get("/tasks/:id", async (req, res, next) => {
+    try {
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          {
+            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+              ? req.params.id
+              : null,
+          },
+        ],
+      };
+      const task = await Task.findOne(query).lean();
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      res.json(task);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-			const tasks = await Task.find(filter)
-				.sort({ updated_time: -1 })
-				.lean();
+  router.patch("/tasks/:id", async (req, res, next) => {
+    try {
+      const { status } = req.body;
+      const allowed = [
+        "title",
+        "description",
+        "priority",
+        "status",
+        "due_date",
+        "blocked_reason",
+        "owner",
+        "assigned_to",
+      ];
 
-			res.json(tasks);
-		} catch (err) {
-			next(err);
-		}
-	});
+      const updateData = { updated_time: new Date() };
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) updateData[key] = req.body[key];
+      }
 
-	router.delete("/tasks/:id", verifyToken, requireAdmin, async (req, res) => {
-		try {
-			const taskId = req.params.id; // Cleaned up variable name
-			const query = {
-				$or: [
-					{ task_id: taskId },
-					{ _id: taskId.match(/^[0-9a-fA-F]{24}$/) ? taskId : null },
-				],
-			};
-			const result = await Task.findOneAndDelete(query);
+      if (updateData.due_date) {
+        updateData.due_date = new Date(updateData.due_date);
+        updateData.due_date_pending = false;
+      }
+      if (updateData.blocked_reason) {
+        updateData.block_reason_pending = false;
+      }
 
-			if (!result) {
-				return res.status(404).json({ error: "Task not found" }); // Fixed text
-			}
+      if (status === "done" || status === "completed") {
+        updateData.completed_at = new Date();
+      } else if (status) {
+        updateData.completed_at = null;
+      }
 
-			return res.status(200).json({
-				success: true,
-				message: "Task deleted successfully directly from database",
-			});
-		} catch (err) {
-			console.error("Failed to delete task from database:", err.message);
-			return res.status(500).json({ error: err.message });
-		}
-	});
+      const query = {
+        $or: [
+          { task_id: req.params.id },
+          {
+            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+              ? req.params.id
+              : null,
+          },
+        ],
+      };
 
-	router.all("/slack/standup-briefing", async (req, res) => {
-		try {
-			const { team, userId, hours, meetingTime } = {
-				...req.query,
-				...req.body,
-			};
+      const updatedTask = await Task.findOneAndUpdate(
+        query,
+        { $set: updateData },
+        {
+          new: true, // This is the Mongoose equivalent to returnDocument: "after"
+        },
+      );
 
-			const result = await sendDailyStandupBriefings({
-				team,
-				userId,
-				lookbackHours: hours ? parseInt(hours, 10) : 24,
-				meetingTime,
-			});
+      if (!updatedTask)
+        return res.status(404).json({ error: "Task not found" });
+      res.json(updatedTask);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-			res.json({ ok: true, ...result });
-		} catch (err) {
-			res.status(500).json({ ok: false, error: err.message });
-		}
-	});
-
-	router.get("/tasks/:id", async (req, res, next) => {
-		try {
-			const query = {
-				$or: [
-					{ task_id: req.params.id },
-					{
-						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-							? req.params.id
-							: null,
-					},
-				],
-			};
-			const task = await Task.findOne(query).lean();
-			if (!task) return res.status(404).json({ error: "Task not found" });
-			res.json(task);
-		} catch (err) {
-			next(err);
-		}
-	});
-
-	router.patch("/tasks/:id", async (req, res, next) => {
-		try {
-			const { status } = req.body;
-			const allowed = [
-				"title",
-				"description",
-				"priority",
-				"status",
-				"due_date",
-				"blocked_reason",
-				"owner",
-				"assigned_to",
-			];
-
-			const updateData = { updated_time: new Date() };
-			for (const key of allowed) {
-				if (req.body[key] !== undefined)
-					updateData[key] = req.body[key];
-			}
-
-			if (updateData.due_date) {
-				updateData.due_date = new Date(updateData.due_date);
-				updateData.due_date_pending = false;
-			}
-			if (updateData.blocked_reason) {
-				updateData.block_reason_pending = false;
-			}
-
-			if (status === "done" || status === "completed") {
-				updateData.completed_at = new Date();
-			} else if (status) {
-				updateData.completed_at = null;
-			}
-
-			const query = {
-				$or: [
-					{ task_id: req.params.id },
-					{
-						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-							? req.params.id
-							: null,
-					},
-				],
-			};
-
-			const updatedTask = await Task.findOneAndUpdate(
-				query,
-				{ $set: updateData },
-				{
-					new: true, // This is the Mongoose equivalent to returnDocument: "after"
-				},
-			);
-
-			if (!updatedTask)
-				return res.status(404).json({ error: "Task not found" });
-			res.json(updatedTask);
-		} catch (err) {
-			next(err);
-		}
-	});
-	router.get("/issues", async (req, res, next) => {
-		try {
-			const filter = {};
+  //Issue routes
+  router.get("/issues", async (req, res, next) => {
+    try {
+      const filter = {};
 
       if (req.query.status) filter.status = req.query.status;
 
@@ -638,224 +551,208 @@ Instructions:
 
       if (req.query.channel) filter.channel = req.query.channel;
 
-			if (req.query.date) {
-				const [year, month, day] = String(req.query.date)
-					.split("-")
-					.map(Number);
+      if (req.query.date) {
+        const [year, month, day] = String(req.query.date)
+          .split("-")
+          .map(Number);
 
-				if (year && month && day) {
-					const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+        if (year && month && day) {
+          const start = new Date(year, month - 1, day, 0, 0, 0, 0);
 
-					const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+          const end = new Date(year, month - 1, day, 23, 59, 59, 999);
 
-					filter.$or = [
-						{ created_time: { $gte: start, $lte: end } },
+          filter.$or = [
+            { created_time: { $gte: start, $lte: end } },
 
-						{ updated_time: { $gte: start, $lte: end } },
+            { updated_time: { $gte: start, $lte: end } },
 
-						// 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
+            // 🟢 Allow unresolved issues created BEFORE the selected date to pass to the frontend
 
-						{
-							status: { $nin: ["RESOLVED", "resolved"] },
-							created_time: { $lte: end },
-						},
-					];
-				}
-			}
-			const issues = await Issue.find(filter)
-				.sort({ updated_time: -1 })
-				.lean();
+            {
+              status: { $nin: ["RESOLVED", "resolved"] },
+              created_time: { $lte: end },
+            },
+          ];
+        }
+      }
+      const issues = await Issue.find(filter).sort({ updated_time: -1 }).lean();
 
-			res.json(issues);
-		} catch (err) {
-			next(err);
-		}
-	});
+      res.json(issues);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-	router.get("/issues/:id", async (req, res, next) => {
-		try {
-			// 🟢 FIX: Actually query the DB using the custom ID or MongoDB _id
-			const query = {
-				$or: [
-					{ issue_id: req.params.id },
-					{
-						_id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
-							? req.params.id
-							: null,
-					},
-				],
-			};
-			const issue = await Issue.findOne(query).lean();
-            
-			if (!issue)
-				return res.status(404).json({ error: "Issue not found" });
-			res.json(issue);
-		} catch (err) {
-			next(err);
-		}
-	});
+  router.get("/issues/:id", async (req, res, next) => {
+    try {
+      // 🟢 FIX: Actually query the DB using the custom ID or MongoDB _id
+      const query = {
+        $or: [
+          { issue_id: req.params.id },
+          {
+            _id: req.params.id.match(/^[0-9a-fA-F]{24}$/)
+              ? req.params.id
+              : null,
+          },
+        ],
+      };
+      const issue = await Issue.findOne(query).lean();
 
-	router.delete(
-		"/issues/:id",
-		verifyToken,
-		requireAdmin,
-		async (req, res) => {
-			try {
-				const issueId = req.params.id; // :large_green_circle: FIX: Handle both custom issue_id and MongoDB _id without CastErrors
-				const query = {
-					$or: [
-						{ issue_id: issueId },
-						{
-							_id: issueId.match(/^[0-9a-fA-F]{24}$/)
-								? issueId
-								: null,
-						},
-					],
-				};
-				const result = await Issue.findOneAndDelete(query);
+      if (!issue) return res.status(404).json({ error: "Issue not found" });
+      res.json(issue);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-				if (!result) {
-					return res.status(404).json({ error: "Issue not found" });
-				}
+  router.delete("/issues/:id", verifyToken, requireAdmin, async (req, res) => {
+    try {
+      const issueId = req.params.id; // :large_green_circle: FIX: Handle both custom issue_id and MongoDB _id without CastErrors
+      const query = {
+        $or: [
+          { issue_id: issueId },
+          {
+            _id: issueId.match(/^[0-9a-fA-F]{24}$/) ? issueId : null,
+          },
+        ],
+      };
+      const result = await Issue.findOneAndDelete(query);
 
-				return res
-					.status(200)
-					.json({
-						success: true,
-						message:
-							"Issue deleted successfully directly from database",
-					});
-			} catch (err) {
-				console.error(
-					"Failed to delete issue from database:",
-					err.message,
-				);
-				return res.status(500).json({ error: err.message });
-			}
-		},
-	);
+      if (!result) {
+        return res.status(404).json({ error: "Issue not found" });
+      }
 
-	router.get("/discussions", async (req, res, next) => {
-		try {
-			const filter = {};
-			if (req.query.channel) filter.channel = req.query.channel;
+      return res.status(200).json({
+        success: true,
+        message: "Issue deleted successfully directly from database",
+      });
+    } catch (err) {
+      console.error("Failed to delete issue from database:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  });
 
-			const discussions = await Discussion.find(filter)
-				.sort({ timestamp: -1 })
-				.limit(200)
-				.lean();
-			res.json(discussions);
-		} catch (err) {
-			next(err);
-		}
-	});
+  //teams routes
+  router.get("/teams", async (req, res, next) => {
+    try {
+      const channelId = req.query.channelId;
+      const filter = {};
+      if (channelId) filter.channel_id = channelId;
 
-	router.get("/teams", async (req, res, next) => {
-		try {
-			const channelId = req.query.channelId;
-			const filter = {};
-			if (channelId) filter.channel_id = channelId;
+      const teams = await Team.find(filter).sort({ updated_time: -1 }).lean();
+      res.json(teams);
+    } catch (err) {
+      next(err);
+    }
+  });
 
-			const teams = await Team.find(filter)
-				.sort({ updated_time: -1 })
-				.lean();
-			res.json(teams);
-		} catch (err) {
-			next(err);
-		}
-	});
-	router.get("/teams/channels", async (req, res, next) => {
-     try {
-       const teams = await Team.find({}, { channel_id: 1, channel_name: 1, team: 1 }).lean();
-       const channelIds = teams
-         .filter((t) => t.channel_id)
-         .map((t) => t.channel_id);
+  router.get("/teams/channels", async (req, res, next) => {
+    try {
+      const teams = await Team.find(
+        {},
+        { channel_id: 1, channel_name: 1, team: 1 },
+      ).lean();
+      const channelIds = teams
+        .filter((t) => t.channel_id)
+        .map((t) => t.channel_id);
 
-       const [tasksWithChannel, issuesWithChannel] = await Promise.all([
-         channelIds.length
-           ? await Task.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
-           : [],
-         channelIds.length
-           ? await Issue.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
-           : [],
-       ]);
+      const [tasksWithChannel, issuesWithChannel] = await Promise.all([
+        channelIds.length
+          ? await Task.find(
+              { channel: { $in: channelIds } },
+              { channel: 1, team: 1 },
+            ).lean()
+          : [],
+        channelIds.length
+          ? await Issue.find(
+              { channel: { $in: channelIds } },
+              { channel: 1, team: 1 },
+            ).lean()
+          : [],
+      ]);
 
-       const taskNameMap = new Map();
-       for (const t of tasksWithChannel) {
-         if (t.channel && t.team && !taskNameMap.has(t.channel)) {
-           taskNameMap.set(t.channel, t.team);
-         }
-       }
+      const taskNameMap = new Map();
+      for (const t of tasksWithChannel) {
+        if (t.channel && t.team && !taskNameMap.has(t.channel)) {
+          taskNameMap.set(t.channel, t.team);
+        }
+      }
 
-       const issueNameMap = new Map();
-       for (const i of issuesWithChannel) {
-         if (i.channel && i.team && !issueNameMap.has(i.channel)) {
-           issueNameMap.set(i.channel, i.team);
-         }
-       }
+      const issueNameMap = new Map();
+      for (const i of issuesWithChannel) {
+        if (i.channel && i.team && !issueNameMap.has(i.channel)) {
+          issueNameMap.set(i.channel, i.team);
+        }
+      }
 
-       const channels = teams
-         .filter((t) => t.channel_id)
-         .map((t) => {
-           const name =
-             t.channel_name && t.channel_name !== t.channel_id
-               ? t.channel_name
-               : taskNameMap.get(t.channel_id) || issueNameMap.get(t.channel_id) || t.team || t.channel_id;
-           return {
-             id: t.channel_id,
-             name: (name || t.channel_id).replace(/^#/, '').trim(),
-           };
-         });
+      const channels = teams
+        .filter((t) => t.channel_id)
+        .map((t) => {
+          const name =
+            t.channel_name && t.channel_name !== t.channel_id
+              ? t.channel_name
+              : taskNameMap.get(t.channel_id) ||
+                issueNameMap.get(t.channel_id) ||
+                t.team ||
+                t.channel_id;
+          return {
+            id: t.channel_id,
+            name: (name || t.channel_id).replace(/^#/, "").trim(),
+          };
+        });
 
-       const missingNames = channels.filter((c) => !c.name || c.name === c.id);
-       if (missingNames.length > 0) {
-         try {
-           const slackClient = createSlackClient();
-           const slackChannels = await listChannels(slackClient);
-           const nameMap = new Map(
-             slackChannels.map((ch) => [ch.id, (ch.name || ch.id).replace(/^#/, '').trim()])
-           );
+      const missingNames = channels.filter((c) => !c.name || c.name === c.id);
+      if (missingNames.length > 0) {
+        try {
+          const slackClient = createSlackClient();
+          const slackChannels = await listChannels(slackClient);
+          const nameMap = new Map(
+            slackChannels.map((ch) => [
+              ch.id,
+              (ch.name || ch.id).replace(/^#/, "").trim(),
+            ]),
+          );
 
-           for (const c of channels) {
-             if (!c.name || c.name === c.id) {
-               const slackName = nameMap.get(c.id);
-               if (slackName) c.name = slackName;
-             }
-           }
-         } catch (slackErr) {
-           console.warn('[teams/channels] Slack fallback failed:', slackErr.message);
-         }
-       }
+          for (const c of channels) {
+            if (!c.name || c.name === c.id) {
+              const slackName = nameMap.get(c.id);
+              if (slackName) c.name = slackName;
+            }
+          }
+        } catch (slackErr) {
+          console.warn(
+            "[teams/channels] Slack fallback failed:",
+            slackErr.message,
+          );
+        }
+      }
 
-       res.json({ channels });
-     } catch (err) {
-       next(err);
-     }
-   });
+      res.json({ channels });
+    } catch (err) {
+      next(err);
+    }
+  });
 
-	router.get("/teams/channel/:channelId", async (req, res, next) => {
-		try {
-			const team = await Team.findOne({
-				channel_id: req.params.channelId,
-			}).lean();
-			if (!team)
-				return res
-					.status(404)
-					.json({ error: "Team not found for channel" });
-			res.json(team);
-		} catch (err) {
-			next(err);
-		}
-	});
-  
-router.get("/teams/workload", async (req, res, next) => {
+  router.get("/teams/channel/:channelId", async (req, res, next) => {
+    try {
+      const team = await Team.findOne({
+        channel_id: req.params.channelId,
+      }).lean();
+      if (!team)
+        return res.status(404).json({ error: "Team not found for channel" });
+      res.json(team);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+ router.get("/teams/workload", async (req, res, next) => {
     try {
       const channelId = req.query.channelId;
       const dateStr = req.query.date || null;
       const taskFilter = {};
       const issueFilter = {};
 
-      // 🟢 FIX: Set dynamic boundaries for the requested date. Default to today if no date is provided.
       let targetStart = new Date();
       targetStart.setHours(0, 0, 0, 0);
       let targetEnd = new Date(targetStart);
@@ -866,21 +763,33 @@ router.get("/teams/workload", async (req, res, next) => {
         issueFilter.channel = channelId;
       }
 
+      const completedStatuses = ["done", "completed", "Complete", "Done", "COMPLETE", "DONE", "complete"];
+      const resolvedStatuses = ["RESOLVED", "resolved", "Resolved", "closed", "CLOSED"];
+
       if (dateStr) {
         const [year, month, day] = String(dateStr).split("-").map(Number);
         if (year && month && day) {
-          // Update the boundaries to match the requested date!
           targetStart = new Date(year, month - 1, day, 0, 0, 0, 0);
           targetEnd = new Date(year, month - 1, day, 23, 59, 59, 999);
-          
+
+          // 🟢 FIX: Include carry-forward logic so pending tasks from prior days show up
           taskFilter.$or = [
             { created_time: { $gte: targetStart, $lte: targetEnd } },
             { updated_time: { $gte: targetStart, $lte: targetEnd } },
             { due_date: { $gte: targetStart, $lte: targetEnd } },
+            {
+              status: { $nin: completedStatuses },
+              created_time: { $lte: targetEnd },
+            },
           ];
+
           issueFilter.$or = [
             { created_time: { $gte: targetStart, $lte: targetEnd } },
             { updated_time: { $gte: targetStart, $lte: targetEnd } },
+            {
+              status: { $nin: resolvedStatuses },
+              created_time: { $lte: targetEnd },
+            },
           ];
         }
       }
@@ -900,11 +809,11 @@ router.get("/teams/workload", async (req, res, next) => {
         if (typeof rawAssignee === "string") {
           nameStr = rawAssignee;
         } else {
-          nameStr = 
-            rawAssignee.real_name || 
-            rawAssignee.profile?.real_name || 
-            rawAssignee.display_name || 
-            rawAssignee.name || 
+          nameStr =
+            rawAssignee.real_name ||
+            rawAssignee.profile?.real_name ||
+            rawAssignee.display_name ||
+            rawAssignee.name ||
             "";
         }
 
@@ -930,16 +839,18 @@ router.get("/teams/workload", async (req, res, next) => {
           .replace(/[._-]+/g, " ")
           .trim()
           .split(/\s+/)
-          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .map(
+            (word) =>
+              word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+          )
           .join(" ");
       };
 
-      // 🟢 FIX: Check if the task was done within the target Start and End boundaries!
       const isCompletedOnTargetDate = (date) => {
         if (!date) return false;
         const d = new Date(date);
         return d >= targetStart && d <= targetEnd;
-      };
+      }
 
       for (const task of tasks) {
         const name = getName(task);
@@ -958,13 +869,17 @@ router.get("/teams/workload", async (req, res, next) => {
         }
         const member = memberMap.get(name);
 
-        if (isBlocked) member.blocked++;
-        else if (isDone) {
-          // 🟢 FIX: Use the new function here
+        if (isBlocked) {
+          // If blocked, count as blocked if active on this day
+          member.blocked++;
+        } else if (isDone) {
+          // Only increment 'doneToday' if it was actually finished on this specific target date
           if (isCompletedOnTargetDate(task.updated_time || task.updatedAt || task.created_time)) {
             member.doneToday++;
           }
-        } else if (isCurrent) member.current++;
+        } else if (isCurrent) {
+          member.current++;
+        }
       }
 
       for (const issue of issues) {
@@ -984,13 +899,15 @@ router.get("/teams/workload", async (req, res, next) => {
         }
         const member = memberMap.get(name);
 
-        if (isBlocked) member.blocked++;
-        else if (isResolved) {
-          // 🟢 FIX: Use the new function here
+        if (isBlocked) {
+          member.blocked++;
+        } else if (isResolved) {
           if (isCompletedOnTargetDate(issue.updated_time || issue.updatedAt || issue.created_time)) {
             member.doneToday++;
           }
-        } else if (isCurrent) member.current++;
+        } else if (isCurrent) {
+          member.current++;
+        }
       }
 
       res.json(Array.from(memberMap.values()));
@@ -998,75 +915,111 @@ router.get("/teams/workload", async (req, res, next) => {
       next(err);
     }
   });
+  
+  //parse route
+  router.post(
+    "/parse",
+    body("text").isString().notEmpty(),
+    body("sender").isObject(),
+    async (req, res, next) => {
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty())
+          return res.status(400).json({ errors: errors.array() });
 
-	router.post(
-		"/parse",
-		body("text").isString().notEmpty(),
-		body("sender").isObject(),
-		async (req, res, next) => {
-			try {
-				const errors = validationResult(req);
-				if (!errors.isEmpty())
-					return res.status(400).json({ errors: errors.array() });
+        const result = parseMessage({
+          text: req.body.text,
+          sender: req.body.sender,
+          channel: req.body.channel || "",
+          thread_id: req.body.thread_id || "",
+          workspace_id: req.body.workspace_id || "",
+          team: req.body.team || "",
+          message_ts: req.body.message_ts || "",
+          is_edit: !!req.body.is_edit,
+          user_directory: req.body.user_directory || {},
+          existing_task: req.body.existing_task || null,
+          existing_issue: req.body.existing_issue || null,
+          thread_context: req.body.thread_context || [],
+        });
 
-				const result = parseMessage({
-					text: req.body.text,
-					sender: req.body.sender,
-					channel: req.body.channel || "",
-					thread_id: req.body.thread_id || "",
-					workspace_id: req.body.workspace_id || "",
-					team: req.body.team || "",
-					message_ts: req.body.message_ts || "",
-					is_edit: !!req.body.is_edit,
-					user_directory: req.body.user_directory || {},
-					existing_task: req.body.existing_task || null,
-					existing_issue: req.body.existing_issue || null,
-					thread_context: req.body.thread_context || [],
-				});
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
-				res.json(result);
-			} catch (err) {
-				next(err);
+  //message processing route
+  router.post(
+    "/messages/process",
+    body("text").isString().notEmpty(),
+    body("sender").isObject(),
+    async (req, res, next) => {
+      try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty())
+          return res.status(400).json({ errors: errors.array() });
+
+        if (!messageProcessor) {
+          return res.status(503).json({ error: "Message processor not ready" });
+        }
+
+        const result = await messageProcessor.process({
+          text: req.body.text,
+          sender: req.body.sender,
+          channel: req.body.channel || "api",
+          thread_id: req.body.thread_id || "",
+          workspace_id: req.body.workspace_id || "",
+          team: req.body.team || "",
+          message_ts: req.body.message_ts || `api_${Date.now()}`,
+          is_edit: !!req.body.is_edit,
+          user_directory: req.body.user_directory || {},
+        });
+
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // Example Express Backend Route for Search
+	router.get('/search', async (req, res) => {
+		try {
+			const searchQuery = req.query.q;
+			if (!searchQuery) {
+				return res.json({ tasks: [], issues: [], members: [] });
 			}
-		},
-	);
+  
+			const regex = new RegExp(searchQuery, 'i'); // Case-insensitive search
+  
+			// Replace Task, Issue, and User with your actual Mongoose/Database models
+			const matchingTasks = await Task.find({
+				$or: [
+					{ title: regex },
+					{ description: regex }
+				]
+			}).limit(20);
+  
+			const matchingIssues = await Issue.find({
+				$or: [
+					{ title: regex },
+					{ description: regex }
+				]
+			}).limit(20);
+  
+			res.json({
+				tasks: matchingTasks,
+				issues: matchingIssues,
+				query: searchQuery
+			});
+		} catch (err) {
+			console.error('Database search error:', err);
+			res.status(500).json({ error: 'Internal server error during search' });
+		}
+	});
 
-	router.post(
-		"/messages/process",
-		body("text").isString().notEmpty(),
-		body("sender").isObject(),
-		async (req, res, next) => {
-			try {
-				const errors = validationResult(req);
-				if (!errors.isEmpty())
-					return res.status(400).json({ errors: errors.array() });
-
-				if (!messageProcessor) {
-					return res
-						.status(503)
-						.json({ error: "Message processor not ready" });
-				}
-
-				const result = await messageProcessor.process({
-					text: req.body.text,
-					sender: req.body.sender,
-					channel: req.body.channel || "api",
-					thread_id: req.body.thread_id || "",
-					workspace_id: req.body.workspace_id || "",
-					team: req.body.team || "",
-					message_ts: req.body.message_ts || `api_${Date.now()}`,
-					is_edit: !!req.body.is_edit,
-					user_directory: req.body.user_directory || {},
-				});
-
-				res.json(result);
-			} catch (err) {
-				next(err);
-			}
-		},
-	);
-
-	return router;
+  return router;
 }
 
 module.exports = { createApiRouter };

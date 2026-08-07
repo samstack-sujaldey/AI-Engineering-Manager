@@ -10,7 +10,7 @@ const {verifyToken, requireAdmin } = require('../middleware/auth');
 function createAuthRouter() {
   const router = express.Router();
 
-  // 1. LOGIN ROUTE (Public)
+  // LOGIN ROUTE (Public)
   router.post('/login', async (req, res) => {
     try {
       const email = String(req.body?.email || "");
@@ -48,7 +48,7 @@ function createAuthRouter() {
     }
   });
 
-  // 2. REGISTER ROUTE (Public/Self-Serve)
+  // REGISTER ROUTE (Public/Self-Serve)
   router.post('/register', async (req, res) => {
     try {
       const { password, role, email, display_name } = req.body || {};
@@ -88,8 +88,7 @@ function createAuthRouter() {
     }
   });
 
-  // 🟢 3. NEW: CREATE USER ROUTE (Protected & Admin Only)
-  // This uses your authMiddleware() to ensure the user is logged in
+  // NEW: CREATE USER ROUTE (Protected & Admin Only)
   router.post('/create-user', verifyToken, requireAdmin, async (req, res) => {
     try {
       // Security Check: Only Admins can hit this route!
@@ -130,10 +129,9 @@ function createAuthRouter() {
     }
   });
 
-  // 4. ME ROUTE (Protected)
-  router.get('/me', verifyToken, async (req, res) => {
+  // CHECK USER ROUTE (Protected)
+  router.get('/check-user', verifyToken, async (req, res) => {
     try {
-      // 🟢 FIX: Search by req.user.email, since username is gone!
       const user = await User.findOne({ email: req.user.email }).lean();
       
       if (!user || !user.active) {
