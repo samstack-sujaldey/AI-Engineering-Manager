@@ -225,21 +225,33 @@ async function main() {
 					email: u.email || "",
 				}));
 
-				const teamId = `team_${channelId}`;
-				await Team.findOneAndReplace(
-					{ channel_id: channelId },
-					{
-						team_id: teamId,
-						channel_id: channelId,
-						channel_name: req.body?.channel_name || channelId,
-						workspace_id: req.body?.workspace_id || "",
-						team: req.body?.team || "",
-						members,
-						member_count: members.length,
-						last_synced_at: new Date(),
-					},
-					{ upsert: true, new: true },
-				);
+			const teamId = `team_${channelId}`;
+			
+			let channelName = req.body?.channel_name || '';
+			if (!channelName || channelName === channelId) {
+				try {
+					const channelInfo = await slackClient.conversations.info({ channel: channelId });
+					channelName = (channelInfo.channel?.name || channelId).replace(/^#/, '').trim();
+				} catch (channelErr) {
+					console.warn('[pipeline] Failed to fetch channel name from Slack:', channelErr.message);
+					channelName = channelId;
+				}
+			}
+			
+			await Team.findOneAndReplace(
+				{ channel_id: channelId },
+				{
+					team_id: teamId,
+					channel_id: channelId,
+					channel_name: channelName,
+					workspace_id: req.body?.workspace_id || "",
+					team: req.body?.team || channelName,
+					members,
+					member_count: members.length,
+					last_synced_at: new Date(),
+				},
+				{ upsert: true, new: true },
+			);
 				console.log(
 					`[pipeline] Team synced for channel: ${channelId} (${members.length} members)`,
 				);
