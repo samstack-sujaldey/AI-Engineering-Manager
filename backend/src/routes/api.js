@@ -408,7 +408,7 @@ Instructions:
     }
   });
 
-     router.get("/slack/channels", async (_req, res, next) => {
+  router.get("/slack/channels", async (_req, res, next) => {
     try {
       const [teams, tasks, issues] = await Promise.all([
         Team.find({}).lean(),
@@ -422,7 +422,7 @@ Instructions:
         teams.forEach((t) => {
           const chId = String(t.channel_id || '').trim();
           const team = String(t.team || t.channel_name || '').trim();
-          
+
           if (chId) {
             const formattedName = team ? (team.startsWith('#') ? team : `#${team}`) : `#channel-${chId.toLowerCase()}`;
             channelsMap.set(chId, {
@@ -443,7 +443,7 @@ Instructions:
 
           if (channelId) {
             let displayName = channelId;
-            
+
             if (team) {
               displayName = team.startsWith('#') ? team : `#${team}`;
             } else if (channelsMap.has(channelId)) {
@@ -798,74 +798,74 @@ Instructions:
     }
   });
 
-   router.get("/teams/channels", async (req, res, next) => {
-     try {
-       const teams = await Team.find({}, { channel_id: 1, channel_name: 1, team: 1 }).lean();
-       const channelIds = teams
-         .filter((t) => t.channel_id)
-         .map((t) => t.channel_id);
+  router.get("/teams/channels", async (req, res, next) => {
+    try {
+      const teams = await Team.find({}, { channel_id: 1, channel_name: 1, team: 1 }).lean();
+      const channelIds = teams
+        .filter((t) => t.channel_id)
+        .map((t) => t.channel_id);
 
-       const [tasksWithChannel, issuesWithChannel] = await Promise.all([
-         channelIds.length
-           ? await Task.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
-           : [],
-         channelIds.length
-           ? await Issue.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
-           : [],
-       ]);
+      const [tasksWithChannel, issuesWithChannel] = await Promise.all([
+        channelIds.length
+          ? await Task.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
+          : [],
+        channelIds.length
+          ? await Issue.find({ channel: { $in: channelIds } }, { channel: 1, team: 1 }).lean()
+          : [],
+      ]);
 
-       const taskNameMap = new Map();
-       for (const t of tasksWithChannel) {
-         if (t.channel && t.team && !taskNameMap.has(t.channel)) {
-           taskNameMap.set(t.channel, t.team);
-         }
-       }
+      const taskNameMap = new Map();
+      for (const t of tasksWithChannel) {
+        if (t.channel && t.team && !taskNameMap.has(t.channel)) {
+          taskNameMap.set(t.channel, t.team);
+        }
+      }
 
-       const issueNameMap = new Map();
-       for (const i of issuesWithChannel) {
-         if (i.channel && i.team && !issueNameMap.has(i.channel)) {
-           issueNameMap.set(i.channel, i.team);
-         }
-       }
+      const issueNameMap = new Map();
+      for (const i of issuesWithChannel) {
+        if (i.channel && i.team && !issueNameMap.has(i.channel)) {
+          issueNameMap.set(i.channel, i.team);
+        }
+      }
 
-       const channels = teams
-         .filter((t) => t.channel_id)
-         .map((t) => {
-           const name =
-             t.channel_name && t.channel_name !== t.channel_id
-               ? t.channel_name
-               : taskNameMap.get(t.channel_id) || issueNameMap.get(t.channel_id) || t.team || t.channel_id;
-           return {
-             id: t.channel_id,
-             name: (name || t.channel_id).replace(/^#/, '').trim(),
-           };
-         });
+      const channels = teams
+        .filter((t) => t.channel_id)
+        .map((t) => {
+          const name =
+            t.channel_name && t.channel_name !== t.channel_id
+              ? t.channel_name
+              : taskNameMap.get(t.channel_id) || issueNameMap.get(t.channel_id) || t.team || t.channel_id;
+          return {
+            id: t.channel_id,
+            name: (name || t.channel_id).replace(/^#/, '').trim(),
+          };
+        });
 
-       const missingNames = channels.filter((c) => !c.name || c.name === c.id);
-       if (missingNames.length > 0) {
-         try {
-           const slackClient = createSlackClient();
-           const slackChannels = await listChannels(slackClient);
-           const nameMap = new Map(
-             slackChannels.map((ch) => [ch.id, (ch.name || ch.id).replace(/^#/, '').trim()])
-           );
+      const missingNames = channels.filter((c) => !c.name || c.name === c.id);
+      if (missingNames.length > 0) {
+        try {
+          const slackClient = createSlackClient();
+          const slackChannels = await listChannels(slackClient);
+          const nameMap = new Map(
+            slackChannels.map((ch) => [ch.id, (ch.name || ch.id).replace(/^#/, '').trim()])
+          );
 
-           for (const c of channels) {
-             if (!c.name || c.name === c.id) {
-               const slackName = nameMap.get(c.id);
-               if (slackName) c.name = slackName;
-             }
-           }
-         } catch (slackErr) {
-           console.warn('[teams/channels] Slack fallback failed:', slackErr.message);
-         }
-       }
+          for (const c of channels) {
+            if (!c.name || c.name === c.id) {
+              const slackName = nameMap.get(c.id);
+              if (slackName) c.name = slackName;
+            }
+          }
+        } catch (slackErr) {
+          console.warn('[teams/channels] Slack fallback failed:', slackErr.message);
+        }
+      }
 
-       res.json({ channels });
-     } catch (err) {
-       next(err);
-     }
-   });
+      res.json({ channels });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   router.get("/teams/channel/:channelId", async (req, res, next) => {
     try {
@@ -932,10 +932,12 @@ Instructions:
           nameStr = rawAssignee;
         } else {
           nameStr =
+            rawAssignee.display_name ||
+            rawAssignee.profile?.display_name ||
             rawAssignee.real_name ||
             rawAssignee.profile?.real_name ||
-            rawAssignee.display_name ||
             rawAssignee.name ||
+            rawAssignee.email ||
             "";
         }
 
