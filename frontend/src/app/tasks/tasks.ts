@@ -195,6 +195,14 @@ import { environment } from '../../environments/environment';
         gap: 10px;
         flex-wrap: wrap;
       }
+      ::ng-deep app-tasks .search-wrapper ~ div,
+      ::ng-deep app-tasks input + div {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+  
       .filter-select {
         border: 1px solid #e0e0e0;
         border-radius: 6px;
@@ -633,7 +641,7 @@ export class TasksComponent implements OnInit {
   filteredTasks(): any[] {
     const selectedDate = this.dashService.selectedDate();
     const q = this.searchQuery().toLowerCase().trim();
-    
+
     const filtered = this.tasks.filter((task) => {
       const matchStatus = this.statusFilter === 'all' || (task.status || '').toLowerCase() === this.statusFilter.toLowerCase();
       const matchPriority = this.priorityFilter === 'all' || (task.priority || '').toLowerCase() === this.priorityFilter.toLowerCase();
@@ -817,10 +825,10 @@ export class TasksComponent implements OnInit {
       this.taskToDelete = null;
       this.selectedTask = null;
       this.cdr.detectChanges();
-      
+
     } catch (err) {
       console.error('Failed to delete task:', err);
-      this.taskToDelete = null; 
+      this.taskToDelete = null;
       this.cdr.detectChanges();
       alert('Failed to delete task. You might not have permission.');
     }

@@ -177,6 +177,13 @@ import { environment } from '../../environments/environment';
         gap: 10px;
         flex-wrap: wrap;
       }
+    ::ng-deep app-issues .search-wrapper ~ div,
+      ::ng-deep app-issues input + div {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
       .filter-select {
         border: 1px solid #e0e0e0;
         border-radius: 6px;
