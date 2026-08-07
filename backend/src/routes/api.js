@@ -359,105 +359,7 @@ Instructions:
     }
   });
 
-<<<<<<< HEAD
   //Tasks routes
-=======
-  router.post("/slack/sync", async (req, res, next) => {
-    try {
-      if (!messageProcessor) {
-        return res
-          .status(503)
-          .json({ error: "Message processor not ready" });
-      }
-      const limit = req.body?.limit_per_channel
-        ? parseInt(req.body.limit_per_channel, 10)
-        : undefined;
-      const channelIds = Array.isArray(req.body?.channels)
-        ? req.body.channels
-        : undefined;
-      const channelId = req.body?.channel_id || undefined;
-
-      const result = await syncFromSlack(messageProcessor, {
-        ...(limit ? { limitPerChannel: limit } : {}),
-        ...(channelId ? { channelId } : {}),
-      });
-      res.json(result);
-    } catch (err) {
-      if (err.status) {
-        return res.status(err.status).json({
-          error: err.message,
-          code: err.code || "slack_sync_failed",
-        });
-      }
-      next(err);
-    }
-  });
-
-  router.get("/slack/channels", async (_req, res, next) => {
-    try {
-      const [teams, tasks, issues] = await Promise.all([
-        Team.find({}).lean(),
-        Task.find({}, { channel: 1, team: 1 }).lean(),
-        Issue.find({}, { channel: 1, team: 1 }).lean()
-      ]);
-
-      const channelsMap = new Map();
-
-      if (teams && teams.length > 0) {
-        teams.forEach((t) => {
-          const chId = String(t.channel_id || '').trim();
-          const team = String(t.team || t.channel_name || '').trim();
-
-          if (chId) {
-            const formattedName = team ? (team.startsWith('#') ? team : `#${team}`) : `#channel-${chId.toLowerCase()}`;
-            channelsMap.set(chId, {
-              id: chId,
-              name: formattedName,
-              members: t.members?.length || 4,
-              status: "Active in DB",
-            });
-          }
-        });
-      }
-
-      const processItems = (items) => {
-        if (!items) return;
-        items.forEach((item) => {
-          const channelId = String(item.channel || '').trim();
-          const team = String(item.team || '').trim();
-
-          if (channelId) {
-            let displayName = channelId;
-
-            if (team) {
-              displayName = team.startsWith('#') ? team : `#${team}`;
-            } else if (channelsMap.has(channelId)) {
-              displayName = channelsMap.get(channelId).name;
-            } else if (channelId.match(/^C[A-Z0-9]{8,}$/)) {
-              displayName = `#channel-${channelId.toLowerCase()}`;
-            }
-
-            channelsMap.set(channelId, {
-              id: channelId,
-              name: displayName,
-              members: 4,
-              status: "Derived from Data",
-            });
-          }
-        });
-      };
-
-      processItems(tasks);
-      processItems(issues);
-
-      res.json({ channels: Array.from(channelsMap.values()) });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-
->>>>>>> feature/test
   router.get("/tasks", async (req, res, next) => {
     try {
       const filter = {};
@@ -771,12 +673,6 @@ Instructions:
         }
       }
 
-      const issueNameMap = new Map();
-      for (const i of issuesWithChannel) {
-        if (i.channel && i.team && !issueNameMap.has(i.channel)) {
-          issueNameMap.set(i.channel, i.team);
-        }
-      }
       const issueNameMap = new Map();
       for (const i of issuesWithChannel) {
         if (i.channel && i.team && !issueNameMap.has(i.channel)) {
