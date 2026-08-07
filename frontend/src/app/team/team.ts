@@ -896,10 +896,10 @@ export class TeamComponent implements OnInit {
       raw = input;
     } else if (typeof input === 'object') {
       raw =
-        input.real_name ||
         input.display_name ||
-        input.profile?.real_name ||
         input.profile?.display_name ||
+        input.real_name ||
+        input.profile?.real_name ||
         input.name ||
         input.email ||
         'Unassigned';
@@ -989,27 +989,25 @@ export class TeamComponent implements OnInit {
       this.selectedChannelId === 'all'
         ? this.allTasks
         : this.allTasks.filter((t) => {
-            const chanId =
-              t.channel_id ||
-              t.slack_channel_id ||
-              t.channelId ||
-              (typeof t.channel === 'object' ? t.channel?.id : t.channel);
-            let chanName =
-              typeof t.channel === 'string' ? t.channel : t.channel_name || t.channel?.name || '';
-            chanName = chanName.replace(/^#/, '').trim().toLowerCase();
+          const chanId =
+            t.channel_id ||
+            t.slack_channel_id ||
+            t.channelId ||
+            (typeof t.channel === 'object' ? t.channel?.id : t.channel);
+          let chanName =
+            typeof t.channel === 'string' ? t.channel : t.channel_name || t.channel?.name || '';
+          chanName = chanName.replace(/^#/, '').trim().toLowerCase();
 
-            return (
-              (chanId && chanId === targetId) ||
-              (targetName && chanName === targetName) ||
-              (chanName && chanName === targetId.toLowerCase())
-            );
-          });
+          return (
+            (chanId && chanId === targetId) ||
+            (targetName && chanName === targetName) ||
+            (chanName && chanName === targetId.toLowerCase())
+          );
+        });
 
     const getEffectiveAssignee = (task: any) => {
       let rawAssignee =
-        task.assigned_to?.name ||
         task.assigned_to ||
-        task.owner?.name ||
         task.owner ||
         task.assignee;
       if (this.isBotOrAgentUser(rawAssignee)) {

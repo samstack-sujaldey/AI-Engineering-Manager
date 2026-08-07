@@ -351,7 +351,7 @@ function detectPriority(text) {
 function detectStatus(text) {
 	const lower = text.toLowerCase();
 	// 🟢 FIXED: Added 'resolved' and 'resolve' to the match list
-	if (/\b(?:done|completed|finished|resolved|resolve)\b/.test(lower))
+	if (/\b(?:done|completed|complete|finished|resolved|resolve)\b/.test(lower))
 		return "COMPLETED";
 	if (/\b(?:block|blocked|stuck|hold)\b/.test(lower)) return "BLOCKED";
 	if (/\b(?:processing|doing|working|in progress|open)\b/.test(lower))

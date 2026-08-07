@@ -3,8 +3,15 @@ const { Task, Issue } = require('../models');
 const { createSlackClient } = require('../services/slackSync');
 
 async function openDirectMessageChannel(client, slackUserId) {
-  const result = await client.conversations.open({ users: [slackUserId] });
-  return result.channel?.id || slackUserId;
+  try {
+    const result = await client.conversations.open({ users: slackUserId });
+    return result.channel?.id || slackUserId;
+  } catch (error) {
+    if (error.data?.error === 'user_not_found') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -15,6 +22,10 @@ async function sendBriefingToUser(client, slackUserId, messageText) {
   try {
     const dmChannelId = await openDirectMessageChannel(client, slackUserId);
 
+    if (!dmChannelId) {
+      return { success: false, error: 'user_not_found' };
+    }
+
     await client.chat.postMessage({
       channel: dmChannelId,
       text: messageText,
@@ -23,13 +34,15 @@ async function sendBriefingToUser(client, slackUserId, messageText) {
 
     return { success: true };
   } catch (error) {
-    console.error(`❌ [Standup Briefing] Failed to deliver to ${slackUserId}:`, error.message);
+    if (error.data?.error !== 'user_not_found') {
+      console.error(`❌ [Standup Briefing] Failed to deliver to ${slackUserId}:`, error.message);
+    }
     return { success: false, error: error.message };
   }
 }
 
 /**
- * Dynamically send standup briefings based on provided options.
+ * Dynamically send standup briefings aligned with Task and Issue model enums.
  * @param {Object} options
  * @param {string} [options.team] - Filter tasks/issues by team name
  * @param {string} [options.userId] - Filter briefing for a specific Slack User ID
@@ -50,23 +63,22 @@ async function sendDailyStandupBriefings(options = {}) {
     const client = createSlackClient();
     const lookbackDate = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
 
-    // 1. Build MongoDB Filters Dynamically
+    // 1. Build Filters aligned with Task Schema enums: ['TODO', 'PROCESSING', 'COMPLETED', 'BLOCKED'][cite: 9]
     const taskFilter = {
       $or: [
-        { status: { $in: ['BLOCKED', 'PROCESSING', 'TODO'] } },
+        { status: { $in: ['TODO', 'PROCESSING', 'BLOCKED'] } },
         { status: 'COMPLETED', updated_time: { $gte: lookbackDate } },
       ],
     };
 
+    // 2. Build Filters aligned with Issue Schema enums: ['OPEN', 'HOLD', 'RESOLVED'][cite: 7]
     const issueFilter = {
       $or: [
         { status: { $in: ['OPEN', 'HOLD'] } },
-        { status: 'RESOLVED', updatedAt: { $gte: lookbackDate } },
         { status: 'RESOLVED', updated_time: { $gte: lookbackDate } },
       ],
     };
 
-    // Apply dynamic team or user filters if provided
     if (team) {
       taskFilter.team = team;
       issueFilter.team = team;
@@ -77,7 +89,6 @@ async function sendDailyStandupBriefings(options = {}) {
       issueFilter['assigned_to.id'] = userId;
     }
 
-    // 2. Query DB
     const [activeTasks, activeIssues] = await Promise.all([
       Task.find(taskFilter).lean(),
       Issue.find(issueFilter).lean(),
@@ -88,12 +99,51 @@ async function sendDailyStandupBriefings(options = {}) {
       return { success: true, count: 0, message: 'No active or recent tasks found.' };
     }
 
-    // 3. Group by Slack User ID
+    // Fetch active users from Slack workspace to map old/stale database IDs dynamically
+    let workspaceMembers = [];
+    try {
+      const membersResult = await client.users.list({ limit: 200 });
+      console.log(
+        "Workspace Users:",
+        workspaceMembers.map(m => ({
+          id: m.id,
+          username: m.name,
+          display: m.profile?.display_name,
+          real: m.real_name
+        }))
+      );
+      if (membersResult.ok && membersResult.members) {
+        workspaceMembers = membersResult.members.filter(m => !m.deleted && !m.is_bot);
+      }
+    } catch (wsErr) {
+      console.warn('⚠️ [Slack Sync] Could not fetch workspace members list:', wsErr.message);
+    }
+
     const userMap = {};
 
     const getOrCreateUserEntry = (userRef, itemTeam) => {
-      const slackUserId = userRef?.id;
+      let slackUserId = userRef?.id;
       if (!slackUserId || slackUserId === 'Unassigned') return null;
+
+      // Smart Resolution: If ID is invalid, try matching via email, username, or display name from model
+      const foundInWorkspace = workspaceMembers.find(m => m.id === slackUserId);
+      if (!foundInWorkspace && workspaceMembers.length > 0) {
+        const matchedByEmail = userRef.email && workspaceMembers.find(m => m.profile?.email?.toLowerCase() === userRef.email.toLowerCase());
+        const matchedByName = workspaceMembers.find(m =>
+          (userRef.name && m.name?.toLowerCase() === userRef.name?.toLowerCase()) ||
+          (userRef.name && m.real_name?.toLowerCase() === userRef.name?.toLowerCase()) ||
+          (userRef.display_name && m.profile?.display_name?.toLowerCase() === userRef.display_name?.toLowerCase())
+        );
+
+        if (matchedByEmail) {
+          slackUserId = matchedByEmail.id;
+        } else if (matchedByName) {
+          slackUserId = matchedByName.id;
+          console.log(`🔄 [User Resolution] Automatically mapped database user "${userRef.name || userRef.display_name}" to active Slack ID: ${slackUserId}`);
+        } else {
+          return null;
+        }
+      }
 
       if (!userMap[slackUserId]) {
         userMap[slackUserId] = {
@@ -118,12 +168,16 @@ async function sendDailyStandupBriefings(options = {}) {
 
     let totalDelivered = 0;
 
-    // 4. Dispatch Personalized Briefings
+    // 3. Dispatch Personalized Briefings directly via Slack DM
     for (const [slackUserId, userData] of Object.entries(userMap)) {
       if (userId && slackUserId !== userId) continue;
 
+      if (slackUserId === 'USLACKBOT' || slackUserId.startsWith('B')) {
+        continue;
+      }
+
       const blockedTasks = userData.tasks.filter((t) => t.status === 'BLOCKED');
-      const pendingTasks = userData.tasks.filter((t) => t.status === 'PROCESSING' || t.status === 'TODO');
+      const pendingTasks = userData.tasks.filter((t) => t.status === 'TODO' || t.status === 'PROCESSING');
       const completedTasks = userData.tasks.filter((t) => t.status === 'COMPLETED');
 
       const holdIssues = userData.issues.filter((i) => i.status === 'HOLD');
@@ -146,7 +200,6 @@ async function sendDailyStandupBriefings(options = {}) {
       let messageText = `👋 *Hi ${firstName}!*\n`;
       messageText += `Here is your status summary for the *${userData.team}* daily standup meeting (${meetingTime}):\n\n`;
 
-      // 🚨 Blocked & On Hold
       if (blockedTasks.length > 0 || holdIssues.length > 0) {
         messageText += `🚨 *BLOCKED / ON HOLD:*\n`;
         blockedTasks.forEach((t) => {
@@ -160,19 +213,17 @@ async function sendDailyStandupBriefings(options = {}) {
         messageText += `\n`;
       }
 
-      // ⏳ Active & Open
       if (pendingTasks.length > 0 || openIssues.length > 0) {
         messageText += `⏳ *IN PROGRESS / OPEN:*\n`;
         pendingTasks.forEach((t) => {
           messageText += `• 📋 *[Task]* ${t.title} [Status: ${t.status}]\n`;
         });
         openIssues.forEach((i) => {
-          messageText += `• 🐛 *[Issue]* ${i.title} [Status: OPEN]\n`;
+          messageText += `• 🐛 *[Issue]* ${i.title} [Status: ${i.status}]\n`;
         });
         messageText += `\n`;
       }
 
-      // ✅ Recently Completed / Resolved
       if (completedTasks.length > 0 || resolvedIssues.length > 0) {
         messageText += `✅ *RESOLVED / COMPLETED (Last ${lookbackHours}h):*\n`;
         completedTasks.forEach((t) => {
@@ -200,8 +251,7 @@ async function sendDailyStandupBriefings(options = {}) {
   }
 }
 
-// ⏰ Dynamic Cron Schedule (Defaults to 10:00 AM daily or uses STANDUP_CRON_SCHEDULE from .env)
-const cronSchedule = process.env.STANDUP_CRON_SCHEDULE || '0 10 * * *';
+const cronSchedule = process.env.STANDUP_CRON_SCHEDULE ||' 00 10 * * * ';
 cron.schedule(cronSchedule, async () => {
   try {
     await sendDailyStandupBriefings();
