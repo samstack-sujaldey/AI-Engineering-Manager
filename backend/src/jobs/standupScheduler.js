@@ -49,7 +49,7 @@ function getTargetSummaryDate(date = new Date()) {
 }
 
 function startStandupScheduler() {
-  cron.schedule("00 10 * * *", async () => {
+  cron.schedule("22 15 * * *", async () => {
     const now = new Date();
     const dayOfWeek = now.getDay();
 
@@ -137,15 +137,17 @@ async function generateAndCacheSummary(channel, targetDateStr, startOfDay, endOf
   }
 
   // 🟢 Fetch Tasks, Issues, and Discussions with proper field projections
-  const [tasks, issues, discussions] = await Promise.all([
+ const [tasks, issues, discussions] = await Promise.all([
     Task.find(taskFilter, {
       title: 1, description: 1, status: 1, priority: 1, blocked_reason: 1,
+      created_time: 1, // 🟢 FIX: Explicitly include created_time so carry-over calculations work
       "assigned_to.name": 1, "assigned_to.display_name": 1, "assigned_to.real_name": 1,
       "owner.name": 1, "owner.display_name": 1, "owner.real_name": 1,
       _id: 0,
     }).lean().catch(() => []),
     Issue.find(issueFilter, {
       title: 1, description: 1, status: 1, priority: 1, blocked_reason: 1,
+      created_time: 1, // 🟢 FIX: Include created_time here as well
       "assigned_to.name": 1, "assigned_to.display_name": 1, "assigned_to.real_name": 1,
       "owner.name": 1, "owner.display_name": 1, "owner.real_name": 1,
       _id: 0,

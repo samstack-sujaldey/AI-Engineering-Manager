@@ -404,7 +404,7 @@ async function main() {
 
 	server.listen(PORT, () => {
 		console.log(
-			`[api] AI Engineering Manager listening on http://localhost:${config.port}`,
+			`[api] AI Engineering Manager listening on http://localhost:${PORT}`,
 		);
 	});
 }
