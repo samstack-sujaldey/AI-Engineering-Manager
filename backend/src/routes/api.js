@@ -491,7 +491,7 @@ Instructions:
           ],
         };
         filter.title = {
-          $not: /(- completed|- done| - done| - completed)$/i,
+          $not: /(- complete|- done| - done| - completed)$/i,
         };
       }
 
@@ -512,6 +512,7 @@ Instructions:
             "done",
             "completed",
             "Complete",
+            "complete",
             "Done",
             "COMPLETE",
             "DONE",
@@ -989,7 +990,7 @@ Instructions:
           status === "blocked" ||
           task.blocked_reason ||
           task.block_reason_pending;
-        const isDone = status === "completed" || status === "done";
+        const isDone = status === "completed" || status === "done" || status === "complete";
         const isCurrent = !isBlocked && !isDone;
 
         if (!memberMap.has(name)) {
