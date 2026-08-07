@@ -933,38 +933,37 @@ function createSlackApp({
 
   app.action("custom_sync_btn", async ({ action, ack, body, client }) => {
     await ack();
-
     setTimeout(async () => {
       try {
-        await client.views.open({
-          trigger_id: body.trigger_id,
-          view: {
-            type: "modal",
-            callback_id: "custom_time_modal",
-            private_metadata: action.value,
-            title: { type: "plain_text", text: "Set Custom Delay" },
-            submit: { type: "plain_text", text: "Confirm" },
-            close: { type: "plain_text", text: "Cancel" },
-            blocks: [
-              {
-                type: "input",
-                block_id: "time_input",
-                element: {
-                  type: "plain_text_input",
-                  action_id: "minutes",
-                  placeholder: {
-                    type: "plain_text",
-                    text: "e.g., 15",
-                  },
-                },
-                label: {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: {
+          type: "modal",
+          callback_id: "custom_time_modal",
+          private_metadata: action.value,
+          title: { type: "plain_text", text: "Set Custom Delay" },
+          submit: { type: "plain_text", text: "Confirm" },
+          close: { type: "plain_text", text: "Cancel" },
+          blocks: [
+            {
+              type: "input",
+              block_id: "time_input",
+              element: {
+                type: "plain_text_input",
+                action_id: "minutes",
+                placeholder: {
                   type: "plain_text",
-                  text: "Enter minutes to delay",
+                  text: "e.g., 15",
                 },
               },
-            ],
-          },
-        });
+              label: {
+                type: "plain_text",
+                text: "Enter minutes to delay",
+              },
+            },
+          ],
+        },
+      });
       } catch (err) {
         console.error("[slack] Modal open failed:", err.message);
       }

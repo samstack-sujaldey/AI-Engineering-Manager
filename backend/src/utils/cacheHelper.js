@@ -40,8 +40,8 @@ async function regenerateSummaryInBackground(targetDateStr) {
           { created_time: { $gte: startOfDay, $lte: endOfDay } },
           { updated_time: { $gte: startOfDay, $lte: endOfDay } },
           { due_date: { $gte: startOfDay, $lte: endOfDay } },
-          { created_time: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED'] } },
-          { due_date: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED'] } }
+          { created_time: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED', 'done', 'completed', 'Complete', 'Done'] } },
+          { due_date: { $lt: startOfDay }, status: { $nin: ['COMPLETED', 'RESOLVED', 'done', 'completed', 'Complete', 'Done'] } }
         ],
       }).lean().catch(() => []),
 
@@ -50,8 +50,8 @@ async function regenerateSummaryInBackground(targetDateStr) {
           { created_time: { $gte: startOfDay, $lte: endOfDay } },
           { updated_time: { $gte: startOfDay, $lte: endOfDay } },
           { due_date: { $gte: startOfDay, $lte: endOfDay } },
-          { created_time: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED'] } },
-          { due_date: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED'] } }
+          { created_time: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED', 'resolved', 'closed', 'Closed'] } },
+          { due_date: { $lt: startOfDay }, status: { $nin: ['RESOLVED', 'COMPLETED', 'resolved', 'closed', 'Closed'] } }
         ],
       }).lean().catch(() => []),
     ]);
